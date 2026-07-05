@@ -1,0 +1,15 @@
+Local PDF
+   ↓
+Extract text page by page
+   ↓
+Split pages into chunks
+   ↓
+Generate embeddings
+   ↓
+Store embeddings in memory
+   ↓
+Retrieve relevant chunks
+   ↓
+Send retrieved context to the LLM
+   ↓
+Print answer with filename and page numbers
