@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+
+# New setup dependencies
+motor
+pymongo
+cloudinary

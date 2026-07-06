@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "shadcn": {
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd /Users/aayushroopchandani/Documents/DocMind-AI-Intelligent-conversations-with-documents/frontend/my-app && exec npx shadcn@latest mcp"
+      ]
+    }
+  }
+}

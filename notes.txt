@@ -13,3 +13,11 @@ Retrieve relevant chunks
 Send retrieved context to the LLM
    ↓
 Print answer with filename and page numbers
+
+
+
+# delete this package python-multipart because we will use cloud based services later on
+
+there are models of user  and chat in models folder , now you have to do like whenever user gets loged in through clerk store the user in mongodb like check according to whether its sign in or log in means if user already exists , 
+then do these tasks 
+1> 
