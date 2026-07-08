@@ -3,11 +3,13 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from utils.pydantic_schemas import IngestData
+from scripts.intention_pipelines.summarization_pipeline.level1_pdf_with_outline import build_tree_from_pdf, find_node_id
 from pathlib import Path
 import tempfile
 import requests
 import sys
 import os
+
 
 # Add parent directory of scripts to sys.path to allow importing backend modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -63,15 +65,19 @@ def ingest_pdf(data: IngestData):
     try:
         loader = PyMuPDFLoader(temp_path)
         documents = loader.load()
+        nodes = build_tree_from_pdf(temp_path)
 
     finally:
         os.remove(temp_path)    
 
+    
     for document in documents:
+        page = document.metadata.get("page", 0) + 1 # 0-based index to 1-based index
         document.metadata.update({
             "source": data.filename,
             "doc_id": data.doc_id,
-            "user_id": data.user_id
+            "user_id": data.user_id,
+            "node_id": find_node_id(page,nodes)
         })
 
     # text splitting(chunking)
@@ -94,4 +100,4 @@ def ingest_pdf(data: IngestData):
     )
     vector_store.add_documents(chunks)
     print("Successfully stored chunks in Qdrant!")
-
+    return nodes

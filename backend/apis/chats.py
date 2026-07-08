@@ -118,7 +118,7 @@ async def upload_pdfs(
                 user_id=user_id
             )
 
-            ingest_pdf(data)
+            nodes = ingest_pdf(data)
 
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
@@ -134,6 +134,7 @@ async def upload_pdfs(
             filename=asset["filename"],
             bytes=asset.get("bytes"),
             pages=asset.get("pages"),
+            nodes=nodes,
         )
         try:
             updated = await crud.add_pdf_to_chat(
