@@ -2,11 +2,11 @@
 
 import { useEffect, useRef } from "react";
 import { Sparkles, FileText } from "lucide-react";
-import type { ChatMessage as ChatMessageType } from "@/lib/types";
-import { ChatMessage, TypingIndicator } from "@/components/chat/chat-message";
+import type { ChatMessage as ChatMessageType, Citation } from "@/lib/types";
+import { ChatMessage } from "@/components/chat/chat-message";
 import { ChatInput } from "@/components/chat/chat-input";
 import { SuggestedQuestions } from "@/components/chat/suggested-questions";
-import { SUGGESTED_QUESTIONS } from "@/lib/mock-chat";
+import { SUGGESTED_QUESTIONS } from "@/lib/suggested-questions";
 
 interface ChatPanelProps {
   messages: ChatMessageType[];
@@ -15,7 +15,8 @@ interface ChatPanelProps {
   onInputChange: (value: string) => void;
   onSend: () => void;
   onSelectSuggested: (question: string) => void;
-  onCitationClick: (pageNumber: number) => void;
+  onCitationClick: (citation: Citation) => void;
+  onStop: () => void;
   /** True until a PDF is loaded — the composer is locked until then. */
   hasDocument: boolean;
 }
@@ -29,14 +30,16 @@ export function ChatPanel({
   onSend,
   onSelectSuggested,
   onCitationClick,
+  onStop,
   hasDocument,
 }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to the newest message / typing indicator.
+  // Auto-scroll as new messages / streamed content arrive.
+  const lastMessage = messages[messages.length - 1];
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isResponding]);
+  }, [messages.length, lastMessage?.content, isResponding]);
 
   const showWelcome = hasDocument && messages.length === 0;
 
@@ -59,15 +62,16 @@ export function ChatPanel({
         ) : null}
 
         {showWelcome ? (
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="aurora-panel rounded-2xl border border-border bg-card p-5">
             <div className="mb-2 flex items-center gap-2 text-sm font-medium text-foreground">
-              <Sparkles className="size-4" />
+              <Sparkles className="size-4 text-[color:var(--accent-cyan)]" />
               Welcome to DocMind
             </div>
             <p className="text-sm leading-relaxed text-muted-foreground">
-              Your document is ready. Ask anything about it, or pick one of the
-              suggestions below to get started. Every answer includes citations
-              you can click to jump to the source page.
+              Your documents are ready. Ask anything about them — compare them,
+              cross-reference them, or dig into a single file. Every answer
+              streams in live with citations you can click to jump to the
+              source page.
             </p>
           </div>
         ) : null}
@@ -77,17 +81,16 @@ export function ChatPanel({
             key={message.id}
             message={message}
             onCitationClick={onCitationClick}
+            onFollowUp={onSelectSuggested}
           />
         ))}
-
-        {isResponding ? <TypingIndicator /> : null}
 
         <div ref={bottomRef} />
       </div>
 
       {/* Composer */}
       <div className="space-y-3 border-t border-border bg-card/60 p-4">
-        {hasDocument ? (
+        {hasDocument && messages.length === 0 ? (
           <SuggestedQuestions
             questions={SUGGESTED_QUESTIONS}
             onSelect={onSelectSuggested}
@@ -99,9 +102,11 @@ export function ChatPanel({
           onChange={onInputChange}
           onSend={onSend}
           disabled={!hasDocument || isResponding}
+          isStreaming={isResponding}
+          onStop={onStop}
           placeholder={
             hasDocument
-              ? "Ask a question about this document…"
+              ? "Ask a question about your documents…"
               : "Upload a PDF to start chatting…"
           }
         />

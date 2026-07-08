@@ -2,7 +2,10 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
+from utils.pydantic_schemas import IngestData
 from pathlib import Path
+import tempfile
+import requests
 import sys
 import os
 
@@ -16,10 +19,23 @@ import qdrant_manager
 
 load_dotenv()
 
-def ingest_pdf(pdf_path: str, collection_name: str = "doc_mind_chat_pdf"):
+collection_name = os.getenv("QDRANT_COLLECTION_NAME")
+if not collection_name:
+    raise ValueError("QDRANT_COLLECTION_NAME is not set in the environment variables")
+
+
+def ingest_pdf(data: IngestData):
     """
     Load a PDF, chunk it, create embeddings, and store the vectors in Qdrant.
     """
+
+    """   
+    secure_url: str = Field(...,description="Secure URL of the uploaded PDF")
+    filename: str = Field(...,description="Filename of the uploaded PDF")
+    doc_id: str = Field(...,description="Document ID")
+    user_id: str = Field(...,description="User ID")
+    """
+
     # embedding model 
     embeddings = OpenAIEmbeddings(
         model="text-embedding-3-small",
@@ -27,23 +43,36 @@ def ingest_pdf(pdf_path: str, collection_name: str = "doc_mind_chat_pdf"):
     )
 
     client = qdrant_manager.get_client()
-
-    # Check if collection exists and has vectors
-    exists = qdrant_manager.collection_exists(collection_name=collection_name, client=client)
     
-    if exists:
-        try:
-            info = client.get_collection(collection_name)
-            if info.points_count > 0:
-                print(f"Collection '{collection_name}' already exists with {info.points_count} vectors. Skipping ingestion.")
-                return
-        except Exception as e:
-            print(f"Error checking collection, will proceed: {e}")
+    # download the pdf from the secure url
 
-    print(f"Ingesting PDF: {pdf_path} and generating embeddings...")
-    # document loader
-    loader = PyMuPDFLoader(pdf_path)
-    documents = loader.load()
+    try:
+        response = requests.get(data.secure_url)
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"Request failed: {e}")
+        raise ValueError(f"Failed to download PDF from {data.secure_url}")
+    
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_file: 
+        for chunk in response.iter_content(8192):
+            temp_file.write(chunk)
+
+        temp_path = temp_file.name
+
+    print(f"Ingesting PDF: {data.filename} and generating embeddings...")
+    try:
+        loader = PyMuPDFLoader(temp_path)
+        documents = loader.load()
+
+    finally:
+        os.remove(temp_path)    
+
+    for document in documents:
+        document.metadata.update({
+            "source": data.filename,
+            "doc_id": data.doc_id,
+            "user_id": data.user_id
+        })
 
     # text splitting(chunking)
     splitter = RecursiveCharacterTextSplitter(
@@ -52,9 +81,6 @@ def ingest_pdf(pdf_path: str, collection_name: str = "doc_mind_chat_pdf"):
         separators=["\n\n", "\n", ". ", " ", ""],
     )
     chunks = splitter.split_documents(documents)
-
-    for index, chunk in enumerate(chunks):
-        chunk.metadata["chunk_id"] = f"chunk_{index}"
 
     print(f"Total chunks created: {len(chunks)}")
 
@@ -69,12 +95,3 @@ def ingest_pdf(pdf_path: str, collection_name: str = "doc_mind_chat_pdf"):
     vector_store.add_documents(chunks)
     print("Successfully stored chunks in Qdrant!")
 
-if __name__ == "__main__":
-    # Locate sample PDF relative to the backend workspace directory
-    base_dir = Path(__file__).resolve().parent.parent
-    default_pdf = base_dir / "sample_pdfs" / "Building Machine Learning Systems with Python - Second Edition.pdf"
-    
-    if not default_pdf.exists():
-        print(f"PDF file not found at {default_pdf}")
-    else:
-        ingest_pdf(str(default_pdf))

@@ -1,18 +1,40 @@
 "use client";
 
-import { Sparkles, User } from "lucide-react";
-import type { ChatMessage as ChatMessageType } from "@/lib/types";
-import { CitationCard } from "@/components/chat/citation-card";
+import { memo } from "react";
+import { Sparkles, User, CircleAlert } from "lucide-react";
+import type { ChatMessage as ChatMessageType, Citation } from "@/lib/types";
+import { CitationGroup } from "@/components/chat/citation-card";
+import { StreamingMarkdown } from "@/components/chat/streaming-markdown";
 import { cn } from "@/lib/utils";
 
 interface ChatMessageProps {
   message: ChatMessageType;
-  onCitationClick: (pageNumber: number) => void;
+  onCitationClick: (citation: Citation) => void;
+  /** Sends a follow-up question suggested by the assistant. */
+  onFollowUp?: (question: string) => void;
 }
 
-/** Renders a single user or assistant message, with citations for answers. */
-export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
+/**
+ * Renders a single user or assistant message. Memoized so that during token
+ * streaming only the actively updating message re-renders, not the whole
+ * transcript.
+ */
+export const ChatMessage = memo(function ChatMessage({
+  message,
+  onCitationClick,
+  onFollowUp,
+}: ChatMessageProps) {
   const isUser = message.role === "user";
+  const isStreaming = message.status === "streaming";
+  const showStatus = isStreaming && !message.content && message.statusText;
+
+  // Group citations by document for the sources panel.
+  const groups = new Map<string, Citation[]>();
+  for (const citation of message.citations ?? []) {
+    const list = groups.get(citation.documentId) ?? [];
+    list.push(citation);
+    groups.set(citation.documentId, list);
+  }
 
   return (
     <div
@@ -24,7 +46,9 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
       <div
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-full border border-border",
-          isUser ? "bg-primary text-primary-foreground" : "bg-card text-foreground",
+          isUser
+            ? "bg-primary text-primary-foreground"
+            : "ai-avatar text-foreground",
         )}
       >
         {isUser ? <User className="size-4" /> : <Sparkles className="size-4" />}
@@ -37,35 +61,75 @@ export function ChatMessage({ message, onCitationClick }: ChatMessageProps) {
             isUser
               ? "rounded-br-sm bg-primary text-primary-foreground"
               : "rounded-bl-sm border border-border bg-card text-foreground",
+            !isUser && isStreaming && "streaming-border",
           )}
         >
-          {message.content}
+          {isUser ? (
+            message.content
+          ) : showStatus ? (
+            <span className="status-shimmer text-sm">{message.statusText}</span>
+          ) : (
+            <StreamingMarkdown
+              content={message.content}
+              isStreaming={isStreaming}
+            />
+          )}
         </div>
 
-        {message.citations && message.citations.length > 0 ? (
-          <div className="w-full space-y-1.5">
+        {message.status === "error" ? (
+          <p className="flex items-center gap-1.5 text-xs text-destructive">
+            <CircleAlert className="size-3.5" />
+            Generation failed. Please try again.
+          </p>
+        ) : null}
+
+        {!isUser && groups.size > 0 && !isStreaming ? (
+          <div className="w-full space-y-2.5">
             <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
               Sources
             </span>
-            {message.citations.map((citation, i) => (
-              <CitationCard
-                key={`${citation.pageNumber}-${i}`}
-                citation={citation}
+            {Array.from(groups.entries()).map(([documentId, citations]) => (
+              <CitationGroup
+                key={documentId}
+                documentName={citations[0].documentName}
+                citations={citations}
+                contribution={message.structured?.contributions.find(
+                  (c) => c.documentId === documentId,
+                )}
                 onNavigate={onCitationClick}
               />
+            ))}
+          </div>
+        ) : null}
+
+        {!isUser &&
+        !isStreaming &&
+        onFollowUp &&
+        message.structured &&
+        message.structured.followUpQuestions.length > 0 ? (
+          <div className="flex w-full flex-wrap gap-1.5">
+            {message.structured.followUpQuestions.map((question) => (
+              <button
+                key={question}
+                type="button"
+                onClick={() => onFollowUp(question)}
+                className="rounded-full border border-[color:var(--accent-violet)]/30 bg-[color:var(--accent-violet)]/10 px-2.5 py-1 text-left text-[11px] text-foreground/90 transition-colors hover:border-[color:var(--accent-violet)]/60 hover:bg-[color:var(--accent-violet)]/20"
+              >
+                {question}
+              </button>
             ))}
           </div>
         ) : null}
       </div>
     </div>
   );
-}
+});
 
 /** Animated three-dot indicator shown while the assistant is "thinking". */
 export function TypingIndicator() {
   return (
     <div className="flex w-full gap-3">
-      <div className="flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-card text-foreground">
+      <div className="ai-avatar flex size-8 shrink-0 items-center justify-center rounded-full border border-border text-foreground">
         <Sparkles className="size-4" />
       </div>
       <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm border border-border bg-card px-4 py-3.5">

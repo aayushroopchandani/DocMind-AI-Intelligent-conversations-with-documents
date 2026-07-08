@@ -21,3 +21,137 @@ Print answer with filename and page numbers
 there are models of user  and chat in models folder , now you have to do like whenever user gets loged in through clerk store the user in mongodb like check according to whether its sign in or log in means if user already exists , 
 then do these tasks 
 1> 
+
+The user should be able to upload and work with multiple PDF documents inside one chat.
+
+Allow users to upload a maximum of 4 PDF documents per chat.
+Accept PDF files only.
+Reject unsupported file types with a clear error message.
+Display the number of uploaded files, for example:
+Documents: 3 / 4
+Disable the upload button after four PDFs have been selected.
+Show a helpful message when the limit is reached:
+You can upload a maximum of 4 PDFs in one chat.
+Allow users to remove a PDF and upload another one.
+Ask for confirmation before removing a PDF if the conversation already contains messages.
+Prevent the same PDF from being uploaded twice by checking its name and file size.
+Show filename, file size, processing state, and remove action for every uploaded PDF.
+
+For now, keep the selected PDFs only in browser memory.
+
+
+
+
+Page Layout
+
+Use a split-screen application layout.
+
+Desktop
+┌────────────────────────────────┬───────────────────────────────┐
+│ PDF Workspace                  │ Chat                          │
+│                                │                               │
+│ [PDF 1] [PDF 2] [PDF 3] [+]   │ Conversation messages         │
+│ ────────────────────────────── │                               │
+│                                │ AI answer with citations      │
+│ Active PDF Viewer              │                               │
+│                                │ Suggested questions           │
+│                                │                               │
+│ Page 12 / 40   Zoom: 100%      │ Message input                 │
+└────────────────────────────────┴───────────────────────────────┘
+
+Use approximately:
+
+PDF workspace: 52–55%
+Chat panel: 45–48%
+
+Add a draggable divider between the PDF and chat panels if practical.
+
+Mobile and Tablet
+
+Do not display the PDF viewer and chat side by side on narrow screens.
+
+Use two main tabs:
+
+[Documents] [Chat]
+
+When the user clicks a citation inside the chat:
+
+Switch to the Documents tab.
+Activate the referenced PDF.
+Navigate to the referenced page.
+PDF Document Tabs
+
+Display uploaded PDFs as horizontal tabs at the top of the PDF workspace.
+
+Example:
+
+[Research Paper ×] [Annual Report ×] [Notes ×] [+ Add PDF]
+
+Requirements:
+
+Show a maximum of four document tabs.
+Only one PDF should be active at a time.
+Render only the active PDF in React-PDF.
+Do not render all four PDF viewers in hidden containers.
+Preserve each PDF’s last-opened page and zoom level when switching tabs.
+Show a tooltip containing the full filename when the visible filename is truncated.
+Use an active-state indicator such as a light border, underline, or white background.
+Include a remove icon inside each document tab.
+Include an “Add PDF” tab or button while fewer than four PDFs are uploaded.
+Disable the Add PDF control after reaching the four-document limit.
+Make the document tabs horizontally scrollable on smaller screens.
+
+Suggested tab appearance:
+
+Research Paper.pdf
+Ready • 32 pages
+
+Possible document states:
+
+Selected
+Loading
+Ready
+Error
+
+Use an animated loading indicator while React-PDF loads the selected document.
+
+Empty Upload State
+
+Before any PDF is uploaded, the left workspace should display a premium upload area.
+
+Include:
+
+Drag-and-drop support
+“Choose PDFs” button
+Upload icon
+PDF-only text
+Maximum file count
+Maximum file size placeholder
+Brief explanation
+
+Suggested copy:
+
+Upload documents to start a conversation
+
+Add up to 4 PDF files and ask questions across one or multiple documents.
+
+Show:
+
+PDF files only • Maximum 4 documents
+
+The user should be able to select multiple PDFs from the file picker at once.
+
+If the selected files would exceed the limit, accept only the allowed number or reject the operation with a clear message. Do not silently ignore files.
+
+React-PDF Viewer
+
+
+
+
+
+
+
+
+
+
+

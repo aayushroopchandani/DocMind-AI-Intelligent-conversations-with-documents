@@ -18,7 +18,15 @@ def get_client() -> QdrantClient:
     qdrant_port = os.getenv("QDRANT_PORT")
     qdrant_path = os.getenv("QDRANT_PATH")
 
-    if qdrant_url:
+    # An explicit local path must take precedence over host settings. This also
+    # prevents stale QDRANT_HOST/QDRANT_PORT values inherited by the Uvicorn
+    # process from forcing a connection to a server that is not running.
+    if qdrant_path:
+        path = Path(qdrant_path)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent / path
+        return QdrantClient(path=str(path.resolve()))
+    elif qdrant_url:
         return QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
     elif qdrant_host:
         port = int(qdrant_port) if qdrant_port else 6333
@@ -26,10 +34,8 @@ def get_client() -> QdrantClient:
     else:
         # Default to local path mode
         # If QDRANT_PATH isn't specified, use 'qdrant_storage' relative to backend directory
-        if not qdrant_path:
-            base_dir = Path(__file__).resolve().parent
-            qdrant_path = str(base_dir / "qdrant_storage")
-        return QdrantClient(path=qdrant_path)
+        base_dir = Path(__file__).resolve().parent
+        return QdrantClient(path=str(base_dir / "qdrant_storage"))
 
 def collection_exists(collection_name: str, client: Optional[QdrantClient] = None) -> bool:
     """

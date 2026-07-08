@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { ChatWorkspace } from "@/components/chat/chat-workspace";
+import { UserSync } from "@/components/auth/user-sync";
 
 export const metadata: Metadata = {
   title: "Chat with PDF — DocMind",
@@ -17,5 +18,11 @@ export default async function ChatPage() {
     redirect("/sign-in");
   }
 
-  return <ChatWorkspace />;
+  return (
+    <>
+      {/* Mirrors the signed-in user into MongoDB (idempotent). */}
+      <UserSync />
+      <ChatWorkspace />
+    </>
+  );
 }

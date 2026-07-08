@@ -25,9 +25,9 @@ export function SuggestedQuestions({
           type="button"
           disabled={disabled}
           onClick={() => onSelect(q)}
-          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-[color:var(--accent-violet)]/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
         >
-          <Sparkles className="size-3" />
+          <Sparkles className="size-3 text-[color:var(--accent-violet)]" />
           {q}
         </button>
       ))}

@@ -1,18 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { BrainCircuit, FileText, Upload, ArrowLeft } from "lucide-react";
+import { BrainCircuit, Files, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AuthenticatedUserMenu } from "@/components/auth/authenticated-user-menu";
-import type { PdfDocumentInfo } from "@/lib/types";
 
 interface ChatHeaderProps {
-  document: PdfDocumentInfo | null;
-  onUploadAnother: () => void;
+  /** Number of PDFs currently attached to the chat. */
+  documentCount: number;
+  /** Per-chat document limit. */
+  maxFiles: number;
 }
 
-/** Top bar for the chat workspace: brand, filename, and account controls. */
-export function ChatHeader({ document, onUploadAnother }: ChatHeaderProps) {
+/** Top bar for the chat workspace: brand, document count, and account controls. */
+export function ChatHeader({ documentCount, maxFiles }: ChatHeaderProps) {
   return (
     <header className="flex items-center justify-between gap-3 border-b border-border bg-card/50 px-4 py-2.5 backdrop-blur">
       <div className="flex min-w-0 items-center gap-3">
@@ -20,34 +21,23 @@ export function ChatHeader({ document, onUploadAnother }: ChatHeaderProps) {
           href="/"
           className="flex shrink-0 items-center gap-2 text-sm font-semibold tracking-tight text-foreground"
         >
-          <BrainCircuit className="size-5" />
+          <span className="ai-avatar inline-flex size-7 items-center justify-center rounded-lg">
+            <BrainCircuit className="size-4" />
+          </span>
           <span className="hidden sm:inline">DocMind</span>
         </Link>
 
-        {document ? (
+        {documentCount > 0 ? (
           <div className="flex min-w-0 items-center gap-1.5 rounded-lg border border-border bg-background/60 px-2.5 py-1">
-            <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="truncate text-xs text-foreground" title={document.name}>
-              {document.name}
+            <Files className="size-3.5 shrink-0 text-[color:var(--accent-cyan)]" />
+            <span className="text-xs tabular-nums text-foreground">
+              Documents: {documentCount} / {maxFiles}
             </span>
           </div>
         ) : null}
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5">
-        {document ? (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onUploadAnother}
-            className="gap-1.5"
-            data-icon="inline-start"
-          >
-            <Upload className="size-3.5" />
-            <span className="hidden sm:inline">Upload another</span>
-          </Button>
-        ) : null}
-
         <Button
           variant="ghost"
           size="sm"

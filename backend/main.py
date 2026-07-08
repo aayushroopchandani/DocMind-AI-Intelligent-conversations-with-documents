@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from apis.ask import router as ask_router
+from apis.users import router as users_router
+from apis.chats import router as chats_router
 from db.mongodb import init_mongodb, close_mongodb
 from services.cloudinary_setup import init_cloudinary
 
@@ -18,7 +19,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(ask_router)
+app.include_router(users_router)
+app.include_router(chats_router)
 
 
 @app.on_event("startup")

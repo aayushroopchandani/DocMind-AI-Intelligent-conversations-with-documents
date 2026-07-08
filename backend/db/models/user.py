@@ -12,6 +12,7 @@ def utc_now() -> datetime:
 
 class UserBase(BaseModel):
     email: str = Field(..., description="Unique user email")
+    clerk_user_id: str = Field(..., description="Stable Clerk user id (e.g. user_xxx)")
     chats: list[str] = Field(
         default_factory=list,
         description="List of chat_ids owned by the user",

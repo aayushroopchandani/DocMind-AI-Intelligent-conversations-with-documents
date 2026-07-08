@@ -60,5 +60,7 @@ async def ensure_indexes() -> None:
     """Ensure indexes for User/Chat collections."""
     db = get_db()
     await db.users.create_index("email", unique=True)
+    await db.users.create_index("clerk_user_id", unique=True)
+    await db.chats.create_index("user_id")
     await db.chats.create_index("created_at")
     await db.chats.create_index("updated_at")

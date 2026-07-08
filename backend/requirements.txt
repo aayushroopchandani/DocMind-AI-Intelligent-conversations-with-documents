@@ -7,3 +7,16 @@ python-dotenv
 motor
 pymongo
 cloudinary
+# Required by FastAPI to parse multipart/form-data (PDF uploads).
+python-multipart
+
+# RAG pipeline
+langchain
+langchain-classic
+langchain-openai
+langchain-qdrant
+langchain-community
+langchain-text-splitters
+qdrant-client
+pymupdf
+requests

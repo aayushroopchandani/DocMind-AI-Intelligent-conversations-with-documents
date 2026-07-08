@@ -2,6 +2,9 @@
   "plugins": {
     "clerk": {
       "enabled": true
+    },
+    "cloudinary": {
+      "enabled": true
     }
   }
 }

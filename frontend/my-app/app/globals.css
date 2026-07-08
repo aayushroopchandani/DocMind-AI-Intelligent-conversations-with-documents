@@ -88,6 +88,14 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 9%);
   --sidebar-ring: oklch(0.7 0 0);
+
+  /*
+   * Aurora accents (chat workspace only — the homepage stays monochrome).
+   * Inspired by a prism/light-wave palette: magenta-violet, amber, cyan.
+   */
+  --accent-violet: oklch(0.72 0.21 315);
+  --accent-amber: oklch(0.82 0.16 75);
+  --accent-cyan: oklch(0.83 0.13 205);
 }
 
 @layer base {
@@ -172,8 +180,129 @@
   }
 }
 
+@layer utilities {
+  /* ---------------------------------------------------------------- */
+  /* Chat workspace aurora accents                                     */
+  /* ---------------------------------------------------------------- */
+
+  /* Assistant avatar: subtle prism gradient ring. */
+  .ai-avatar {
+    background:
+      linear-gradient(var(--card), var(--card)) padding-box,
+      linear-gradient(
+          135deg,
+          color-mix(in oklch, var(--accent-violet) 75%, transparent),
+          color-mix(in oklch, var(--accent-amber) 65%, transparent),
+          color-mix(in oklch, var(--accent-cyan) 75%, transparent)
+        )
+        border-box;
+    border: 1px solid transparent;
+  }
+
+  /* Message bubble border that glows softly while tokens stream in. */
+  .streaming-border {
+    border-color: color-mix(in oklch, var(--accent-cyan) 35%, var(--border));
+    box-shadow: 0 0 18px -6px color-mix(in oklch, var(--accent-cyan) 45%, transparent);
+  }
+
+  /* Welcome / info panel with a faint aurora wash. */
+  .aurora-panel {
+    background:
+      radial-gradient(
+        120% 140% at 15% 0%,
+        color-mix(in oklch, var(--accent-violet) 8%, transparent),
+        transparent 45%
+      ),
+      radial-gradient(
+        120% 140% at 85% 0%,
+        color-mix(in oklch, var(--accent-cyan) 8%, transparent),
+        transparent 45%
+      ),
+      var(--card);
+  }
+
+  /* Pipeline status text: animated aurora shimmer sweep. */
+  .status-shimmer {
+    background: linear-gradient(
+      100deg,
+      var(--muted-foreground) 20%,
+      var(--accent-violet) 38%,
+      var(--accent-amber) 50%,
+      var(--accent-cyan) 62%,
+      var(--muted-foreground) 80%
+    );
+    background-size: 220% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: docmind-shimmer 2.2s linear infinite;
+  }
+
+  @keyframes docmind-shimmer {
+    from {
+      background-position: 220% 0;
+    }
+    to {
+      background-position: -20% 0;
+    }
+  }
+
+  /* Live-stream caret — positioned at the last rendered character. */
+  .streaming-markdown {
+    position: relative;
+  }
+
+  .streaming-markdown--active .chat-markdown {
+    transition: opacity 120ms ease-out;
+  }
+
+  .streaming-markdown--pulse .chat-markdown {
+    opacity: 0.92;
+  }
+
+  .streaming-cursor {
+    position: absolute;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--accent-cyan);
+    pointer-events: none;
+    will-change: top, left, opacity;
+    transition:
+      top 80ms ease-out,
+      left 80ms ease-out,
+      height 80ms ease-out;
+    animation: streaming-cursor-blink 1.05s ease-in-out infinite;
+    box-shadow:
+      0 0 6px color-mix(in oklch, var(--accent-cyan) 70%, transparent),
+      0 0 14px color-mix(in oklch, var(--accent-cyan) 35%, transparent);
+  }
+
+  @keyframes streaming-cursor-blink {
+    0%,
+    44% {
+      opacity: 1;
+    }
+    50%,
+    94% {
+      opacity: 0.2;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-float {
     animation: none;
+  }
+  .status-shimmer {
+    animation: none;
+    background: none;
+    color: var(--muted-foreground);
+  }
+  .streaming-cursor {
+    animation: none;
+    opacity: 1;
   }
 }

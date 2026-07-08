@@ -11,63 +11,97 @@ class AnswerStatus(str, Enum):
 
 
 class Citation(BaseModel):
-    document_name: str = Field(..., description="Exact document name from context")
-    page_number: int = Field(..., description="Page number from context")
-    quote: str = Field(
-        ...,
-        description="Exact verbatim snippet from the document that supports the claim",
-    )
+    """One retrieved chunk that the answer actually cited via its [Cn] marker."""
+
+    citation_id: str = Field(..., description="Stable marker used in the answer, e.g. 'C1'")
+    document_id: str = Field(..., description="Backend document id (Cloudinary public_id / Qdrant doc_id)")
+    document_name: str = Field(..., description="Original PDF filename")
+    page_number: Optional[int] = Field(default=None, description="1-based page number in the PDF")
+    chunk_id: Optional[str] = Field(default=None, description="Internal chunk identifier")
+    excerpt: Optional[str] = Field(default=None, description="Short snippet from the cited chunk")
 
 
-class Claim(BaseModel):
-    """A single factual statement in the answer, tied to its supporting citations."""
-    statement: str = Field(..., description="The factual statement being made")
-    citation_ids: list[int] = Field(
-        ...,
-        description="Indices into the top-level citations list that support this claim",
-    )
+class DocumentContribution(BaseModel):
+    """How a single PDF contributed to the final answer."""
+
+    document_id: str
+    document_name: str
+    contribution: str = Field(default="", description="One-line summary of what this document provided")
+    relevant_pages: list[int] = Field(default_factory=list)
+    citation_ids: list[str] = Field(default_factory=list)
 
 
 class DocMindResponse(BaseModel):
-    answer: str = Field(
-    ...,
-    description=(
-        "The user-facing answer in Markdown. Write it as a direct reply to the user's "
-        "question, in your own words, using the document context as evidence rather than "
-        "as text to reproduce. Cite factual claims inline as [Document Name, Page X]. "
-        "Format for readability: use paragraphs, bullets, or headings as needed, and "
-        "include code blocks with concrete examples when the user asks about code, APIs, "
-        "commands, config, or anything else best shown as code — derive the examples from "
-        "the document context. Put exact source text in Citation.quote — this field is "
-        "for the explanation."
-    ),
+    """Final structured payload sent to the frontend after streaming finishes."""
+
+    answer: str = Field(..., description="User-facing Markdown answer (already streamed token-by-token)")
+    answer_found: bool = Field(..., description="False when the selected PDFs did not contain the answer")
+    status: AnswerStatus = Field(default=AnswerStatus.COMPLETE)
+    document_contributions: list[DocumentContribution] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
+    confidence_score: Optional[float] = Field(default=None, ge=0, le=1)
+    follow_up_questions: list[str] = Field(default_factory=list)
+
+
+class ResponseMetadata(BaseModel):
+    """
+    Lightweight structured-output schema for the post-stream metadata call.
+    Only fields that cannot be reliably derived from retrieval metadata.
+    """
+
+    answer_found: bool = Field(
+        ..., description="True only if the answer is actually supported by the document context"
     )
-    status: AnswerStatus
-    citations: list[Citation] = Field(
-        default_factory=list,
-        description="All unique sources referenced in the answer. Note: unique only",
+    confidence_score: float = Field(
+        ..., ge=0, le=1,
+        description="How directly the cited context supports the answer",
     )
-    claims: Optional[list[Claim]] = Field(
-        default=None,
-        description=(
-            "Optional structured breakdown of the answer into atomic factual statements, "
-            "each linked to its supporting citations. Useful for per-claim highlighting or "
-            "grounding verification in the UI. Omit for short or conversational answers "
-        ),
-    )
-    missing_information: Optional[str] = Field(
-        None,
-        description="Set when status=partial. What the context did NOT cover.",
-    )
-    conflict_notes: Optional[str] = Field(
-        None,
-        description="Set when status=conflicting. Summary of what differs between sources.",
-    )
-    confidence: float = Field(
-        ..., ge=0.0, le=1.0,
-        description="Model self-rated confidence based on how directly context supports the answer",
+    status: AnswerStatus = Field(
+        default=AnswerStatus.COMPLETE,
+        description="complete | partial | conflicting | not_found",
     )
     follow_up_questions: list[str] = Field(
         default_factory=list,
-        description="0–3 useful next questions the user could ask about this document",
+        description="0-3 short, useful next questions grounded in the same documents",
+    )
+    document_contributions: list[DocumentContribution] = Field(
+        default_factory=list,
+        description=(
+            "One entry per document that actually contributed. Copy document_id, "
+            "document_name, relevant_pages and citation_ids exactly from the provided "
+            "citation list; write only the one-line `contribution` yourself."
+        ),
+    )
+
+
+class IngestData(BaseModel):
+    secure_url: str = Field(..., description="Secure URL of the uploaded PDF")
+    filename: str = Field(..., description="Filename of the uploaded PDF")
+    doc_id: str = Field(..., description="Document ID")
+    user_id: str = Field(..., description="User ID")
+
+
+class ChatRequest(BaseModel):
+    """Internal request passed into the RAG pipeline."""
+
+    user_id: str = Field(..., description="User ID")
+    chat_id: str = Field(..., description="Chat ID")
+    question: str = Field(..., description="Question")
+    document_ids: list[str] = Field(..., description="Document IDs to search")
+    document_names: dict[str, str] = Field(
+        default_factory=dict, description="doc_id -> original filename"
+    )
+    summary: str = Field(default="", description="Rolling summary of older conversation")
+    recent_messages: list[dict] = Field(
+        default_factory=list, description="Last few conversation turns [{role, content}]"
+    )
+
+
+class StreamAskRequest(BaseModel):
+    """Body of POST /chats/{chat_id}/stream (user identity comes from headers)."""
+
+    question: str = Field(..., min_length=1, max_length=4000)
+    document_ids: Optional[list[str]] = Field(
+        default=None,
+        description="Subset of the chat's PDFs to search. Defaults to all attached PDFs.",
     )
