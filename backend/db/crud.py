@@ -24,13 +24,18 @@ def _utc_now() -> datetime:
 
 
 def _serialize(doc: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """Convert a Mongo document's ObjectId `_id` into a string `id`."""
+    """Convert Mongo ObjectIds into JSON-safe strings."""
     if doc is None:
         return None
     doc = dict(doc)
     _id = doc.pop("_id", None)
     if _id is not None:
         doc["id"] = str(_id)
+
+    for field in ("doc_ids", "chat_ids"):
+        if isinstance(doc.get(field), list):
+            doc[field] = [str(value) for value in doc[field]]
+
     return doc
 
 
@@ -86,7 +91,7 @@ async def create_chat(*, user_id: str) -> dict[str, Any]:
     now = _utc_now()
     doc = {
         "user_id": user_id,
-        "pdf": [],
+        "doc_ids": [],
         "conversation": [],
         "created_at": now,
         "updated_at": now,
@@ -112,35 +117,177 @@ async def get_chat(*, chat_id: str, user_id: str) -> Optional[dict[str, Any]]:
     return _serialize(doc)
 
 
-async def add_pdf_to_chat(
-    *, chat_id: str, user_id: str, pdf: dict[str, Any]
-) -> dict[str, Any]:
-    """
-    Append a Cloudinary PDF reference to a chat.
-
-    Raises ValueError for ownership/limit problems so the API layer can map
-    them to appropriate HTTP status codes.
-    """
-    oid = _as_object_id(chat_id)
-    if oid is None:
-        raise ValueError("Chat not found")
+async def get_documents_by_ids(
+    *, document_ids: list[str], user_id: str
+) -> list[dict[str, Any]]:
+    """Fetch documents in the same order as the supplied MongoDB IDs."""
+    object_ids = [_as_object_id(value) for value in document_ids]
+    valid_ids = [value for value in object_ids if value is not None]
+    if not valid_ids:
+        return []
 
     db = get_db()
-    chat = await db.chats.find_one({"_id": oid, "user_id": user_id})
-    if chat is None:
-        raise ValueError("Chat not found")
+    documents = await db.documents.find(
+        {"_id": {"$in": valid_ids}, "user_id": user_id}
+    ).to_list(length=len(valid_ids))
+    by_id = {document["_id"]: document for document in documents}
+    return [
+        _serialize(by_id[oid])  # type: ignore[misc]
+        for oid in valid_ids
+        if oid in by_id
+    ]
 
-    if len(chat.get("pdf", [])) >= settings.max_pdfs_per_chat:
+
+async def get_ready_document(
+    *, user_id: str, document_id: str
+) -> Optional[dict[str, Any]]:
+    db = get_db()
+    document = await db.documents.find_one(
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "ingestion_status": "ready",
+        }
+    )
+    return _serialize(document)
+
+
+async def get_nodes_ingestion_status(
+    *, user_id: str, document_id: str
+) -> Optional[str]:
+    """Return the node-vector ingestion status for a user's document hash."""
+    db = get_db()
+    document = await db.documents.find_one(
+        {"user_id": user_id, "document_id": document_id},
+        {"nodes.ingestion_status": 1},
+    )
+    if document is None:
+        return None
+
+    nodes = document.get("nodes") or {}
+    if isinstance(nodes, dict) and nodes.get("ingestion_status") == "ready":
+        return "ready"
+    return "not_ready"
+
+
+async def mark_nodes_ingestion_ready(*, user_id: str, document_id: str) -> bool:
+    """Mark node-vector ingestion complete for a user's document hash."""
+    db = get_db()
+    result = await db.documents.update_one(
+        {"user_id": user_id, "document_id": document_id},
+        {
+            "$set": {
+                "nodes.ingestion_status": "ready",
+                "updated_at": _utc_now(),
+            }
+        },
+    )
+    return result.matched_count == 1
+
+
+async def create_pending_document(
+    *, user_id: str, document_id: str, filename: str
+) -> tuple[dict[str, Any], bool]:
+    """Claim a content hash for ingestion; only one concurrent upload wins."""
+    db = get_db()
+    now = _utc_now()
+    document = {
+        "user_id": user_id,
+        "document_id": document_id,
+        "filename": filename,
+        "chat_ids": [],
+        "ingestion_status": "not_ready",
+        "created_at": now,
+        "updated_at": now,
+    }
+    try:
+        result = await db.documents.insert_one(document)
+        document["_id"] = result.inserted_id
+        return _serialize(document), True  # type: ignore[return-value]
+    except DuplicateKeyError:
+        existing = await db.documents.find_one(
+            {"user_id": user_id, "document_id": document_id}
+        )
+        if existing is None:
+            return await create_pending_document(
+                user_id=user_id,
+                document_id=document_id,
+                filename=filename,
+            )
+        return _serialize(existing), False  # type: ignore[return-value]
+
+
+async def mark_document_ready(
+    *, document_db_id: str, user_id: str, metadata: dict[str, Any]
+) -> dict[str, Any]:
+    document_oid = _as_object_id(document_db_id)
+    if document_oid is None:
+        raise ValueError("Document not found")
+
+    db = get_db()
+    document = await db.documents.find_one_and_update(
+        {"_id": document_oid, "user_id": user_id},
+        {
+            "$set": {
+                **metadata,
+                "ingestion_status": "ready",
+                "updated_at": _utc_now(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if document is None:
+        raise ValueError("Document not found")
+    return _serialize(document)  # type: ignore[return-value]
+
+
+async def discard_pending_document(*, document_db_id: str, user_id: str) -> None:
+    document_oid = _as_object_id(document_db_id)
+    if document_oid is None:
+        return
+    db = get_db()
+    await db.documents.delete_one(
+        {
+            "_id": document_oid,
+            "user_id": user_id,
+            "ingestion_status": "not_ready",
+        }
+    )
+
+
+async def attach_document_to_chat(
+    *, chat_id: str, user_id: str, document_db_id: str
+) -> dict[str, Any]:
+    chat_oid = _as_object_id(chat_id)
+    document_oid = _as_object_id(document_db_id)
+    if chat_oid is None or document_oid is None:
+        raise ValueError("Chat or document not found")
+
+    db = get_db()
+    chat = await db.chats.find_one({"_id": chat_oid, "user_id": user_id})
+    document = await db.documents.find_one(
+        {"_id": document_oid, "user_id": user_id, "ingestion_status": "ready"}
+    )
+    if chat is None or document is None:
+        raise ValueError("Chat or document not found")
+
+    doc_ids = chat.get("doc_ids", [])
+    if document_oid not in doc_ids and len(doc_ids) >= settings.max_pdfs_per_chat:
         raise ValueError(
             f"You can upload a maximum of {settings.max_pdfs_per_chat} PDFs in one chat."
         )
 
-    doc = await db.chats.find_one_and_update(
-        {"_id": oid, "user_id": user_id},
-        {"$push": {"pdf": pdf}, "$set": {"updated_at": _utc_now()}},
+    now = _utc_now()
+    chat = await db.chats.find_one_and_update(
+        {"_id": chat_oid, "user_id": user_id},
+        {"$addToSet": {"doc_ids": document_oid}, "$set": {"updated_at": now}},
         return_document=ReturnDocument.AFTER,
     )
-    return _serialize(doc)  # type: ignore[return-value]
+    await db.documents.update_one(
+        {"_id": document_oid, "user_id": user_id},
+        {"$addToSet": {"chat_ids": chat_oid}, "$set": {"updated_at": now}},
+    )
+    return _serialize(chat)  # type: ignore[return-value]
 
 
 async def append_conversation_messages(
@@ -194,18 +341,38 @@ async def update_chat_memory(
     )
 
 
-async def remove_pdf_from_chat(
-    *, chat_id: str, user_id: str, public_id: str
-) -> Optional[dict[str, Any]]:
-    """Remove a PDF (by Cloudinary public_id) from a chat. Returns updated chat."""
-    oid = _as_object_id(chat_id)
-    if oid is None:
-        return None
+async def detach_document_from_chat(
+    *, chat_id: str, user_id: str, document_db_id: str
+) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    chat_oid = _as_object_id(chat_id)
+    document_oid = _as_object_id(document_db_id)
+    if chat_oid is None or document_oid is None:
+        return None, None
 
     db = get_db()
-    doc = await db.chats.find_one_and_update(
-        {"_id": oid, "user_id": user_id},
-        {"$pull": {"pdf": {"public_id": public_id}}, "$set": {"updated_at": _utc_now()}},
+    now = _utc_now()
+    chat = await db.chats.find_one_and_update(
+        {"_id": chat_oid, "user_id": user_id, "doc_ids": document_oid},
+        {"$pull": {"doc_ids": document_oid}, "$set": {"updated_at": now}},
         return_document=ReturnDocument.AFTER,
     )
-    return _serialize(doc)
+    if chat is None:
+        return None, None
+
+    document = await db.documents.find_one_and_update(
+        {"_id": document_oid, "user_id": user_id},
+        {"$pull": {"chat_ids": chat_oid}, "$set": {"updated_at": now}},
+        return_document=ReturnDocument.AFTER,
+    )
+    return _serialize(chat), _serialize(document)
+
+
+async def delete_orphan_document(*, document_db_id: str, user_id: str) -> bool:
+    document_oid = _as_object_id(document_db_id)
+    if document_oid is None:
+        return False
+    db = get_db()
+    result = await db.documents.delete_one(
+        {"_id": document_oid, "user_id": user_id, "chat_ids": {"$size": 0}}
+    )
+    return result.deleted_count == 1

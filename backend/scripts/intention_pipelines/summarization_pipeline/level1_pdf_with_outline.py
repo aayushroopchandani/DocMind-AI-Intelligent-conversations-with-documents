@@ -1,5 +1,6 @@
 # this file is fo pdf who have outline 
 import fitz  # from pymupdf
+from .utils.searching_for_nodes import normalize_title
 
 def get_raw_outline(pdf_path):
     doc = fitz.open(pdf_path)
@@ -28,6 +29,7 @@ def build_tree(toc, last_page):
             "page_start": start,
             "page_end": end,
             "parent_id": None,   # filled next
+            "normalized_title": normalize_title(title),
         })
 
     # parent = the most recent earlier node one level shallower
@@ -56,4 +58,3 @@ def find_node_id(page, nodes):
     return match["node_id"] if match else None
 
 
-    

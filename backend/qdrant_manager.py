@@ -111,3 +111,35 @@ def get_or_create_vector_store(
         )
         
     return get_vector_store(collection_name=collection_name, embedding=embedding, client=client)
+
+
+def delete_document_vectors(
+    collection_name: str,
+    *,
+    user_id: str,
+    document_id: str,
+    client: Optional[QdrantClient] = None,
+) -> None:
+    """Delete every vector belonging to one user's document."""
+    if client is None:
+        client = get_client()
+    if not collection_exists(collection_name, client=client):
+        return
+
+    client.delete(
+        collection_name=collection_name,
+        points_selector=models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="metadata.user_id", match=models.MatchValue(value=user_id)
+                    ),
+                    models.FieldCondition(
+                        key="metadata.doc_id",
+                        match=models.MatchValue(value=document_id),
+                    ),
+                ]
+            )
+        ),
+        wait=True,
+    )

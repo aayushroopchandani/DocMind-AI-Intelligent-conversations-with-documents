@@ -14,7 +14,9 @@ class Citation(BaseModel):
     """One retrieved chunk that the answer actually cited via its [Cn] marker."""
 
     citation_id: str = Field(..., description="Stable marker used in the answer, e.g. 'C1'")
-    document_id: str = Field(..., description="Backend document id (Cloudinary public_id / Qdrant doc_id)")
+    document_id: str = Field(
+        ..., description="SHA-256 document id stored as Qdrant doc_id"
+    )
     document_name: str = Field(..., description="Original PDF filename")
     page_number: Optional[int] = Field(default=None, description="1-based page number in the PDF")
     chunk_id: Optional[str] = Field(default=None, description="Internal chunk identifier")
@@ -77,7 +79,7 @@ class ResponseMetadata(BaseModel):
 class IngestData(BaseModel):
     secure_url: str = Field(..., description="Secure URL of the uploaded PDF")
     filename: str = Field(..., description="Filename of the uploaded PDF")
-    doc_id: str = Field(..., description="Document ID")
+    document_id: str = Field(..., description="SHA-256 hash of the PDF content")
     user_id: str = Field(..., description="User ID")
 
 

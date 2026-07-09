@@ -34,7 +34,7 @@ def ingest_pdf(data: IngestData):
     """   
     secure_url: str = Field(...,description="Secure URL of the uploaded PDF")
     filename: str = Field(...,description="Filename of the uploaded PDF")
-    doc_id: str = Field(...,description="Document ID")
+    document_id: str = Field(..., description="SHA-256 hash of the PDF content")
     user_id: str = Field(...,description="User ID")
     """
 
@@ -75,7 +75,7 @@ def ingest_pdf(data: IngestData):
         page = document.metadata.get("page", 0) + 1 # 0-based index to 1-based index
         document.metadata.update({
             "source": data.filename,
-            "doc_id": data.doc_id,
+            "doc_id": data.document_id,
             "user_id": data.user_id,
             "node_id": find_node_id(page,nodes)
         })
@@ -101,3 +101,12 @@ def ingest_pdf(data: IngestData):
     vector_store.add_documents(chunks)
     print("Successfully stored chunks in Qdrant!")
     return nodes
+
+
+def delete_pdf_embeddings(*, user_id: str, document_id: str) -> None:
+    """Remove all Qdrant chunks for a document that no chat references."""
+    qdrant_manager.delete_document_vectors(
+        collection_name=collection_name,
+        user_id=user_id,
+        document_id=document_id,
+    )

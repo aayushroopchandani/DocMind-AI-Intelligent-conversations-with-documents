@@ -102,16 +102,16 @@ export function ChatWorkspace() {
 
   const uploadBatch = useCallback(
     async (newDocs: PdfDoc[], files: File[]) => {
-      // public_ids that already existed before this batch.
+      // Attachment ids that already existed before this batch.
       const prevIds = new Set(
-        docsRef.current.filter((d) => d.publicId).map((d) => d.publicId),
+        docsRef.current.filter((d) => d.documentDbId).map((d) => d.documentDbId),
       );
 
       try {
         const chatId = await ensureChat();
         const chat = await uploadPdfs(chatId, files);
 
-        const newPdfs = chat.pdf.filter((p) => !prevIds.has(p.public_id));
+        const newPdfs = chat.documents.filter((p) => !prevIds.has(p._id));
         const remainingPdfs = [...newPdfs];
 
         for (const doc of newDocs) {
@@ -119,11 +119,15 @@ export function ChatWorkspace() {
             (p) => p.filename === doc.name,
           );
           const match =
-            matchIdx >= 0 ? remainingPdfs.splice(matchIdx, 1)[0] : undefined;
+            matchIdx >= 0
+              ? remainingPdfs.splice(matchIdx, 1)[0]
+              : remainingPdfs.shift();
 
           if (match) {
             patchDoc(doc.id, {
               status: "ready",
+              documentDbId: match._id,
+              documentId: match.document_id,
               publicId: match.public_id,
               secureUrl: match.secure_url,
               cloudinaryPages: match.pages ?? undefined,
@@ -232,9 +236,9 @@ export function ChatWorkspace() {
       });
       URL.revokeObjectURL(doc.url);
 
-      if (doc.publicId && chatIdRef.current) {
+      if (doc.documentDbId && chatIdRef.current) {
         try {
-          await deletePdf(chatIdRef.current, doc.publicId);
+          await deletePdf(chatIdRef.current, doc.documentDbId);
         } catch (err) {
           setUploadError(
             err instanceof Error ? err.message : "Failed to delete from storage.",
@@ -258,12 +262,12 @@ export function ChatWorkspace() {
 
   /**
    * Citation → viewer navigation: activate the cited document's tab (matched
-   * by Cloudinary public_id) and jump to the cited page.
+   * by its content hash) and jump to the cited page.
    */
   const handleCitationClick = useCallback(
     (citation: Citation) => {
       const target = docsRef.current.find(
-        (d) => d.publicId === citation.documentId,
+        (d) => d.documentId === citation.documentId,
       );
       if (target) {
         setActiveId(target.id);
@@ -301,7 +305,7 @@ export function ChatWorkspace() {
       if (!question || isResponding) return;
 
       const readyDocs = docsRef.current.filter(
-        (d) => d.status === "ready" && d.publicId,
+        (d) => d.status === "ready" && d.documentId,
       );
       if (readyDocs.length === 0 || !chatIdRef.current) return;
 
@@ -330,7 +334,7 @@ export function ChatWorkspace() {
         await streamChat(
           chatIdRef.current,
           question,
-          readyDocs.map((d) => d.publicId!),
+          readyDocs.map((d) => d.documentId!),
           {
             onStatus: (message) =>
               patchMessage(assistantId, (m) => ({ ...m, statusText: message })),

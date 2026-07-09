@@ -9,25 +9,6 @@ from pydantic import BaseModel, Field
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
-class Node(BaseModel):
-    node_id: str = Field(..., description="Node ID")
-    title: str = Field(..., description="Node title")
-    level: int = Field(..., description="Node level")
-    page_start: int = Field(..., description="Page start")
-    page_end: int = Field(..., description="Page end")
-    parent_id: Optional[str] = Field(default=None, description="Parent node ID")
-
-class CloudinaryPdf(BaseModel):
-    public_id: str = Field(..., description="Cloudinary public identifier")
-    # Cloudinary's globally-unique internal asset id (the "private" id).
-    private_id: str = Field(default="", description="Cloudinary asset id (private)")
-    secure_url: str = Field(default="", description="HTTPS delivery URL for the asset")
-    resource_type: str = Field(default="image", description="Cloudinary resource type")
-    filename: str = Field(default="", description="Original uploaded filename")
-    bytes: Optional[int] = Field(default=None, description="File size in bytes")
-    pages: Optional[int] = Field(default=None, description="Number of PDF pages")
-    nodes: Optional[list[Node]] = Field(default=None, description="Nodes of the PDF")
-
 class ConversationMessage(BaseModel):
     role: Literal["user", "assistant"] = Field(..., description="Message author role")
     content: str = Field(..., description="Message content")
@@ -48,9 +29,9 @@ class ChatMemory(BaseModel):
 
 
 class ChatBase(BaseModel):
-    pdf: list[CloudinaryPdf] = Field(
+    doc_ids: list[str] = Field(
         default_factory=list,
-        description="PDF asset metadata stored in Cloudinary",
+        description="MongoDB document IDs attached to this chat",
     )
     conversation: list[ConversationMessage] = Field(
         default_factory=list,

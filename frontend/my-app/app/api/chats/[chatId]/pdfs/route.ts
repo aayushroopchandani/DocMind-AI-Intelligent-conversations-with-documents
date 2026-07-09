@@ -34,7 +34,7 @@ export async function POST(req: Request, { params }: Ctx) {
   return passthrough(res);
 }
 
-/** Remove a single PDF from a chat. public_id is passed as a query param. */
+/** Detach a shared PDF document from a chat by its MongoDB id. */
 export async function DELETE(req: Request, { params }: Ctx) {
   const { userId } = await auth();
   if (!userId) {
@@ -42,17 +42,13 @@ export async function DELETE(req: Request, { params }: Ctx) {
   }
 
   const { chatId } = await params;
-  const publicId = new URL(req.url).searchParams.get("publicId");
-  if (!publicId) {
-    return Response.json({ error: "Missing publicId" }, { status: 400 });
+  const pdfId = new URL(req.url).searchParams.get("pdfId");
+  if (!pdfId) {
+    return Response.json({ error: "Missing pdfId" }, { status: 400 });
   }
 
-  // public_id contains slashes (folder path) and may contain spaces — encode
-  // each segment but preserve the slashes for the backend's `:path` matcher.
-  const encodedPublicId = publicId.split("/").map(encodeURIComponent).join("/");
-
   const res = await fetch(
-    backendUrl(`/chats/${chatId}/pdfs/${encodedPublicId}`),
+    backendUrl(`/chats/${chatId}/pdfs/${encodeURIComponent(pdfId)}`),
     { method: "DELETE", headers: backendHeaders(userId) },
   );
 

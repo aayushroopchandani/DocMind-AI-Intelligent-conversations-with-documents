@@ -35,7 +35,7 @@ export async function createChat(): Promise<ChatApiResponse> {
   return res.json();
 }
 
-/** Upload PDFs to a chat. They're stored in Cloudinary and recorded in MongoDB. */
+/** Upload or reuse PDFs and attach their shared document records to a chat. */
 export async function uploadPdfs(
   chatId: string,
   files: File[],
@@ -172,10 +172,10 @@ export async function streamChat(
 /** Remove a PDF from a chat (deletes it from Cloudinary too). */
 export async function deletePdf(
   chatId: string,
-  publicId: string,
+  pdfId: string,
 ): Promise<ChatApiResponse> {
   const res = await fetch(
-    `/api/chats/${chatId}/pdfs?publicId=${encodeURIComponent(publicId)}`,
+    `/api/chats/${chatId}/pdfs?pdfId=${encodeURIComponent(pdfId)}`,
     { method: "DELETE" },
   );
   if (!res.ok) throw new Error(await parseError(res));

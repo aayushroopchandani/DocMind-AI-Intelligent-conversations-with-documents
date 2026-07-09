@@ -11,7 +11,7 @@ export type ChatRole = "user" | "assistant";
 export interface Citation {
   /** Stable marker used inline in the answer, e.g. "C1". */
   citationId: string;
-  /** Backend document id (Cloudinary public_id) — used to activate the right PDF tab. */
+  /** SHA-256 document id used by retrieval and citations. */
   documentId: string;
   documentName: string;
   pageNumber?: number | null;
@@ -117,14 +117,21 @@ export interface PdfDoc {
   lastPage: number;
   scale: number;
   fitWidth: boolean;
-  /** Cloudinary identifiers, set after a successful upload. */
+  /** Backend identifiers, set after a successful upload. */
+  documentDbId?: string;
+  documentId?: string;
   publicId?: string;
   secureUrl?: string;
   cloudinaryPages?: number;
 }
 
-/** Cloudinary PDF metadata as returned by the backend. */
-export interface CloudinaryPdf {
+/** Shared PDF document populated by the backend. */
+export interface PdfDocumentRecord {
+  _id: string;
+  document_id: string;
+  user_id: string;
+  chat_ids: string[];
+  ingestion_status: "ready" | "not_ready";
   public_id: string;
   private_id: string;
   secure_url: string;
@@ -138,5 +145,6 @@ export interface CloudinaryPdf {
 export interface ChatApiResponse {
   id: string;
   user_id: string;
-  pdf: CloudinaryPdf[];
+  doc_ids: string[];
+  documents: PdfDocumentRecord[];
 }
