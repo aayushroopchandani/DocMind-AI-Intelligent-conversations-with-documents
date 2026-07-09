@@ -170,6 +170,35 @@ async def get_nodes_ingestion_status(
     return "not_ready"
 
 
+async def get_document_nodes(
+    *, user_id: str, document_id: str
+) -> Optional[dict[str, Any]]:
+    """Fetch only the outline nodes for one user's document hash."""
+    db = get_db()
+    document = await db.documents.find_one(
+        {"user_id": user_id, "document_id": document_id},
+        {
+            "_id": 0,
+            "user_id": 1,
+            "document_id": 1,
+            "nodes": 1,
+        },
+    )
+    if document is None:
+        return None
+
+    nodes_data = document.get("nodes") or {}
+    if isinstance(nodes_data, list):
+        nodes_data = {"nodes": nodes_data, "ingestion_status": "not_ready"}
+    elif not isinstance(nodes_data, dict):
+        nodes_data = {"nodes": None, "ingestion_status": "not_ready"}
+
+    nodes_data.setdefault("nodes", None)
+    nodes_data.setdefault("ingestion_status", "not_ready")
+    document["nodes"] = nodes_data
+    return document
+
+
 async def mark_nodes_ingestion_ready(*, user_id: str, document_id: str) -> bool:
     """Mark node-vector ingestion complete for a user's document hash."""
     db = get_db()

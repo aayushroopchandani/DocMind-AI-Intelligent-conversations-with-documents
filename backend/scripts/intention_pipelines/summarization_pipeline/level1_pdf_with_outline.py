@@ -41,7 +41,6 @@ def build_tree(toc, last_page):
     return nodes
 
 
-
 def build_tree_from_pdf(pdf_path):
     toc,last_page = get_raw_outline(pdf_path)
     return build_tree(toc,last_page)
@@ -56,5 +55,7 @@ def find_node_id(page, nodes):
             if match is None or node["level"] > match["level"]:
                 match = node
     return match["node_id"] if match else None
+
+
 
 
