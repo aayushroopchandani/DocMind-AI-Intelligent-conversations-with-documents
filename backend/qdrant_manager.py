@@ -656,12 +656,15 @@ def get_node_vector_store(
         or os.getenv(
             "QDRANT_NODES_COLLECTION_NAME"
         )
+        or os.getenv(
+            "QDRANT_COLLECTION_NAME_NODES"
+        )
     )
 
     if not name:
         raise RuntimeError(
-            "QDRANT_NODES_COLLECTION_NAME "
-            "is not configured"
+            "QDRANT_NODES_COLLECTION_NAME or "
+            "QDRANT_COLLECTION_NAME_NODES is not configured"
         )
 
     return get_or_create_vector_store(

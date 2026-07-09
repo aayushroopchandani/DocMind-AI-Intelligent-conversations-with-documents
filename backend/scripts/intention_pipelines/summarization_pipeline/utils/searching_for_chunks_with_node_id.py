@@ -1,26 +1,230 @@
-from qdrant_client.models import Filter, FieldCondition, MatchValue
+from __future__ import annotations
+
+import os
+from math import inf
+from typing import Any
+
+from qdrant_client import  models
+from qdrant_manager import get_async_client
+
 from operation_on_nodes import get_node_scope
 from db import crud
 
-async def searching_for_chunks_with_node_id(node_id: str,doc_id : str m, user_id: str ) -> list[dict]:
+
+QDRANT_COLLECTION_NAME = os.environ["QDRANT_COLLECTION_NAME"]
+
+# LangChain-style Qdrant payload structure:
+#
+# {
+#     "page_content": "...",
+#     "metadata": {
+#         "user_id": "...",
+#         "doc_id": "...",
+#         "node_id": "node_4",
+#         "chunk_index": 12,
+#         "page_number": 10,
+#         "start_index": 2500
+#     }
+# }
+
+CONTENT_KEY = "page_content"
+METADATA_KEY = "metadata"
+
+USER_ID_FIELD = f"{METADATA_KEY}.user_id"
+DOC_ID_FIELD = f"{METADATA_KEY}.doc_id"
+NODE_ID_FIELD = f"{METADATA_KEY}.node_id"
+
+DEFAULT_SCROLL_PAGE_SIZE = 512
+
+
+def _integer_or_infinity(value: Any) -> int | float:
     """
-    Searching for chunks with node id
+    Converts sortable metadata values to integers.
+
+    Missing or invalid values are placed after valid values.
     """
-    
+    if value is None:
+        return inf
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return inf
+
+
+async def searching_for_chunks_with_node_id(
+    node_id: str | None,
+    doc_id: str,
+    user_id: str,
+    *,
+    page_size: int = DEFAULT_SCROLL_PAGE_SIZE,
+) -> list[dict[str, Any]]:
+    """
+    Retrieve every chunk belonging to a document node and its descendants.
+
+    When node_id is None, all chunks belonging to the document are returned.
+
+    Returned chunks are ordered by:
+        1. Node position in the document
+        2. Chunk index inside the node
+        3. Page number
+        4. Character/start index
+        5. Qdrant point ID as a deterministic fallback
+    """
+
+    if not doc_id:
+        raise ValueError("doc_id is required")
+
+    if not user_id:
+        raise ValueError("user_id is required")
+
+    if page_size <= 0:
+        raise ValueError("page_size must be greater than zero")
+
     document = await crud.get_document_nodes(
-        user_id = user_id,
-        document_id = doc_id,
+        user_id=user_id,
+        document_id=doc_id,
     )
 
     if document is None:
-        raise ValueError(f"Document with id {doc_id} not found") 
+        raise ValueError(f"Document with id '{doc_id}' was not found")
 
-    nodes = document.get("nodes",{}).get("nodes",[])        
+    nodes: list[dict[str, Any]] = (
+        document.get("nodes", {}).get("nodes", [])
+    )
 
     if not nodes:
-        raise ValueError(f"Nodes not found for document with id {doc_id}")
+        raise ValueError(
+            f"No nodes were found for document with id '{doc_id}'"
+        )
 
+    # None means retrieve the complete document.
+    scope_node_ids = get_node_scope(
+        nodes=nodes,
+        node_id=node_id,
+    )
 
-    scope_node_ids = get_node_scope(nodes,node_id)
-    
-        
+    if scope_node_ids is None:
+        ordered_node_ids = [
+            node["node_id"]
+            for node in nodes
+            if node.get("node_id")
+        ]
+    else:
+        ordered_node_ids = scope_node_ids
+
+    # Remove accidental duplicates while preserving document order.
+    ordered_node_ids = list(dict.fromkeys(ordered_node_ids))
+
+    if not ordered_node_ids:
+        return []
+
+    node_order = {
+        current_node_id: position
+        for position, current_node_id in enumerate(ordered_node_ids)
+    }
+
+    filter_conditions: list[models.FieldCondition] = [
+        models.FieldCondition(
+            key=USER_ID_FIELD,
+            match=models.MatchValue(value=user_id),
+        ),
+        models.FieldCondition(
+            key=DOC_ID_FIELD,
+            match=models.MatchValue(value=doc_id),
+        ),
+    ]
+
+    # For section summarization, limit retrieval to the selected node
+    # and all of its descendants.
+    if scope_node_ids is not None:
+        filter_conditions.append(
+            models.FieldCondition(
+                key=NODE_ID_FIELD,
+                match=models.MatchAny(any=ordered_node_ids),
+            )
+        )
+
+    scroll_filter = models.Filter(
+        must=filter_conditions,
+    )
+
+    all_records: list[models.Record] = []
+    offset: Any = None
+    qdrant_client = get_async_client()
+    while True:
+        records, next_offset = await qdrant_client.scroll(
+            collection_name=QDRANT_COLLECTION_NAME,
+            scroll_filter=scroll_filter,
+            limit=page_size,
+            offset=offset,
+
+            # Retrieve only what the summarization pipeline needs.
+            with_payload=[
+                CONTENT_KEY,
+                METADATA_KEY,
+            ],
+            with_vectors=False,
+        )
+
+        all_records.extend(records)
+
+        if next_offset is None:
+            break
+
+        # Defensive protection against an unexpected pagination loop.
+        if next_offset == offset:
+            raise RuntimeError(
+                "Qdrant returned the same pagination offset twice"
+            )
+
+        offset = next_offset
+
+    chunks: list[dict[str, Any]] = []
+
+    for record in all_records:
+        payload = record.payload or {}
+        metadata = payload.get(METADATA_KEY, {})
+
+        if not isinstance(metadata, dict):
+            raise ValueError(
+                f"Qdrant point '{record.id}' contains invalid metadata"
+            )
+
+        chunk_node_id = metadata.get("node_id")
+
+        if not chunk_node_id:
+            raise ValueError(
+                f"Qdrant point '{record.id}' does not contain node_id"
+            )
+
+        chunks.append(
+            {
+                "id": record.id,
+                "page_content": payload.get(CONTENT_KEY, ""),
+                "metadata": metadata,
+            }
+        )
+
+    unknown_node_position = len(node_order)
+
+    chunks.sort(
+        key=lambda chunk: (
+            node_order.get(
+                chunk["metadata"].get("node_id"),
+                unknown_node_position,
+            ),
+            _integer_or_infinity(
+                chunk["metadata"].get("chunk_index")
+            ),
+            _integer_or_infinity(
+                chunk["metadata"].get("page_number")
+            ),
+            _integer_or_infinity(
+                chunk["metadata"].get("start_index")
+            ),
+            str(chunk["id"]),
+        )
+    )
+
+    return chunks

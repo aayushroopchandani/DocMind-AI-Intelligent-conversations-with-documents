@@ -10,18 +10,17 @@
         llm to find the most relevant nodes        
 '''
 import math
-import os
 import re
 from collections import Counter
 from difflib import SequenceMatcher
 from typing import Any
 
-from langchain_openai import OpenAIEmbeddings
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from qdrant_manager import get_or_create_vector_store
+from qdrant_manager import get_node_vector_store
 from .ingest_nodes import ingest_nodes
 from dotenv import load_dotenv
+from utils.embeddings import get_node_embedding
 
 load_dotenv()
 
@@ -232,20 +231,10 @@ async def hybrid_search(
         }
 
     top_k = max(1, top_k)
-    collection_name = os.getenv("QDRANT_COLLECTION_NAME_NODES")
-    if not collection_name:
-        raise RuntimeError("QDRANT_COLLECTION_NAME_NODES is not configured")
 
     await ingest_nodes(nodes, doc_id, user_id)
-    embedding = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        dimensions=512,
-    )
-
-    vector_store = get_or_create_vector_store(
-        collection_name=collection_name,
-        embedding=embedding,
-        vector_size=512,
+    vector_store = get_node_vector_store(
+        embedding=get_node_embedding(),
     )
 
     semantic_results = vector_store.similarity_search_with_score(

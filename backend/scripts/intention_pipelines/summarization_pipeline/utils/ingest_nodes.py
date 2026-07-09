@@ -1,12 +1,11 @@
-import os
 from typing import Literal
 
 from dotenv import load_dotenv
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 
 from db import crud
-from qdrant_manager import get_or_create_vector_store
+from qdrant_manager import get_node_vector_store
+from utils.embeddings import get_node_embedding
 
 load_dotenv()
 
@@ -33,15 +32,8 @@ async def ingest_nodes(
         print("Nodes embeddings already exist in the vector db!")
         return "ready"
 
-    embedding = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        dimensions=512,
-    )
-
-    vector_store = get_or_create_vector_store(
-        collection_name=os.getenv("QDRANT_COLLECTION_NAME_NODES"),
-        embedding=embedding,
-        vector_size=512,
+    vector_store = get_node_vector_store(
+        embedding=get_node_embedding(),
     )
 
     nodes_documents = [

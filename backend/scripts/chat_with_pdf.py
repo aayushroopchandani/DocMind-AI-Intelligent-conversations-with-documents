@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import sys
+from functools import lru_cache
 
 # Add parent directory of scripts to sys.path to allow importing backend modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -33,12 +34,13 @@ from typing import AsyncGenerator, Optional
 from dotenv import load_dotenv
 from langchain_classic.retrievers.multi_query import MultiQueryRetriever
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
 from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
 
 from config.settings import settings
 from db import crud
-from qdrant_manager import get_client, get_vector_store
+from qdrant_manager import get_chunk_vector_store
+from utils.embeddings import get_chunk_embedding
 from utils.format_document import (
     balance_documents,
     deduplicate_documents,
@@ -69,30 +71,29 @@ logger = logging.getLogger(__name__)
 
 NOT_FOUND_PHRASE = "I could not find this information in the selected documents."
 
-# embedding model
-embeddings = OpenAIEmbeddings(
-    model="text-embedding-3-small",
-    dimensions=1536,
-)
+@lru_cache(maxsize=1)
+def get_main_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model="google/gemini-2.5-flash",
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        streaming=True,
+    )
 
-# Main answering model (streams the answer).
-main_llm = ChatOpenAI(
-    model="google/gemini-2.5-flash",
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    # temperature=0.2,
-    streaming=True,
-)
 
-# Cheap/fast model for query rewriting, multi-query generation and summaries.
-utility_llm = ChatOpenAI(
-    model="google/gemini-2.5-flash-lite",
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    temperature=0,
-)
+@lru_cache(maxsize=1)
+def get_utility_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model="google/gemini-2.5-flash-lite",
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=0,
+    )
 
-metadata_llm = utility_llm.with_structured_output(ResponseMetadata)
+
+@lru_cache(maxsize=1)
+def get_metadata_llm():
+    return get_utility_llm().with_structured_output(ResponseMetadata)
 
 
 # --------------------------------------------------------------------------- #
@@ -121,7 +122,7 @@ async def rewrite_standalone_question(
         return question
 
     try:
-        result = await utility_llm.ainvoke(
+        result = await get_utility_llm().ainvoke(
             [
                 SystemMessage(content=get_rewrite_system_message()),
                 HumanMessage(
@@ -159,7 +160,7 @@ async def update_chat_summary(chat: dict, user_id: str) -> None:
 
     new_messages_text = format_recent_conversation(to_summarize)
     try:
-        result = await utility_llm.ainvoke(
+        result = await get_utility_llm().ainvoke(
             [
                 SystemMessage(content=get_summary_system_message()),
                 HumanMessage(
@@ -186,9 +187,9 @@ async def update_chat_summary(chat: dict, user_id: str) -> None:
 # --------------------------------------------------------------------------- #
 def create_multi_query_retriever(user_id: str, document_ids: list[str]) -> MultiQueryRetriever:
     """Qdrant retriever locked to this user's selected documents, wrapped in MultiQuery."""
-    collection_name = os.getenv("QDRANT_COLLECTION_NAME")
-    client = get_client()
-    vector_store = get_vector_store(collection_name, embeddings, client)
+    vector_store = get_chunk_vector_store(
+        embedding=get_chunk_embedding(),
+    )
 
     candidates = settings.retrieval_candidates_per_doc * max(1, len(document_ids))
     base_retriever = vector_store.as_retriever(
@@ -209,7 +210,10 @@ def create_multi_query_retriever(user_id: str, document_ids: list[str]) -> Multi
         }
     )
 
-    return MultiQueryRetriever.from_llm(retriever=base_retriever, llm=utility_llm)
+    return MultiQueryRetriever.from_llm(
+        retriever=base_retriever,
+        llm=get_utility_llm(),
+    )
 
 
 async def retrieve_documents(retriever: MultiQueryRetriever, query: str) -> list:
@@ -291,7 +295,7 @@ async def build_structured_response(
         ) or "(none)"
 
         metadata: ResponseMetadata = await asyncio.wait_for(
-            metadata_llm.ainvoke(
+            get_metadata_llm().ainvoke(
                 [
                     SystemMessage(content=get_metadata_system_message()),
                     HumanMessage(
@@ -409,7 +413,7 @@ async def ask_question(request: ChatRequest) -> AsyncGenerator[dict, None]:
 
         # 4) Stream the answer while collecting it for persistence.
         yield {"type": "status", "message": "Generating response"}
-        async for chunk in main_llm.astream(messages):
+        async for chunk in get_main_llm().astream(messages):
             text = chunk.content
             if text:
                 answer_parts.append(text)
