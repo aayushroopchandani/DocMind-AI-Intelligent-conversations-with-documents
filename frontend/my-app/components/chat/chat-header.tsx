@@ -15,7 +15,7 @@ interface ChatHeaderProps {
 /** Top bar for the chat workspace: brand, document count, and account controls. */
 export function ChatHeader({ documentCount, maxFiles }: ChatHeaderProps) {
   return (
-    <header className="flex items-center justify-between gap-3 border-b border-border bg-card/50 px-4 py-2.5 backdrop-blur">
+    <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-card/50 px-4 py-2.5 backdrop-blur">
       <div className="flex min-w-0 items-center gap-3">
         <Link
           href="/"

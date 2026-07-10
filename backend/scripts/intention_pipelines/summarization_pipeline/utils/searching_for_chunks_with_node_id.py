@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from math import inf
 from typing import Any
 
-from qdrant_client import  models
-from qdrant_manager import get_async_client
+from qdrant_client import models
+from qdrant_manager import get_client
 
-from operation_on_nodes import get_node_scope
+from .operation_on_nodes import get_node_scope
 from db import crud
 
 
-QDRANT_COLLECTION_NAME = os.environ["QDRANT_COLLECTION_NAME"]
+def _chunk_collection_name() -> str:
+    collection_name = os.getenv("QDRANT_COLLECTION_NAME")
+    if not collection_name:
+        raise RuntimeError("QDRANT_COLLECTION_NAME is not configured")
+    return collection_name
 
 # LangChain-style Qdrant payload structure:
 #
@@ -50,6 +55,47 @@ def _integer_or_infinity(value: Any) -> int | float:
         return int(value)
     except (TypeError, ValueError):
         return inf
+
+
+def _scroll_chunk_records(
+    *,
+    scroll_filter: models.Filter,
+    page_size: int,
+) -> list[models.Record]:
+    """Scroll Qdrant with the shared sync client used by LangChain."""
+    all_records: list[models.Record] = []
+    offset: Any = None
+    qdrant_client = get_client()
+
+    while True:
+        records, next_offset = qdrant_client.scroll(
+            collection_name=_chunk_collection_name(),
+            scroll_filter=scroll_filter,
+            limit=page_size,
+            offset=offset,
+
+            # Retrieve only what the summarization pipeline needs.
+            with_payload=[
+                CONTENT_KEY,
+                METADATA_KEY,
+            ],
+            with_vectors=False,
+        )
+
+        all_records.extend(records)
+
+        if next_offset is None:
+            break
+
+        # Defensive protection against an unexpected pagination loop.
+        if next_offset == offset:
+            raise RuntimeError(
+                "Qdrant returned the same pagination offset twice"
+            )
+
+        offset = next_offset
+
+    return all_records
 
 
 async def searching_for_chunks_with_node_id(
@@ -149,36 +195,11 @@ async def searching_for_chunks_with_node_id(
         must=filter_conditions,
     )
 
-    all_records: list[models.Record] = []
-    offset: Any = None
-    qdrant_client = get_async_client()
-    while True:
-        records, next_offset = await qdrant_client.scroll(
-            collection_name=QDRANT_COLLECTION_NAME,
-            scroll_filter=scroll_filter,
-            limit=page_size,
-            offset=offset,
-
-            # Retrieve only what the summarization pipeline needs.
-            with_payload=[
-                CONTENT_KEY,
-                METADATA_KEY,
-            ],
-            with_vectors=False,
-        )
-
-        all_records.extend(records)
-
-        if next_offset is None:
-            break
-
-        # Defensive protection against an unexpected pagination loop.
-        if next_offset == offset:
-            raise RuntimeError(
-                "Qdrant returned the same pagination offset twice"
-            )
-
-        offset = next_offset
+    all_records = await asyncio.to_thread(
+        _scroll_chunk_records,
+        scroll_filter=scroll_filter,
+        page_size=page_size,
+    )
 
     chunks: list[dict[str, Any]] = []
 
@@ -193,7 +214,7 @@ async def searching_for_chunks_with_node_id(
 
         chunk_node_id = metadata.get("node_id")
 
-        if not chunk_node_id:
+        if not chunk_node_id and scope_node_ids is not None:
             raise ValueError(
                 f"Qdrant point '{record.id}' does not contain node_id"
             )
@@ -206,25 +227,40 @@ async def searching_for_chunks_with_node_id(
             }
         )
 
-    unknown_node_position = len(node_order)
-
-    chunks.sort(
-        key=lambda chunk: (
-            node_order.get(
-                chunk["metadata"].get("node_id"),
-                unknown_node_position,
-            ),
-            _integer_or_infinity(
-                chunk["metadata"].get("chunk_index")
-            ),
-            _integer_or_infinity(
-                chunk["metadata"].get("page_number")
-            ),
-            _integer_or_infinity(
-                chunk["metadata"].get("start_index")
-            ),
-            str(chunk["id"]),
+    if scope_node_ids is None:
+        chunks.sort(
+            key=lambda chunk: (
+                _integer_or_infinity(
+                    chunk["metadata"].get("document_chunk_index")
+                ),
+                _integer_or_infinity(
+                    chunk["metadata"].get("page_number")
+                ),
+                _integer_or_infinity(
+                    chunk["metadata"].get("start_index")
+                ),
+                str(chunk["id"]),
+            )
         )
-    )
+    else:
+        unknown_node_position = len(node_order)
+        chunks.sort(
+            key=lambda chunk: (
+                node_order.get(
+                    chunk["metadata"].get("node_id"),
+                    unknown_node_position,
+                ),
+                _integer_or_infinity(
+                    chunk["metadata"].get("chunk_index")
+                ),
+                _integer_or_infinity(
+                    chunk["metadata"].get("page_number")
+                ),
+                _integer_or_infinity(
+                    chunk["metadata"].get("start_index")
+                ),
+                str(chunk["id"]),
+            )
+        )
 
     return chunks

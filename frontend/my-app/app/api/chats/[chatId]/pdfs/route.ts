@@ -1,5 +1,11 @@
 import { auth } from "@clerk/nextjs/server";
-import { backendHeaders, backendUrl, passthrough } from "@/lib/server/backend";
+import {
+  backendHeaders,
+  backendUrl,
+  decodeChatId,
+  jsonPassthrough,
+  sanitizeChatPayload,
+} from "@/lib/server/backend";
 
 type Ctx = { params: Promise<{ chatId: string }> };
 
@@ -11,6 +17,10 @@ export async function POST(req: Request, { params }: Ctx) {
   }
 
   const { chatId } = await params;
+  const backendChatId = decodeChatId(chatId);
+  if (!backendChatId) {
+    return Response.json({ error: "Invalid chat id" }, { status: 400 });
+  }
 
   // Buffer the raw multipart bytes and forward them verbatim, preserving the
   // original Content-Type (with its boundary). We deliberately avoid two other
@@ -25,13 +35,13 @@ export async function POST(req: Request, { params }: Ctx) {
 
   const body = await req.arrayBuffer();
 
-  const res = await fetch(backendUrl(`/chats/${chatId}/pdfs`), {
+  const res = await fetch(backendUrl(`/chats/${backendChatId}/pdfs`), {
     method: "POST",
     headers,
     body,
   });
 
-  return passthrough(res);
+  return jsonPassthrough(res, sanitizeChatPayload);
 }
 
 /** Detach a shared PDF document from a chat by its MongoDB id. */
@@ -42,15 +52,20 @@ export async function DELETE(req: Request, { params }: Ctx) {
   }
 
   const { chatId } = await params;
+  const backendChatId = decodeChatId(chatId);
+  if (!backendChatId) {
+    return Response.json({ error: "Invalid chat id" }, { status: 400 });
+  }
+
   const pdfId = new URL(req.url).searchParams.get("pdfId");
   if (!pdfId) {
     return Response.json({ error: "Missing pdfId" }, { status: 400 });
   }
 
   const res = await fetch(
-    backendUrl(`/chats/${chatId}/pdfs/${encodeURIComponent(pdfId)}`),
+    backendUrl(`/chats/${backendChatId}/pdfs/${encodeURIComponent(pdfId)}`),
     { method: "DELETE", headers: backendHeaders(userId) },
   );
 
-  return passthrough(res);
+  return jsonPassthrough(res, sanitizeChatPayload);
 }

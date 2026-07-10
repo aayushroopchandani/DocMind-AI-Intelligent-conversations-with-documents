@@ -1,8 +1,13 @@
 import type {
   BackendCitation,
+  BackendConversationMessage,
   BackendFinalData,
+  BackendIntentData,
   ChatApiResponse,
+  ChatDocumentsApiResponse,
+  ChatMessage,
   Citation,
+  PdfDocumentRecord,
   StreamEvent,
   StructuredAnswer,
 } from "@/lib/types";
@@ -31,6 +36,25 @@ export async function syncUser(): Promise<void> {
 /** Create a new empty chat for the signed-in user. */
 export async function createChat(): Promise<ChatApiResponse> {
   const res = await fetch("/api/chats", { method: "POST" });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+/** Fetch every saved chat owned by the signed-in user. */
+export async function getChats(): Promise<ChatApiResponse[]> {
+  const res = await fetch("/api/chats", { method: "GET", cache: "no-store" });
+  if (!res.ok) throw new Error(await parseError(res));
+  return res.json();
+}
+
+/** Fetch safe document metadata for one chat. */
+export async function getChatDocuments(
+  chatId: string,
+): Promise<ChatDocumentsApiResponse> {
+  const res = await fetch(`/api/chats/${chatId}/documents`, {
+    method: "GET",
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error(await parseError(res));
   return res.json();
 }
@@ -81,8 +105,63 @@ export function mapStructured(data: BackendFinalData): StructuredAnswer {
   };
 }
 
+function documentIdOf(document: PdfDocumentRecord): string {
+  return document._id ?? document.id ?? document.document_id;
+}
+
+export function documentFileUrl(chatId: string, document: PdfDocumentRecord): string {
+  return `/api/chats/${encodeURIComponent(chatId)}/documents/${encodeURIComponent(
+    documentIdOf(document),
+  )}/file`;
+}
+
+export function mapPersistedConversation(
+  conversation: BackendConversationMessage[] = [],
+): ChatMessage[] {
+  return conversation.map((message, index) => {
+    const createdAt = message.created_at
+      ? new Date(message.created_at).getTime()
+      : Date.now() + index;
+
+    if (message.role === "user") {
+      return {
+        id: `saved-${index}-${createdAt}`,
+        role: "user",
+        content: message.content,
+        createdAt,
+      };
+    }
+
+    const meta = message.meta;
+    const citations = meta?.citations?.map(mapCitation) ?? [];
+    const structured =
+      meta && meta.answer_found !== undefined && meta.status
+        ? mapStructured({
+            answer: message.content,
+            answer_found: meta.answer_found,
+            status: meta.status,
+            document_contributions: meta.document_contributions ?? [],
+            citations: meta.citations ?? [],
+            confidence_score: meta.confidence_score,
+            follow_up_questions: meta.follow_up_questions ?? [],
+          })
+        : undefined;
+
+    return {
+      id: `saved-${index}-${createdAt}`,
+      role: "assistant",
+      content: message.content,
+      createdAt,
+      status: meta?.cancelled ? "cancelled" : "complete",
+      citations,
+      structured,
+    };
+  });
+}
+
 export interface StreamChatCallbacks {
   onStatus: (message: string) => void;
+  onIntent?: (intent: BackendIntentData) => void;
   onToken: (text: string) => void;
   onCitations: (citations: Citation[]) => void;
   onFinal: (structured: StructuredAnswer, citations: Citation[]) => void;
@@ -121,6 +200,18 @@ export async function streamChat(
     switch (event.type) {
       case "status":
         callbacks.onStatus(event.message);
+        break;
+      case "intent":
+        callbacks.onIntent?.({
+          intent: event.intent,
+          doc_ids: event.doc_ids,
+          target: event.target,
+          quiz_scope: event.quiz_scope ?? null,
+          question_formats: event.question_formats ?? [],
+          difficulty: event.difficulty ?? null,
+          number_of_questions: event.number_of_questions ?? null,
+          confidence: event.confidence,
+        });
         break;
       case "token":
         callbacks.onToken(event.content);

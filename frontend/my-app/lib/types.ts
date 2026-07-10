@@ -86,8 +86,35 @@ export interface BackendFinalData {
   follow_up_questions: string[];
 }
 
+export type QuizScope =
+  | "context_based"
+  | "topic_based"
+  | "structure_based"
+  | "whole_document";
+
+export type QuizQuestionFormat =
+  | "single_correct_mcq"
+  | "multiple_correct_mcq"
+  | "true_false"
+  | "fill_in_the_blank"
+  | "match_the_following";
+
+export type QuizDifficulty = "easy" | "medium" | "hard";
+
+export interface BackendIntentData {
+  intent: "general_qa" | "summarization" | "quiz";
+  doc_ids: string[];
+  target?: string | null;
+  quiz_scope?: QuizScope | null;
+  question_formats?: QuizQuestionFormat[];
+  difficulty?: QuizDifficulty | null;
+  number_of_questions?: number | null;
+  confidence: number;
+}
+
 export type StreamEvent =
   | { type: "status"; message: string }
+  | ({ type: "intent" } & BackendIntentData)
   | { type: "token"; content: string }
   | { type: "citations"; citations: BackendCitation[] }
   | { type: "final"; data: BackendFinalData }
@@ -127,23 +154,48 @@ export interface PdfDoc {
 
 /** Shared PDF document populated by the backend. */
 export interface PdfDocumentRecord {
-  _id: string;
+  _id?: string;
+  id?: string;
   document_id: string;
   user_id: string;
-  chat_ids: string[];
+  chat_ids?: string[];
   ingestion_status: "ready" | "not_ready";
-  public_id: string;
-  private_id: string;
-  secure_url: string;
-  resource_type: string;
+  public_id?: string;
+  private_id?: string;
+  secure_url?: string;
+  resource_type?: string;
   filename: string;
   bytes?: number | null;
   pages?: number | null;
 }
 
+export interface BackendConversationMessage {
+  role: ChatRole;
+  content: string;
+  created_at?: string;
+  meta?: Partial<BackendFinalData> & { cancelled?: boolean };
+}
+
+export interface BackendChatMemory {
+  summary: string;
+  summarized_count: number;
+  updated_at?: string;
+}
+
 /** Chat document shape returned by the backend API. */
 export interface ChatApiResponse {
   id: string;
+  user_id: string;
+  doc_ids: string[];
+  documents: PdfDocumentRecord[];
+  conversation?: BackendConversationMessage[];
+  memory?: BackendChatMemory | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ChatDocumentsApiResponse {
+  chat_id: string;
   user_id: string;
   doc_ids: string[];
   documents: PdfDocumentRecord[];

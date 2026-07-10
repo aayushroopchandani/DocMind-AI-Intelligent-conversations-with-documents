@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -19,9 +20,14 @@ from pydantic import BaseModel, Field
 from apis.deps import current_user_id, verify_internal_secret
 from config.settings import settings
 from db import crud
+from db.models.chat import ChatMemory, ConversationMessage
 from db.models.document import PdfDocument
 from services.cloudinary_setup import delete_pdf, upload_pdf
 from scripts.chat_with_pdf import ask_question
+from scripts.intention_pipelines.summarization_pipeline.level1_pdf_with_outline import (
+    stream_level1_pdf_with_outline,
+)
+from scripts.intent_detection import IntentDocument, IntentType, detect_intent
 from scripts.ingest import delete_pdf_embeddings, ingest_pdf
 from utils.pydantic_schemas import ChatRequest, IngestData, StreamAskRequest
 
@@ -35,6 +41,31 @@ class ChatResponse(BaseModel):
     user_id: str
     doc_ids: list[str] = Field(default_factory=list)
     documents: list[PdfDocument] = Field(default_factory=list)
+    conversation: list[ConversationMessage] = Field(default_factory=list)
+    memory: ChatMemory | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ChatDocumentsResponse(BaseModel):
+    chat_id: str
+    user_id: str
+    doc_ids: list[str] = Field(default_factory=list)
+    documents: list[PdfDocument] = Field(default_factory=list)
+
+
+async def _get_chat_documents(
+    *, chat_id: str, user_id: str
+) -> tuple[dict, list[dict]]:
+    chat = await crud.get_chat(chat_id=chat_id, user_id=user_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    documents = await crud.get_documents_by_ids(
+        document_ids=chat.get("doc_ids", []),
+        user_id=user_id,
+    )
+    return chat, documents
 
 
 async def _to_chat_response(chat: dict) -> ChatResponse:
@@ -48,6 +79,13 @@ async def _to_chat_response(chat: dict) -> ChatResponse:
         user_id=chat["user_id"],
         doc_ids=doc_ids,
         documents=[PdfDocument(**document) for document in documents],
+        conversation=[
+            ConversationMessage(**message)
+            for message in chat.get("conversation", [])
+        ],
+        memory=ChatMemory(**chat["memory"]) if chat.get("memory") else None,
+        created_at=chat.get("created_at"),
+        updated_at=chat.get("updated_at"),
     )
 
 
@@ -73,6 +111,21 @@ async def get_chat(
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     return await _to_chat_response(chat)
+
+
+@router.get("/{chat_id}/documents", response_model=ChatDocumentsResponse)
+async def get_doc_for_chat(
+    chat_id: str,
+    user_id: str = Depends(current_user_id),
+    _: None = Depends(verify_internal_secret),
+) -> ChatDocumentsResponse:
+    chat, documents = await _get_chat_documents(chat_id=chat_id, user_id=user_id)
+    return ChatDocumentsResponse(
+        chat_id=chat["id"],
+        user_id=chat["user_id"],
+        doc_ids=chat.get("doc_ids", []),
+        documents=[PdfDocument(**document) for document in documents],
+    )
 
 
 @router.post("/{chat_id}/pdfs", response_model=ChatResponse)
@@ -253,20 +306,69 @@ async def stream_chat(
 
     memory = chat.get("memory") or {}
     conversation = chat.get("conversation", [])
-    request = ChatRequest(
-        user_id=user_id,
-        chat_id=chat_id,
-        question=body.question.strip(),
-        document_ids=document_ids,
-        document_names={doc_id: attached[doc_id] for doc_id in document_ids},
-        summary=memory.get("summary", ""),
-        recent_messages=[
-            {"role": m.get("role"), "content": m.get("content", "")}
-            for m in conversation[-settings.memory_recent_messages :]
-        ],
-    )
-
     async def event_stream():
+        question = body.question.strip()
+        document_names = {doc_id: attached[doc_id] for doc_id in document_ids}
+        yield _sse({"type": "status", "message": "Detecting intent"})
+
+        intent = await detect_intent(
+            question=question,
+            selected_doc_ids=document_ids,
+            documents=[
+                IntentDocument(document_id=doc_id, document_name=document_names[doc_id])
+                for doc_id in document_ids
+            ],
+        )
+        yield _sse(
+            {
+                "type": "intent",
+                "intent": intent.intent.value,
+                "doc_ids": intent.doc_ids,
+                "target": intent.target,
+                "quiz_scope": intent.quiz_scope.value if intent.quiz_scope else None,
+                "question_formats": [
+                    question_format.value
+                    for question_format in intent.question_formats
+                ],
+                "difficulty": intent.difficulty.value if intent.difficulty else None,
+                "number_of_questions": intent.number_of_questions,
+                "confidence": intent.confidence,
+            }
+        )
+
+        if intent.intent == IntentType.QUIZ:
+            yield _sse({"type": "token", "content": "Quiz intent detected"})
+            yield _sse({"type": "done"})
+            return
+
+        if intent.intent == IntentType.SUMMARIZATION:
+            summary_doc_ids = [
+                doc_id for doc_id in (intent.doc_ids or document_ids)
+                if doc_id in document_names
+            ] or document_ids
+
+            async for event in stream_level1_pdf_with_outline(
+                target=intent.target,
+                doc_ids=summary_doc_ids,
+                user_id=user_id,
+                document_names=document_names,
+                question=question,
+            ):
+                yield _sse(event)
+            return
+
+        request = ChatRequest(
+            user_id=user_id,
+            chat_id=chat_id,
+            question=question,
+            document_ids=document_ids,
+            document_names=document_names,
+            summary=memory.get("summary", ""),
+            recent_messages=[
+                {"role": m.get("role"), "content": m.get("content", "")}
+                for m in conversation[-settings.memory_recent_messages :]
+            ],
+        )
         async for event in ask_question(request):
             yield _sse(event)
 
@@ -331,3 +433,26 @@ async def delete_chat_pdf(
         )
 
     return await _to_chat_response(updated)
+
+
+@router.get("/{user_id}/chats", response_model=list[ChatResponse])
+async def get_all_chats(
+    user_id: str,
+    authenticated_user_id: str = Depends(current_user_id),
+    _: None = Depends(verify_internal_secret),
+) -> list[ChatResponse]:
+    if user_id != authenticated_user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot access chats for another user",
+        )
+
+    try:
+        chats = await crud.get_user_chats(user_id=user_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    if chats is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return [await _to_chat_response(chat) for chat in chats]

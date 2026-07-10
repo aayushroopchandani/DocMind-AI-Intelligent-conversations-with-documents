@@ -65,6 +65,11 @@ def exact_matching(
     nodes: list[dict],
 ) -> dict:
     normalized_target = normalize_title(target)
+    if not normalized_target:
+        return {
+            "status": "not_found",
+            "node_id": None,
+        }
 
     matches = [
         node

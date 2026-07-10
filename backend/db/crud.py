@@ -32,7 +32,7 @@ def _serialize(doc: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if _id is not None:
         doc["id"] = str(_id)
 
-    for field in ("doc_ids", "chat_ids"):
+    for field in ("doc_ids", "chat_ids", "chats"):
         if isinstance(doc.get(field), list):
             doc[field] = [str(value) for value in doc[field]]
 
@@ -115,6 +115,31 @@ async def get_chat(*, chat_id: str, user_id: str) -> Optional[dict[str, Any]]:
     db = get_db()
     doc = await db.chats.find_one({"_id": oid, "user_id": user_id})
     return _serialize(doc)
+
+
+async def get_user_chats(*, user_id: str) -> Optional[list[dict[str, Any]]]:
+    """Populate a user's chat id references into chat documents."""
+    db = get_db()
+    user = await db.users.find_one({"clerk_user_id": user_id}, {"chats": 1})
+    if user is None:
+        return None
+
+    chat_ids = user.get("chats", [])
+    object_ids = [_as_object_id(chat_id) for chat_id in chat_ids]
+    valid_ids = [oid for oid in object_ids if oid is not None]
+    if not valid_ids:
+        return []
+
+    chats = await db.chats.find(
+        {"_id": {"$in": valid_ids}, "user_id": user_id}
+    ).to_list(length=len(valid_ids))
+    by_id = {chat["_id"]: chat for chat in chats}
+
+    return [
+        _serialize(by_id[oid])  # type: ignore[misc]
+        for oid in valid_ids
+        if oid in by_id
+    ]
 
 
 async def get_documents_by_ids(

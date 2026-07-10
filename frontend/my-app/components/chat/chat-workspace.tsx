@@ -2,15 +2,34 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { FileText, MessagesSquare, Loader2, AlertCircle } from "lucide-react";
-import type { ChatMessage, Citation, PdfDoc } from "@/lib/types";
-import { createChat, uploadPdfs, deletePdf, streamChat } from "@/lib/api";
+import { useRouter } from "next/navigation";
+import { AlertCircle, FileText, Loader2, MessagesSquare } from "lucide-react";
+import type {
+  ChatApiResponse,
+  ChatMessage,
+  Citation,
+  PdfDoc,
+  PdfDocumentRecord,
+} from "@/lib/types";
+import {
+  createChat,
+  deletePdf,
+  documentFileUrl,
+  getChatDocuments,
+  getChats,
+  mapPersistedConversation,
+  streamChat,
+  uploadPdfs,
+} from "@/lib/api";
 import { validatePdfFiles } from "@/lib/pdf";
 import { ChatHeader } from "@/components/chat/chat-header";
+import { ChatHistorySidebar } from "@/components/chat/chat-history-sidebar";
 import { PdfUploader } from "@/components/chat/pdf-uploader";
 import { PdfTabs } from "@/components/chat/pdf-tabs";
 import { PdfControls } from "@/components/chat/pdf-controls";
 import { ChatPanel } from "@/components/chat/chat-panel";
+import { ResizableSplit } from "@/components/ui/resizable";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 const PdfViewer = dynamic(
@@ -31,7 +50,19 @@ const MIN_SCALE = 0.5;
 const MAX_SCALE = 3;
 const SCALE_STEP = 0.2;
 
+const SIDEBAR_COLLAPSED_WIDTH = 56;
+const SIDEBAR_DEFAULT_WIDTH = 292;
+const SIDEBAR_MIN_WIDTH = 232;
+const SIDEBAR_MAX_WIDTH = 360;
+const SIDEBAR_COLLAPSE_AT = 160;
+
+const PDF_DEFAULT_WIDTH = 720;
+const PDF_MIN_WIDTH = 380;
+const PDF_MAX_WIDTH = 980;
+const CHAT_MIN_WIDTH = 360;
+
 type MobileTab = "pdf" | "chat";
+type SelectChatOptions = { replace?: boolean; skipNavigation?: boolean };
 
 function createId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -40,15 +71,76 @@ function createId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function documentDbId(document: PdfDocumentRecord): string | undefined {
+  return document._id ?? document.id;
+}
+
+function revokeBlobUrls(docs: PdfDoc[]) {
+  for (const doc of docs) {
+    if (doc.url.startsWith("blob:")) URL.revokeObjectURL(doc.url);
+  }
+}
+
+function pdfDocFromRecord(chatId: string, document: PdfDocumentRecord): PdfDoc {
+  const dbId = documentDbId(document);
+
+  return {
+    id: dbId ?? document.document_id,
+    name: document.filename || "document.pdf",
+    sizeBytes: document.bytes ?? 0,
+    url: documentFileUrl(chatId, document),
+    status: document.ingestion_status === "ready" ? "ready" : "uploading",
+    numPages: document.pages ?? 0,
+    lastPage: 1,
+    scale: 1,
+    fitWidth: true,
+    documentDbId: dbId,
+    documentId: document.document_id,
+    cloudinaryPages: document.pages ?? undefined,
+  };
+}
+
+function chatTimestamp(chat: ChatApiResponse): number {
+  const value = chat.updated_at ?? chat.created_at;
+  return value ? new Date(value).getTime() : 0;
+}
+
+function sortRecentChats(chats: ChatApiResponse[]): ChatApiResponse[] {
+  return [...chats].sort((a, b) => chatTimestamp(b) - chatTimestamp(a));
+}
+
+function PdfLoadingSkeleton() {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex gap-2 border-b border-border bg-card/50 p-2">
+        <Skeleton className="h-11 w-44 rounded-xl" />
+        <Skeleton className="h-11 w-40 rounded-xl" />
+      </div>
+      <div className="flex items-center justify-between border-b border-border bg-card/60 px-3 py-2">
+        <Skeleton className="h-8 w-36" />
+        <Skeleton className="h-8 w-28" />
+      </div>
+      <div className="grid flex-1 place-items-center bg-background/40 p-6">
+        <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl shadow-black/20">
+          <Skeleton className="mb-4 h-5 w-2/3" />
+          <Skeleton className="mb-2 h-3 w-full" />
+          <Skeleton className="mb-2 h-3 w-11/12" />
+          <Skeleton className="mb-6 h-3 w-4/5" />
+          <Skeleton className="h-72 w-full rounded-lg" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
- * Client-side orchestrator for the multi-PDF Chat workspace.
+ * Client-side orchestrator for the multi-PDF chat workspace.
  *
- * Owns: the set of uploaded PDFs (each with its own viewer state), the active
- * tab, the backing chat id, and the conversation. PDFs render instantly from a
- * local blob URL and are uploaded to Cloudinary (persisted per-chat in MongoDB)
- * in the background.
+ * Owns saved chat history, current PDF tabs, active chat id, conversation
+ * state, and the resizable desktop shell.
  */
-export function ChatWorkspace() {
+export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
+  const router = useRouter();
   const [docs, setDocs] = useState<PdfDoc[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -56,32 +148,81 @@ export function ChatWorkspace() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isResponding, setIsResponding] = useState(false);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
   const [mobileTab, setMobileTab] = useState<MobileTab>("pdf");
+
+  const [savedChats, setSavedChats] = useState<ChatApiResponse[]>([]);
+  const [chatsLoading, setChatsLoading] = useState(true);
+  const [chatsError, setChatsError] = useState<string | null>(null);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [loadingChatId, setLoadingChatId] = useState<string | null>(null);
+
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const [pdfWidth, setPdfWidth] = useState(PDF_DEFAULT_WIDTH);
 
   // Lazily-created chat id + a guard so concurrent uploads share one creation.
   const chatIdRef = useRef<string | null>(null);
   const chatCreationRef = useRef<Promise<string> | null>(null);
   // Abort controller for the in-flight answer stream (stop button / unmount).
   const abortRef = useRef<AbortController | null>(null);
-  // Mirror of docs for use inside async callbacks without stale closures.
+  // Mirrors for async callbacks without stale closures.
   const docsRef = useRef<PdfDoc[]>([]);
+  const selectionRef = useRef(0);
+  const initialChatLoadedRef = useRef(false);
+
   useEffect(() => {
     docsRef.current = docs;
   }, [docs]);
 
+  const loadChats = useCallback(async () => {
+    setChatsLoading(true);
+    setChatsError(null);
+
+    try {
+      const chats = await getChats();
+      setSavedChats(sortRecentChats(chats));
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Could not load saved chats.";
+      if (/user not found/i.test(message)) {
+        setSavedChats([]);
+      } else {
+        setChatsError(message);
+      }
+    } finally {
+      setChatsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void loadChats();
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [loadChats]);
+
   // Revoke every object URL + abort any in-flight stream on unmount.
   useEffect(() => {
     return () => {
-      for (const d of docsRef.current) URL.revokeObjectURL(d.url);
+      revokeBlobUrls(docsRef.current);
       abortRef.current?.abort();
     };
   }, []);
 
   const activeDoc = docs.find((d) => d.id === activeId) ?? null;
   const remaining = MAX_FILES - docs.length;
+  const sidebarCollapsed = sidebarWidth <= SIDEBAR_COLLAPSE_AT;
 
   const patchDoc = useCallback((id: string, patch: Partial<PdfDoc>) => {
     setDocs((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+  }, []);
+
+  const upsertSavedChat = useCallback((chat: ChatApiResponse) => {
+    setSavedChats((prev) => {
+      const rest = prev.filter((item) => item.id !== chat.id);
+      return sortRecentChats([chat, ...rest]);
+    });
   }, []);
 
   const ensureChat = useCallback(async (): Promise<string> => {
@@ -91,6 +232,9 @@ export function ChatWorkspace() {
     const promise = createChat()
       .then((chat) => {
         chatIdRef.current = chat.id;
+        setActiveChatId(chat.id);
+        upsertSavedChat(chat);
+        router.replace(`/chat/${encodeURIComponent(chat.id)}`);
         return chat.id;
       })
       .finally(() => {
@@ -98,20 +242,119 @@ export function ChatWorkspace() {
       });
     chatCreationRef.current = promise;
     return promise;
-  }, []);
+  }, [router, upsertSavedChat]);
+
+  const handleNewChat = useCallback(() => {
+    abortRef.current?.abort();
+    revokeBlobUrls(docsRef.current);
+    selectionRef.current += 1;
+    chatIdRef.current = null;
+    chatCreationRef.current = null;
+    setDocs([]);
+    setActiveId(null);
+    setMessages([]);
+    setInput("");
+    setUploadError(null);
+    setActiveChatId(null);
+    setLoadingChatId(null);
+    setIsLoadingConversation(false);
+    setIsResponding(false);
+    setMobileTab("pdf");
+    router.push("/chat");
+  }, [router]);
+
+  const handleSelectChat = useCallback(
+    async (chat: ChatApiResponse, options: SelectChatOptions = {}) => {
+      if (loadingChatId === chat.id) return;
+
+      abortRef.current?.abort();
+      revokeBlobUrls(docsRef.current);
+      selectionRef.current += 1;
+      const selection = selectionRef.current;
+
+      chatIdRef.current = chat.id;
+      chatCreationRef.current = null;
+      setActiveChatId(chat.id);
+      setLoadingChatId(chat.id);
+      setIsLoadingConversation(true);
+      setIsResponding(false);
+      setUploadError(null);
+      setInput("");
+      setDocs([]);
+      setActiveId(null);
+      setMessages([]);
+      setMobileTab("pdf");
+
+      if (!options.skipNavigation) {
+        const href = `/chat/${encodeURIComponent(chat.id)}`;
+        if (options.replace) router.replace(href);
+        else router.push(href);
+      }
+
+      try {
+        const response = await getChatDocuments(chat.id);
+        if (selectionRef.current !== selection) return;
+
+        const hydratedDocs = response.documents.map((document) =>
+          pdfDocFromRecord(chat.id, document),
+        );
+        setDocs(hydratedDocs);
+        setActiveId(hydratedDocs[0]?.id ?? null);
+        setMessages(mapPersistedConversation(chat.conversation ?? []));
+        upsertSavedChat({ ...chat, documents: response.documents });
+      } catch (err) {
+        if (selectionRef.current !== selection) return;
+        setUploadError(
+          err instanceof Error ? err.message : "Could not load this chat.",
+        );
+        setMessages(mapPersistedConversation(chat.conversation ?? []));
+      } finally {
+        if (selectionRef.current === selection) {
+          setLoadingChatId(null);
+          setIsLoadingConversation(false);
+        }
+      }
+    },
+    [loadingChatId, router, upsertSavedChat],
+  );
+
+  useEffect(() => {
+    if (!initialChatId || chatsLoading || initialChatLoadedRef.current) return;
+
+    const chat = savedChats.find((item) => item.id === initialChatId);
+    const timeout = window.setTimeout(() => {
+      initialChatLoadedRef.current = true;
+
+      if (chat) {
+        void handleSelectChat(chat, { replace: true, skipNavigation: true });
+      } else {
+        setUploadError("This chat link is no longer available.");
+        router.replace("/chat");
+      }
+    }, 0);
+
+    return () => window.clearTimeout(timeout);
+  }, [chatsLoading, handleSelectChat, initialChatId, router, savedChats]);
 
   const uploadBatch = useCallback(
     async (newDocs: PdfDoc[], files: File[]) => {
       // Attachment ids that already existed before this batch.
       const prevIds = new Set(
-        docsRef.current.filter((d) => d.documentDbId).map((d) => d.documentDbId),
+        docsRef.current
+          .map((d) => d.documentDbId)
+          .filter((id): id is string => Boolean(id)),
       );
 
       try {
         const chatId = await ensureChat();
         const chat = await uploadPdfs(chatId, files);
+        setActiveChatId(chat.id);
+        upsertSavedChat(chat);
 
-        const newPdfs = chat.documents.filter((p) => !prevIds.has(p._id));
+        const newPdfs = chat.documents.filter((p) => {
+          const id = documentDbId(p);
+          return id ? !prevIds.has(id) : true;
+        });
         const remainingPdfs = [...newPdfs];
 
         for (const doc of newDocs) {
@@ -126,10 +369,8 @@ export function ChatWorkspace() {
           if (match) {
             patchDoc(doc.id, {
               status: "ready",
-              documentDbId: match._id,
+              documentDbId: documentDbId(match),
               documentId: match.document_id,
-              publicId: match.public_id,
-              secureUrl: match.secure_url,
               cloudinaryPages: match.pages ?? undefined,
             });
           } else {
@@ -148,7 +389,7 @@ export function ChatWorkspace() {
         }
       }
     },
-    [ensureChat, patchDoc],
+    [ensureChat, patchDoc, upsertSavedChat],
   );
 
   /** Turn validated files into local docs, then upload them in the background. */
@@ -234,11 +475,12 @@ export function ChatWorkspace() {
         const rest = docsRef.current.filter((d) => d.id !== id);
         return rest[0]?.id ?? null;
       });
-      URL.revokeObjectURL(doc.url);
+      if (doc.url.startsWith("blob:")) URL.revokeObjectURL(doc.url);
 
       if (doc.documentDbId && chatIdRef.current) {
         try {
-          await deletePdf(chatIdRef.current, doc.documentDbId);
+          const updatedChat = await deletePdf(chatIdRef.current, doc.documentDbId);
+          upsertSavedChat(updatedChat);
         } catch (err) {
           setUploadError(
             err instanceof Error ? err.message : "Failed to delete from storage.",
@@ -246,7 +488,7 @@ export function ChatWorkspace() {
         }
       }
     },
-    [messages.length],
+    [messages.length, upsertSavedChat],
   );
 
   const goToPage = useCallback(
@@ -302,7 +544,7 @@ export function ChatWorkspace() {
   const runSend = useCallback(
     async (text: string) => {
       const question = text.trim();
-      if (!question || isResponding) return;
+      if (!question || isResponding || isLoadingConversation) return;
 
       const readyDocs = docsRef.current.filter(
         (d) => d.status === "ready" && d.documentId,
@@ -338,6 +580,42 @@ export function ChatWorkspace() {
           {
             onStatus: (message) =>
               patchMessage(assistantId, (m) => ({ ...m, statusText: message })),
+            onIntent: (intent) => {
+              if (intent.intent === "quiz") {
+                console.log("Quiz intent detected", {
+                  intent: intent.intent,
+                  doc_ids: intent.doc_ids,
+                  target: intent.target,
+                  quiz_scope: intent.quiz_scope,
+                  question_formats: intent.question_formats,
+                  difficulty: intent.difficulty,
+                  number_of_questions: intent.number_of_questions,
+                  confidence: intent.confidence,
+                });
+
+                patchMessage(assistantId, (m) => ({
+                  ...m,
+                  statusText: "Preparing quiz",
+                }));
+                return;
+              }
+
+              if (intent.intent !== "summarization") return;
+
+              const selectedNames = readyDocs
+                .filter((doc) => intent.doc_ids.includes(doc.documentId ?? ""))
+                .map((doc) => doc.name);
+              const target = intent.target ? ` for "${intent.target}"` : "";
+              const scope =
+                selectedNames.length > 0
+                  ? ` across ${selectedNames.join(", ")}`
+                  : "";
+
+              patchMessage(assistantId, (m) => ({
+                ...m,
+                statusText: `Preparing summary${target}${scope}`,
+              }));
+            },
             onToken: (token) =>
               patchMessage(assistantId, (m) => ({
                 ...m,
@@ -390,20 +668,126 @@ export function ChatWorkspace() {
       } finally {
         abortRef.current = null;
         setIsResponding(false);
+        void loadChats();
       }
     },
-    [isResponding, patchMessage],
+    [isLoadingConversation, isResponding, loadChats, patchMessage],
   );
 
   const hasDocs = docs.length > 0;
   const canChat = docs.some((d) => d.status === "ready");
 
+  const renderPdfWorkspace = () => (
+    <section className="flex h-full min-h-0 flex-col border-border md:border-r">
+      {isLoadingConversation ? (
+        <PdfLoadingSkeleton />
+      ) : hasDocs ? (
+        <>
+          <PdfTabs
+            docs={docs}
+            activeId={activeId}
+            maxFiles={MAX_FILES}
+            onSelect={setActiveId}
+            onRemove={handleRemove}
+            onAddFiles={handleTabsFiles}
+          />
+
+          {remaining <= 0 ? (
+            <p className="border-b border-border bg-card/30 px-3 py-1.5 text-center text-xs text-muted-foreground">
+              You can upload a maximum of {MAX_FILES} PDFs in one chat.
+            </p>
+          ) : null}
+
+          {uploadError ? (
+            <div
+              role="alert"
+              className="flex items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+            >
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+              <span>{uploadError}</span>
+            </div>
+          ) : null}
+
+          {activeDoc ? (
+            <>
+              <PdfControls
+                currentPage={activeDoc.lastPage}
+                numPages={activeDoc.numPages}
+                onPrev={() => goToPage(activeDoc.lastPage - 1)}
+                onNext={() => goToPage(activeDoc.lastPage + 1)}
+                onZoomIn={() =>
+                  patchDoc(activeDoc.id, {
+                    fitWidth: false,
+                    scale: Math.min(MAX_SCALE, activeDoc.scale + SCALE_STEP),
+                  })
+                }
+                onZoomOut={() =>
+                  patchDoc(activeDoc.id, {
+                    fitWidth: false,
+                    scale: Math.max(MIN_SCALE, activeDoc.scale - SCALE_STEP),
+                  })
+                }
+                onFitWidth={() => patchDoc(activeDoc.id, { fitWidth: true })}
+                fitWidth={activeDoc.fitWidth}
+              />
+              <div className="min-h-0 flex-1">
+                <PdfViewer
+                  key={activeDoc.id}
+                  fileUrl={activeDoc.url}
+                  pageNumber={activeDoc.lastPage}
+                  scale={activeDoc.scale}
+                  fitWidth={activeDoc.fitWidth}
+                  onLoadSuccess={(pages) =>
+                    patchDoc(activeDoc.id, {
+                      numPages: pages,
+                      lastPage: Math.min(activeDoc.lastPage, pages),
+                    })
+                  }
+                />
+              </div>
+            </>
+          ) : (
+            <div className="grid flex-1 place-items-center text-sm text-muted-foreground">
+              Select a document tab to view it.
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="grid flex-1 place-items-center py-10">
+          <PdfUploader
+            onFilesSelected={handleEmptyStateFiles}
+            remaining={remaining}
+            maxFiles={MAX_FILES}
+            externalError={uploadError}
+          />
+        </div>
+      )}
+    </section>
+  );
+
+  const renderChatPanel = () => (
+    <section className="h-full min-h-0">
+      <ChatPanel
+        messages={messages}
+        isResponding={isResponding}
+        input={input}
+        onInputChange={setInput}
+        onSend={() => runSend(input)}
+        onSelectSuggested={(q) => runSend(q)}
+        onCitationClick={handleCitationClick}
+        onStop={handleStop}
+        hasDocument={canChat}
+        isLoadingConversation={isLoadingConversation}
+      />
+    </section>
+  );
+
   return (
-    <div className="flex h-dvh flex-col overflow-hidden">
+    <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col overflow-hidden">
       <ChatHeader documentCount={docs.length} maxFiles={MAX_FILES} />
 
       {/* Mobile panel switcher */}
-      <div className="flex items-center gap-1 border-b border-border bg-card/40 p-1.5 md:hidden">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border bg-card/40 p-1.5 md:hidden">
         {(
           [
             { id: "pdf", label: "Documents", icon: FileText },
@@ -428,116 +812,67 @@ export function ChatWorkspace() {
         ))}
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
-        {/* PDF workspace */}
-        <section
+      <div className="hidden min-h-0 flex-1 overflow-hidden md:block">
+        <ResizableSplit
+          size={sidebarWidth}
+          onSizeChange={setSidebarWidth}
+          minSize={SIDEBAR_MIN_WIDTH}
+          maxSize={SIDEBAR_MAX_WIDTH}
+          minSecondSize={760}
+          collapsedSize={SIDEBAR_COLLAPSED_WIDTH}
+          collapseAt={SIDEBAR_COLLAPSE_AT}
+          handleLabel="Resize chat history sidebar"
+          first={
+            <ChatHistorySidebar
+              chats={savedChats}
+              activeChatId={activeChatId}
+              collapsed={sidebarCollapsed}
+              loading={chatsLoading}
+              loadingChatId={loadingChatId}
+              error={chatsError}
+              onSelectChat={handleSelectChat}
+              onNewChat={handleNewChat}
+              onToggleCollapsed={() =>
+                setSidebarWidth((width) =>
+                  width <= SIDEBAR_COLLAPSE_AT
+                    ? SIDEBAR_DEFAULT_WIDTH
+                    : SIDEBAR_COLLAPSED_WIDTH,
+                )
+              }
+            />
+          }
+          second={
+            <ResizableSplit
+              size={pdfWidth}
+              onSizeChange={setPdfWidth}
+              minSize={PDF_MIN_WIDTH}
+              maxSize={PDF_MAX_WIDTH}
+              minSecondSize={CHAT_MIN_WIDTH}
+              handleLabel="Resize PDF viewer"
+              first={renderPdfWorkspace()}
+              second={renderChatPanel()}
+            />
+          }
+        />
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-hidden md:hidden">
+        <div
           className={cn(
-            "flex min-h-0 flex-col border-border md:border-r",
-            mobileTab === "pdf" ? "flex" : "hidden md:flex",
+            "h-full min-h-0",
+            mobileTab === "pdf" ? "block" : "hidden",
           )}
         >
-          {hasDocs ? (
-            <>
-              <PdfTabs
-                docs={docs}
-                activeId={activeId}
-                maxFiles={MAX_FILES}
-                onSelect={setActiveId}
-                onRemove={handleRemove}
-                onAddFiles={handleTabsFiles}
-              />
-
-              {remaining <= 0 ? (
-                <p className="border-b border-border bg-card/30 px-3 py-1.5 text-center text-xs text-muted-foreground">
-                  You can upload a maximum of {MAX_FILES} PDFs in one chat.
-                </p>
-              ) : null}
-
-              {uploadError ? (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-                >
-                  <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-                  <span>{uploadError}</span>
-                </div>
-              ) : null}
-
-              {activeDoc ? (
-                <>
-                  <PdfControls
-                    currentPage={activeDoc.lastPage}
-                    numPages={activeDoc.numPages}
-                    onPrev={() => goToPage(activeDoc.lastPage - 1)}
-                    onNext={() => goToPage(activeDoc.lastPage + 1)}
-                    onZoomIn={() =>
-                      patchDoc(activeDoc.id, {
-                        fitWidth: false,
-                        scale: Math.min(MAX_SCALE, activeDoc.scale + SCALE_STEP),
-                      })
-                    }
-                    onZoomOut={() =>
-                      patchDoc(activeDoc.id, {
-                        fitWidth: false,
-                        scale: Math.max(MIN_SCALE, activeDoc.scale - SCALE_STEP),
-                      })
-                    }
-                    onFitWidth={() => patchDoc(activeDoc.id, { fitWidth: true })}
-                    fitWidth={activeDoc.fitWidth}
-                  />
-                  <div className="min-h-0 flex-1">
-                    <PdfViewer
-                      key={activeDoc.id}
-                      fileUrl={activeDoc.url}
-                      pageNumber={activeDoc.lastPage}
-                      scale={activeDoc.scale}
-                      fitWidth={activeDoc.fitWidth}
-                      onLoadSuccess={(pages) =>
-                        patchDoc(activeDoc.id, {
-                          numPages: pages,
-                          lastPage: Math.min(activeDoc.lastPage, pages),
-                        })
-                      }
-                    />
-                  </div>
-                </>
-              ) : (
-                <div className="grid flex-1 place-items-center text-sm text-muted-foreground">
-                  Select a document tab to view it.
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="grid flex-1 place-items-center py-10">
-              <PdfUploader
-                onFilesSelected={handleEmptyStateFiles}
-                remaining={remaining}
-                maxFiles={MAX_FILES}
-                externalError={uploadError}
-              />
-            </div>
-          )}
-        </section>
-
-        {/* Chat panel */}
-        <section
+          {renderPdfWorkspace()}
+        </div>
+        <div
           className={cn(
-            "min-h-0",
-            mobileTab === "chat" ? "block" : "hidden md:block",
+            "h-full min-h-0",
+            mobileTab === "chat" ? "block" : "hidden",
           )}
         >
-          <ChatPanel
-            messages={messages}
-            isResponding={isResponding}
-            input={input}
-            onInputChange={setInput}
-            onSend={() => runSend(input)}
-            onSelectSuggested={(q) => runSend(q)}
-            onCitationClick={handleCitationClick}
-            onStop={handleStop}
-            hasDocument={canChat}
-          />
-        </section>
+          {renderChatPanel()}
+        </div>
       </div>
     </div>
   );

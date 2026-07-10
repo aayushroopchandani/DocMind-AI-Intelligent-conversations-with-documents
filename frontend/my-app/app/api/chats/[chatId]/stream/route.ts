@@ -1,5 +1,10 @@
 import { auth } from "@clerk/nextjs/server";
-import { backendHeaders, backendUrl, passthrough } from "@/lib/server/backend";
+import {
+  backendHeaders,
+  backendUrl,
+  decodeChatId,
+  passthrough,
+} from "@/lib/server/backend";
 
 type Ctx = { params: Promise<{ chatId: string }> };
 
@@ -16,11 +21,15 @@ export async function POST(req: Request, { params }: Ctx) {
   }
 
   const { chatId } = await params;
+  const backendChatId = decodeChatId(chatId);
+  if (!backendChatId) {
+    return Response.json({ error: "Invalid chat id" }, { status: 400 });
+  }
 
   const headers = backendHeaders(userId);
   headers.set("content-type", "application/json");
 
-  const res = await fetch(backendUrl(`/chats/${chatId}/stream`), {
+  const res = await fetch(backendUrl(`/chats/${backendChatId}/stream`), {
     method: "POST",
     headers,
     body: await req.text(),

@@ -3,7 +3,7 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from utils.pydantic_schemas import IngestData
 from utils.embeddings import get_chunk_embedding
-from scripts.intention_pipelines.summarization_pipeline.level1_pdf_with_outline import build_tree_from_pdf, find_node_id
+from scripts.intention_pipelines.summarization_pipeline.utils.getting_outline_for_l1 import build_tree_from_pdf, find_node_id
 import tempfile
 import requests
 import sys
