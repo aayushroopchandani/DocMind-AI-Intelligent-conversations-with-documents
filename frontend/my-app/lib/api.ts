@@ -208,8 +208,14 @@ export async function streamChat(
           target: event.target,
           quiz_scope: event.quiz_scope ?? null,
           question_formats: event.question_formats ?? [],
+          question_formats_mention_status:
+            event.question_formats_mention_status ?? null,
           difficulty: event.difficulty ?? null,
           number_of_questions: event.number_of_questions ?? null,
+          number_of_questions_mention_status:
+            event.number_of_questions_mention_status ?? null,
+          mode: event.mode ?? null,
+          mode_mention_status: event.mode_mention_status ?? null,
           confidence: event.confidence,
         });
         break;

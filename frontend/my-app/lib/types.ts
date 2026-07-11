@@ -101,14 +101,22 @@ export type QuizQuestionFormat =
 
 export type QuizDifficulty = "easy" | "medium" | "hard";
 
+export type MentionStatus = "mentioned" | "not_mentioned";
+
+export type QuizMode = "practice" | "rapid_fire" | "exam_mode";
+
 export interface BackendIntentData {
   intent: "general_qa" | "summarization" | "quiz";
   doc_ids: string[];
   target?: string | null;
   quiz_scope?: QuizScope | null;
   question_formats?: QuizQuestionFormat[];
+  question_formats_mention_status?: MentionStatus | null;
   difficulty?: QuizDifficulty | null;
   number_of_questions?: number | null;
+  number_of_questions_mention_status?: MentionStatus | null;
+  mode?: QuizMode | null;
+  mode_mention_status?: MentionStatus | null;
   confidence: number;
 }
 

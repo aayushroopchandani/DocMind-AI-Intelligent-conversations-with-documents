@@ -14,7 +14,9 @@ from .schemas import (
     IntentDocument,
     IntentType,
     LLMIntentResponse,
+    MentionStatus,
     QuizDifficulty,
+    QuizMode,
     QuizQuestionFormat,
     QuizScope,
 )
@@ -158,6 +160,26 @@ MATCH_FORMAT_PATTERN = re.compile(
     r"\b(?:match\s+the\s+following|matching|match\s+columns?)\b",
     re.IGNORECASE,
 )
+MODE_PATTERNS = (
+    (
+        QuizMode.RAPID_FIRE,
+        re.compile(r"\b(?:rapid[-\s]?fire|quick[-\s]?fire)\b", re.IGNORECASE),
+    ),
+    (
+        QuizMode.EXAM_MODE,
+        re.compile(
+            r"\b(?:exam\s+mode|exam[-\s]?style|mock\s+exam|test\s+mode)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        QuizMode.PRACTICE,
+        re.compile(
+            r"\b(?:practice\s+mode|practice\s+(?:quiz|questions?|mcqs?))\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
 DIFFICULTY_PATTERNS = (
     (
         QuizDifficulty.EASY,
@@ -175,7 +197,11 @@ DIFFICULTY_PATTERNS = (
 QUIZ_TARGET_CLEANUP_PATTERNS = (
     re.compile(r"\bwith\s+.+$", re.IGNORECASE),
     re.compile(r"\b(?:as|using)\s+.+(?:format|questions?|mcqs?)$", re.IGNORECASE),
-    re.compile(r"\b(?:easy|simple|basic|beginner|medium|moderate|intermediate|hard|difficult|advanced|challenging)\s*$", re.IGNORECASE),
+    re.compile(
+        r"\b(?:easy|simple|basic|beginner|medium|moderate|intermediate|hard|"
+        r"difficult|advanced|challenging)\s*$",
+        re.IGNORECASE,
+    ),
 )
 TARGET_PATTERNS = (
     (re.compile(r"\b(node[_-]?\d+)\b", re.IGNORECASE), False),
@@ -253,6 +279,26 @@ def _normalize_number_of_questions(value: int | None) -> int:
     return min(20, max(1, value))
 
 
+def _normalize_mention_status(
+    status: MentionStatus | str | None,
+    *,
+    fallback_mentioned: bool,
+) -> MentionStatus:
+    if isinstance(status, MentionStatus):
+        return status
+    if isinstance(status, str):
+        normalized = status.lower().strip().replace(" ", "_")
+        try:
+            return MentionStatus(normalized)
+        except ValueError:
+            pass
+    return (
+        MentionStatus.MENTIONED
+        if fallback_mentioned
+        else MentionStatus.NOT_MENTIONED
+    )
+
+
 def _normalize_question_formats(
     formats: list[QuizQuestionFormat] | None,
 ) -> list[QuizQuestionFormat]:
@@ -282,6 +328,18 @@ def _normalize_difficulty(
         return QuizDifficulty(difficulty)
     except ValueError:
         return QuizDifficulty.MEDIUM
+
+
+def _normalize_mode(mode: QuizMode | str | None) -> QuizMode | None:
+    if isinstance(mode, QuizMode):
+        return mode
+    if mode is None:
+        return None
+    normalized = mode.lower().strip().replace(" ", "_").replace("-", "_")
+    try:
+        return QuizMode(normalized)
+    except ValueError:
+        return None
 
 
 def _clean_quiz_topic_target(value: str | None) -> str | None:
@@ -351,15 +409,15 @@ def _extract_quiz_scope(question: str) -> tuple[QuizScope, str | None]:
     return QuizScope.CONTEXT_BASED, None
 
 
-def _extract_question_count(question: str) -> int:
+def _extract_question_count_info(question: str) -> tuple[int, MentionStatus]:
     for pattern in COUNT_PATTERNS:
         match = pattern.search(question)
         if not match:
             continue
         parsed = _parse_number(match.group(1))
         if parsed is not None:
-            return _normalize_number_of_questions(parsed)
-    return 5
+            return _normalize_number_of_questions(parsed), MentionStatus.MENTIONED
+    return 5, MentionStatus.NOT_MENTIONED
 
 
 def _extract_difficulty(question: str) -> QuizDifficulty:
@@ -369,7 +427,9 @@ def _extract_difficulty(question: str) -> QuizDifficulty:
     return QuizDifficulty.MEDIUM
 
 
-def _extract_question_formats(question: str) -> list[QuizQuestionFormat]:
+def _extract_question_formats_info(
+    question: str,
+) -> tuple[list[QuizQuestionFormat], MentionStatus]:
     multiple_correct = bool(MULTIPLE_CORRECT_FORMAT_PATTERN.search(question))
     single_correct = bool(EXPLICIT_SINGLE_FORMAT_PATTERN.search(question)) or (
         bool(BARE_MCQ_PATTERN.search(question)) and not multiple_correct
@@ -395,7 +455,17 @@ def _extract_question_formats(question: str) -> list[QuizQuestionFormat]:
         )
         if detected
     ]
-    return _normalize_question_formats(formats)
+    return _normalize_question_formats(formats), _normalize_mention_status(
+        None,
+        fallback_mentioned=bool(formats),
+    )
+
+
+def _extract_quiz_mode_info(question: str) -> tuple[QuizMode | None, MentionStatus]:
+    for mode, pattern in MODE_PATTERNS:
+        if pattern.search(question):
+            return mode, MentionStatus.MENTIONED
+    return None, MentionStatus.NOT_MENTIONED
 
 
 def _quiz_intent(
@@ -404,8 +474,12 @@ def _quiz_intent(
     scope: QuizScope,
     target: str | None,
     question_formats: list[QuizQuestionFormat] | None,
+    question_formats_mention_status: MentionStatus | None,
     difficulty: QuizDifficulty | None,
     number_of_questions: int | None,
+    number_of_questions_mention_status: MentionStatus | None,
+    mode: QuizMode | None,
+    mode_mention_status: MentionStatus | None,
     confidence: float,
 ) -> DetectedIntent:
     if scope == QuizScope.STRUCTURE_BASED and not _looks_like_structure_target(target):
@@ -419,6 +493,13 @@ def _quiz_intent(
             scope = QuizScope.CONTEXT_BASED
     else:
         normalized_target = None
+    normalized_mode = _normalize_mode(mode)
+    mode_status = _normalize_mention_status(
+        mode_mention_status,
+        fallback_mentioned=normalized_mode is not None,
+    )
+    if normalized_mode is None:
+        mode_status = MentionStatus.NOT_MENTIONED
 
     return DetectedIntent(
         intent=IntentType.QUIZ,
@@ -426,8 +507,18 @@ def _quiz_intent(
         target=normalized_target,
         quiz_scope=scope,
         question_formats=_normalize_question_formats(question_formats),
+        question_formats_mention_status=_normalize_mention_status(
+            question_formats_mention_status,
+            fallback_mentioned=bool(question_formats),
+        ),
         difficulty=_normalize_difficulty(difficulty),
         number_of_questions=_normalize_number_of_questions(number_of_questions),
+        number_of_questions_mention_status=_normalize_mention_status(
+            number_of_questions_mention_status,
+            fallback_mentioned=number_of_questions is not None,
+        ),
+        mode=normalized_mode,
+        mode_mention_status=mode_status,
         confidence=confidence,
     )
 
@@ -439,13 +530,25 @@ def _heuristic_quiz_detect(
         return None
 
     scope, target = _extract_quiz_scope(question)
+    question_formats, question_formats_mention_status = _extract_question_formats_info(
+        question
+    )
+    number_of_questions, number_of_questions_mention_status = (
+        _extract_question_count_info(question)
+    )
+    mode, mode_mention_status = _extract_quiz_mode_info(question)
+
     return _quiz_intent(
         selected_doc_ids=selected_doc_ids,
         scope=scope,
         target=target,
-        question_formats=_extract_question_formats(question),
+        question_formats=question_formats,
+        question_formats_mention_status=question_formats_mention_status,
         difficulty=_extract_difficulty(question),
-        number_of_questions=_extract_question_count(question),
+        number_of_questions=number_of_questions,
+        number_of_questions_mention_status=number_of_questions_mention_status,
+        mode=mode,
+        mode_mention_status=mode_mention_status,
         confidence=0.85,
     )
 
@@ -520,8 +623,10 @@ async def _llm_detect(
                     "- quiz_scope=structure_based only for exact document structures such as Chapter 5, Section 3.2, or the introduction.\n"
                     "- If the user says something like 'the section supervised learning', treat it as topic_based with target 'supervised learning'.\n"
                     "- quiz_scope=whole_document for the whole PDF, entire document, all documents, or covering everything.\n"
-                    "- question_formats may contain multiple values. If omitted, use single_correct_mcq.\n"
-                    "- difficulty defaults to medium. number_of_questions defaults to 5 and must be 1 to 20."
+                    "- question_formats may contain multiple values. If omitted, use single_correct_mcq and question_formats_mention_status=not_mentioned.\n"
+                    "- number_of_questions defaults to 5 and must be 1 to 20. If the user explicitly says 5 questions, number_of_questions_mention_status=mentioned.\n"
+                    "- difficulty defaults to medium.\n"
+                    "- mode is practice, rapid_fire, exam_mode, or null. Use mode_mention_status=mentioned only when the user explicitly asks for a mode; otherwise use mode=null and mode_mention_status=not_mentioned."
                 )
             ),
             HumanMessage(
@@ -535,13 +640,27 @@ async def _llm_detect(
     )
     if result.intent == IntentType.QUIZ:
         inferred_scope, inferred_target = _extract_quiz_scope(question)
+        inferred_formats, inferred_formats_status = _extract_question_formats_info(
+            question
+        )
+        inferred_count, inferred_count_status = _extract_question_count_info(question)
+        inferred_mode, inferred_mode_status = _extract_quiz_mode_info(question)
+
         return _quiz_intent(
             selected_doc_ids=_normalize_doc_ids(result.doc_ids, selected_doc_ids),
             scope=result.quiz_scope or inferred_scope,
             target=result.target or inferred_target,
-            question_formats=result.question_formats,
+            question_formats=result.question_formats or inferred_formats,
+            question_formats_mention_status=(
+                result.question_formats_mention_status or inferred_formats_status
+            ),
             difficulty=result.difficulty,
-            number_of_questions=result.number_of_questions,
+            number_of_questions=result.number_of_questions or inferred_count,
+            number_of_questions_mention_status=(
+                result.number_of_questions_mention_status or inferred_count_status
+            ),
+            mode=result.mode or inferred_mode,
+            mode_mention_status=result.mode_mention_status or inferred_mode_status,
             confidence=result.confidence,
         )
 

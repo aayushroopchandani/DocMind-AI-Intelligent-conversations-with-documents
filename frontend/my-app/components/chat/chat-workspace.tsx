@@ -588,8 +588,14 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
                   target: intent.target,
                   quiz_scope: intent.quiz_scope,
                   question_formats: intent.question_formats,
+                  question_formats_mention_status:
+                    intent.question_formats_mention_status,
                   difficulty: intent.difficulty,
                   number_of_questions: intent.number_of_questions,
+                  number_of_questions_mention_status:
+                    intent.number_of_questions_mention_status,
+                  mode: intent.mode,
+                  mode_mention_status: intent.mode_mention_status,
                   confidence: intent.confidence,
                 });
 

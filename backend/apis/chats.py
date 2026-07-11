@@ -330,8 +330,24 @@ async def stream_chat(
                     question_format.value
                     for question_format in intent.question_formats
                 ],
+                "question_formats_mention_status": (
+                    intent.question_formats_mention_status.value
+                    if intent.question_formats_mention_status
+                    else None
+                ),
                 "difficulty": intent.difficulty.value if intent.difficulty else None,
                 "number_of_questions": intent.number_of_questions,
+                "number_of_questions_mention_status": (
+                    intent.number_of_questions_mention_status.value
+                    if intent.number_of_questions_mention_status
+                    else None
+                ),
+                "mode": intent.mode.value if intent.mode else None,
+                "mode_mention_status": (
+                    intent.mode_mention_status.value
+                    if intent.mode_mention_status
+                    else None
+                ),
                 "confidence": intent.confidence,
             }
         )

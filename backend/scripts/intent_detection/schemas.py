@@ -32,6 +32,17 @@ class QuizDifficulty(str, Enum):
     HARD = "hard"
 
 
+class MentionStatus(str, Enum):
+    MENTIONED = "mentioned"
+    NOT_MENTIONED = "not_mentioned"
+
+
+class QuizMode(str, Enum):
+    PRACTICE = "practice"
+    RAPID_FIRE = "rapid_fire"
+    EXAM_MODE = "exam_mode"
+
+
 class IntentDocument(BaseModel):
     document_id: str
     document_name: str
@@ -43,8 +54,12 @@ class DetectedIntent(BaseModel):
     target: str | None = None
     quiz_scope: QuizScope | None = None
     question_formats: list[QuizQuestionFormat] = Field(default_factory=list)
+    question_formats_mention_status: MentionStatus | None = None
     difficulty: QuizDifficulty | None = None
     number_of_questions: int | None = Field(default=None, ge=1, le=20)
+    number_of_questions_mention_status: MentionStatus | None = None
+    mode: QuizMode | None = None
+    mode_mention_status: MentionStatus | None = None
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
@@ -79,6 +94,13 @@ class LLMIntentResponse(BaseModel):
         default_factory=list,
         description="Quiz question formats requested by the user. Empty means use single_correct_mcq.",
     )
+    question_formats_mention_status: MentionStatus | None = Field(
+        default=None,
+        description=(
+            "mentioned when the user explicitly asks for a quiz question format; "
+            "not_mentioned when the format is only the default."
+        ),
+    )
     difficulty: QuizDifficulty | None = Field(
         default=None,
         description="Quiz difficulty. Null means use medium.",
@@ -86,5 +108,23 @@ class LLMIntentResponse(BaseModel):
     number_of_questions: int | None = Field(
         default=None,
         description="Requested quiz question count. Values are normalized to 1 to 20. Null means use 5.",
+    )
+    number_of_questions_mention_status: MentionStatus | None = Field(
+        default=None,
+        description=(
+            "mentioned when the user explicitly asks for a number of questions; "
+            "not_mentioned when the count is only the default."
+        ),
+    )
+    mode: QuizMode | None = Field(
+        default=None,
+        description="Quiz mode requested by the user: practice, rapid_fire, exam_mode, or null.",
+    )
+    mode_mention_status: MentionStatus | None = Field(
+        default=None,
+        description=(
+            "mentioned when the user explicitly requests practice, rapid fire, "
+            "or exam mode; otherwise not_mentioned."
+        ),
     )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
