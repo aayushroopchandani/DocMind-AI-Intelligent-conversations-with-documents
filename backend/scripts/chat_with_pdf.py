@@ -263,6 +263,48 @@ def _build_contributions(citations: list[Citation]) -> list[DocumentContribution
     return list(by_doc.values())
 
 
+def _build_node_metadata(
+    documents: list,
+    citations: list[Citation] | None = None,
+) -> list[dict[str, object]]:
+    """
+    Compact retrieval scope for future context-based flows.
+
+    `format_documents_with_citations` assigns C1, C2, ... in the same order as
+    the final context chunks, so used citation ids can filter this list down to
+    the nodes that actually supported the assistant answer.
+    """
+    used_citation_ids = {citation.citation_id for citation in citations or []}
+    by_doc: dict[str, list[str]] = {}
+    seen: dict[str, set[str]] = {}
+
+    for index, document in enumerate(documents, start=1):
+        citation_id = f"C{index}"
+        if used_citation_ids and citation_id not in used_citation_ids:
+            continue
+
+        metadata = getattr(document, "metadata", None) or {}
+        doc_id = metadata.get("doc_id")
+        node_id = metadata.get("node_id")
+        if not doc_id or not node_id:
+            continue
+
+        doc_key = str(doc_id)
+        node_key = str(node_id)
+        node_ids = by_doc.setdefault(doc_key, [])
+        node_seen = seen.setdefault(doc_key, set())
+        if node_key in node_seen:
+            continue
+        node_seen.add(node_key)
+        node_ids.append(node_key)
+
+    return [
+        {"doc_id": doc_id, "node_ids": node_ids}
+        for doc_id, node_ids in by_doc.items()
+        if node_ids
+    ]
+
+
 async def build_structured_response(
     question: str,
     answer: str,
@@ -332,12 +374,15 @@ async def save_chat_messages(
     request: ChatRequest,
     answer: str,
     response: Optional[DocMindResponse],
+    node_metadata: list[dict[str, object]] | None = None,
     cancelled: bool = False,
 ) -> None:
     """Persist the exchange once (never per token) and refresh the summary."""
     meta: dict = {"cancelled": cancelled}
     if response is not None:
         meta.update(response.model_dump(exclude={"answer"}))
+    if node_metadata is not None:
+        meta["node_metadata"] = node_metadata
 
     chat = await crud.append_conversation_messages(
         chat_id=request.chat_id,
@@ -362,6 +407,7 @@ async def ask_question(request: ChatRequest) -> AsyncGenerator[dict, None]:
     answer_parts: list[str] = []
     used_citations: list[Citation] = []
     response: Optional[DocMindResponse] = None
+    context_documents: list = []
 
     try:
         # 1) Conversation context (summary + recent turns) for follow-ups.
@@ -375,6 +421,7 @@ async def ask_question(request: ChatRequest) -> AsyncGenerator[dict, None]:
         yield {"type": "status", "message": "Searching the selected documents"}
         retriever = create_multi_query_retriever(request.user_id, request.document_ids)
         documents = await retrieve_documents(retriever, retrieval_query)
+        context_documents = documents
 
         if not documents:
             answer = NOT_FOUND_PHRASE
@@ -385,7 +432,7 @@ async def ask_question(request: ChatRequest) -> AsyncGenerator[dict, None]:
                 status=AnswerStatus.NOT_FOUND,
             )
             yield {"type": "final", "data": response.model_dump()}
-            await save_chat_messages(request, answer, response)
+            await save_chat_messages(request, answer, response, node_metadata=[])
             yield {"type": "done"}
             return
 
@@ -425,6 +472,7 @@ async def ask_question(request: ChatRequest) -> AsyncGenerator[dict, None]:
 
         # 5) Enrich: citations actually used + structured metadata.
         used_citations = _extract_used_citations(answer, citations)
+        node_metadata = _build_node_metadata(documents, used_citations or None)
         yield {
             "type": "citations",
             "citations": [c.model_dump() for c in used_citations],
@@ -434,7 +482,12 @@ async def ask_question(request: ChatRequest) -> AsyncGenerator[dict, None]:
         yield {"type": "final", "data": response.model_dump()}
 
         # 6) Persist the exchange and refresh the rolling summary.
-        await save_chat_messages(request, answer, response)
+        await save_chat_messages(
+            request,
+            answer,
+            response,
+            node_metadata=node_metadata,
+        )
         yield {"type": "done"}
 
     except asyncio.CancelledError:
@@ -443,7 +496,15 @@ async def ask_question(request: ChatRequest) -> AsyncGenerator[dict, None]:
         if partial:
             try:
                 await asyncio.shield(
-                    save_chat_messages(request, partial, None, cancelled=True)
+                    save_chat_messages(
+                        request,
+                        partial,
+                        None,
+                        node_metadata=_build_node_metadata(context_documents)
+                        if context_documents
+                        else None,
+                        cancelled=True,
+                    )
                 )
             except Exception:
                 logger.exception("Failed to persist partial answer after disconnect")
