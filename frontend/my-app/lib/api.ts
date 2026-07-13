@@ -2,6 +2,7 @@ import type {
   BackendCitation,
   BackendConversationMessage,
   BackendFinalData,
+  BackendGeneratedQuiz,
   BackendIntentData,
   ChatApiResponse,
   ChatDocumentsApiResponse,
@@ -165,6 +166,7 @@ export interface StreamChatCallbacks {
   onToken: (text: string) => void;
   onCitations: (citations: Citation[]) => void;
   onFinal: (structured: StructuredAnswer, citations: Citation[]) => void;
+  onQuiz?: (quiz: BackendGeneratedQuiz) => void;
   onError: (message: string) => void;
 }
 
@@ -230,6 +232,9 @@ export async function streamChat(
           mapStructured(event.data),
           (event.data.citations ?? []).map(mapCitation),
         );
+        break;
+      case "quiz":
+        callbacks.onQuiz?.(event.data);
         break;
       case "error":
         callbacks.onError(event.message);

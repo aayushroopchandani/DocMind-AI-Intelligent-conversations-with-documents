@@ -8,6 +8,7 @@ left untouched for now.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -22,18 +23,28 @@ from config.settings import settings
 from db import crud
 from db.models.chat import ChatMemory, ConversationMessage
 from db.models.document import PdfDocument
+from db.models.generated_quiz import GeneratedQuizCreate
 from services.cloudinary_setup import delete_pdf, upload_pdf
 from scripts.chat_with_pdf import ask_question
+from scripts.intention_pipelines.quiz_pipeline.topic_based import (
+    generate_topic_based_quiz,
+)
 from scripts.intention_pipelines.summarization_pipeline.level1_pdf_with_outline import (
     stream_level1_pdf_with_outline,
 )
-from scripts.intent_detection import IntentDocument, IntentType, detect_intent
+from scripts.intent_detection import (
+    IntentDocument,
+    IntentType,
+    QuizScope,
+    detect_intent,
+)
 from scripts.ingest import delete_pdf_embeddings, ingest_pdf
 from utils.pydantic_schemas import ChatRequest, IngestData, StreamAskRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chats", tags=["chats"])
+_background_quiz_tasks: set[asyncio.Task] = set()
 
 
 class ChatResponse(BaseModel):
@@ -262,6 +273,22 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+def _schedule_generated_quiz_save(quiz: GeneratedQuizCreate) -> None:
+    """Store generated quizzes without delaying the SSE response."""
+    task = asyncio.create_task(crud.create_generated_quiz(quiz=quiz))
+    _background_quiz_tasks.add(task)
+
+    def _log_result(done_task: asyncio.Task) -> None:
+        _background_quiz_tasks.discard(done_task)
+        try:
+            saved = done_task.result()
+            logger.info("Generated quiz stored: %s", saved.get("id"))
+        except Exception:
+            logger.exception("Generated quiz persistence failed")
+
+    task.add_done_callback(_log_result)
+
+
 @router.post("/{chat_id}/stream")
 async def stream_chat(
     chat_id: str,
@@ -353,7 +380,71 @@ async def stream_chat(
         )
 
         if intent.intent == IntentType.QUIZ:
-            yield _sse({"type": "token", "content": "Quiz intent detected"})
+            if intent.quiz_scope == QuizScope.TOPIC_BASED:
+                quiz_doc_ids = [
+                    doc_id for doc_id in (intent.doc_ids or document_ids)
+                    if doc_id in document_names
+                ] or document_ids
+
+                yield _sse({"type": "status", "message": "Generating topic quiz"})
+                try:
+                    quiz = await generate_topic_based_quiz(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        doc_ids=quiz_doc_ids,
+                        target=intent.target or "",
+                        document_names=document_names,
+                        query=question,
+                        number_of_questions=intent.number_of_questions,
+                        difficulty=(
+                            intent.difficulty.value
+                            if intent.difficulty
+                            else None
+                        ),
+                        question_formats=[
+                            question_format.value
+                            for question_format in intent.question_formats
+                        ],
+                        mode=intent.mode.value if intent.mode else None,
+                    )
+                except ValueError as exc:
+                    yield _sse({"type": "error", "message": str(exc)})
+                    yield _sse({"type": "done"})
+                    return
+                except Exception:
+                    logger.exception("Topic-based quiz pipeline failed")
+                    yield _sse(
+                        {
+                            "type": "error",
+                            "message": "Unable to generate the quiz. Please try again.",
+                        }
+                    )
+                    yield _sse({"type": "done"})
+                    return
+
+                _schedule_generated_quiz_save(quiz)
+                yield _sse({"type": "quiz", "data": quiz.model_dump(mode="json")})
+                yield _sse(
+                    {
+                        "type": "token",
+                        "content": (
+                            "Quiz generated. Check the browser console for the "
+                            "quiz_question object."
+                        ),
+                    }
+                )
+                yield _sse({"type": "done"})
+                return
+
+            yield _sse(
+                {
+                    "type": "token",
+                    "content": (
+                        "Quiz intent detected. This quiz scope is not "
+                        "implemented yet."
+                    ),
+                }
+            )
             yield _sse({"type": "done"})
             return
 

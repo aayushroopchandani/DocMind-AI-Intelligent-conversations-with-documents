@@ -635,6 +635,9 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
                 structured,
                 citations: citations.length > 0 ? citations : m.citations,
               })),
+            onQuiz: (quizQuestion) => {
+              console.log("Generated quiz_question object", quizQuestion);
+            },
             onError: (message) =>
               patchMessage(assistantId, (m) => ({
                 ...m,

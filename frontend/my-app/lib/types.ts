@@ -105,6 +105,36 @@ export type MentionStatus = "mentioned" | "not_mentioned";
 
 export type QuizMode = "practice" | "rapid_fire" | "exam_mode";
 
+export interface BackendQuizCitation {
+  document_id: string;
+  document_name: string;
+  page_number?: number | null;
+  chunk_id?: string | null;
+  excerpt?: string | null;
+}
+
+export type BackendGeneratedQuizQuestion = {
+  id: string;
+  type: QuizQuestionFormat;
+  short_explanation?: string;
+  citations?: BackendQuizCitation[];
+  [key: string]: unknown;
+};
+
+export interface BackendGeneratedQuiz {
+  user_id: string;
+  chat_id: string;
+  doc_ids: string[];
+  quiz_scope: QuizScope;
+  target?: string | null;
+  mode?: QuizMode | null;
+  number_of_questions: number;
+  difficulty: QuizDifficulty;
+  question_formats: QuizQuestionFormat[];
+  status: "draft" | "generating" | "generated" | "failed";
+  questions: BackendGeneratedQuizQuestion[];
+}
+
 export interface BackendIntentData {
   intent: "general_qa" | "summarization" | "quiz";
   doc_ids: string[];
@@ -126,6 +156,7 @@ export type StreamEvent =
   | { type: "token"; content: string }
   | { type: "citations"; citations: BackendCitation[] }
   | { type: "final"; data: BackendFinalData }
+  | { type: "quiz"; data: BackendGeneratedQuiz }
   | { type: "error"; message: string }
   | { type: "done" };
 

@@ -96,6 +96,10 @@
   --accent-violet: oklch(0.72 0.21 315);
   --accent-amber: oklch(0.82 0.16 75);
   --accent-cyan: oklch(0.83 0.13 205);
+
+  /* Quiz semantic states (correct / incorrect). */
+  --quiz-correct: oklch(0.72 0.17 155);
+  --quiz-incorrect: oklch(0.64 0.2 25);
 }
 
 @layer base {
@@ -292,7 +296,132 @@
   }
 }
 
+@layer utilities {
+  /* ---------------------------------------------------------------- */
+  /* Quiz — practice mode                                             */
+  /* ---------------------------------------------------------------- */
+
+  /* Question card swap: fades + lifts the incoming question into place. */
+  @keyframes quiz-question-in {
+    from {
+      opacity: 0;
+      transform: translateY(14px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  .animate-quiz-in {
+    animation: quiz-question-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Staggered reveal for answer options — driven by a --i index var. */
+  @keyframes quiz-option-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  .animate-option-in {
+    animation: quiz-option-in 0.36s ease-out both;
+    animation-delay: calc(var(--i, 0) * 55ms + 90ms);
+  }
+
+  /* Correct answer: a single confident pop. */
+  @keyframes quiz-pop {
+    0% {
+      transform: scale(1);
+    }
+    45% {
+      transform: scale(1.035);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+  .animate-quiz-pop {
+    animation: quiz-pop 0.34s ease-out;
+  }
+
+  /* Wrong answer: a short horizontal shake. */
+  @keyframes quiz-shake {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-6px);
+    }
+    40% {
+      transform: translateX(5px);
+    }
+    60% {
+      transform: translateX(-3px);
+    }
+    80% {
+      transform: translateX(2px);
+    }
+  }
+  .animate-quiz-shake {
+    animation: quiz-shake 0.4s ease-in-out;
+  }
+
+  /* Explanation panel slides down after an answer is checked. */
+  @keyframes quiz-explanation-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+      clip-path: inset(0 0 100% 0);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+      clip-path: inset(0 0 0 0);
+    }
+  }
+  .animate-explanation-in {
+    animation: quiz-explanation-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /* Semantic tints for correct / incorrect states (dark-friendly). */
+  .quiz-correct-surface {
+    border-color: color-mix(in oklch, var(--quiz-correct) 45%, var(--border));
+    background: color-mix(in oklch, var(--quiz-correct) 12%, var(--card));
+  }
+  .quiz-incorrect-surface {
+    border-color: color-mix(in oklch, var(--quiz-incorrect) 45%, var(--border));
+    background: color-mix(in oklch, var(--quiz-incorrect) 12%, var(--card));
+  }
+  .text-quiz-correct {
+    color: var(--quiz-correct);
+  }
+  .text-quiz-incorrect {
+    color: var(--quiz-incorrect);
+  }
+
+  /* Aurora ring used on the active option / start card. */
+  .quiz-glow {
+    box-shadow: 0 0 24px -10px color-mix(
+        in oklch,
+        var(--accent-violet) 60%,
+        transparent
+      );
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .animate-quiz-in,
+  .animate-option-in,
+  .animate-quiz-pop,
+  .animate-quiz-shake,
+  .animate-explanation-in {
+    animation: none;
+  }
   .animate-float {
     animation: none;
   }

@@ -16,6 +16,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from config.settings import settings
+from db.models.generated_quiz import GeneratedQuizCreate
 from db.mongodb import get_db
 
 
@@ -393,6 +394,22 @@ async def update_chat_memory(
             }
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# Generated quizzes
+# --------------------------------------------------------------------------- #
+async def create_generated_quiz(*, quiz: GeneratedQuizCreate) -> dict[str, Any]:
+    """Persist one generated quiz document and return the serialized record."""
+    db = get_db()
+    now = _utc_now()
+    document = quiz.model_dump(mode="python")
+    document["created_at"] = now
+    document["updated_at"] = now
+
+    result = await db.generated_quiz.insert_one(document)
+    document["_id"] = result.inserted_id
+    return _serialize(document)  # type: ignore[return-value]
 
 
 async def detach_document_from_chat(
