@@ -116,6 +116,16 @@ export function isAnswerComplete(answer: QuizAnswer): boolean {
   }
 }
 
+/** Grade every answer against its question, preserving order. */
+export function gradeAll(
+  questions: QuizQuestion[],
+  answers: QuizAnswer[],
+): GradedResult[] {
+  return questions.map((question, i) =>
+    gradeQuestion(question, answers[i] ?? emptyAnswer(question)),
+  );
+}
+
 /** A fresh, empty answer for a question — the initial state before interaction. */
 export function emptyAnswer(question: QuizQuestion): QuizAnswer {
   switch (question.type) {

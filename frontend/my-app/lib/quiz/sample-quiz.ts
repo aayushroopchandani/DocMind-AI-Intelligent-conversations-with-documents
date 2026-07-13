@@ -175,3 +175,14 @@ export const SAMPLE_PRACTICE_QUIZ: Quiz = {
     },
   ],
 };
+
+/** Same questions, presented under the rapid-fire and exam experiences. */
+export const SAMPLE_RAPID_FIRE_QUIZ: Quiz = {
+  ...SAMPLE_PRACTICE_QUIZ,
+  mode: "rapid_fire",
+};
+
+export const SAMPLE_EXAM_QUIZ: Quiz = {
+  ...SAMPLE_PRACTICE_QUIZ,
+  mode: "exam_mode",
+};

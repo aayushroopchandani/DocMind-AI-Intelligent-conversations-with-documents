@@ -26,6 +26,9 @@ from db.models.document import PdfDocument
 from db.models.generated_quiz import GeneratedQuizCreate
 from services.cloudinary_setup import delete_pdf, upload_pdf
 from scripts.chat_with_pdf import ask_question
+from scripts.intention_pipelines.quiz_pipeline.context_based import (
+    generate_context_based_quiz,
+)
 from scripts.intention_pipelines.quiz_pipeline.topic_based import (
     generate_topic_based_quiz,
 )
@@ -380,6 +383,63 @@ async def stream_chat(
         )
 
         if intent.intent == IntentType.QUIZ:
+            if intent.quiz_scope == QuizScope.CONTEXT_BASED:
+                quiz_doc_ids = [
+                    doc_id for doc_id in (intent.doc_ids or document_ids)
+                    if doc_id in document_names
+                ] or document_ids
+
+                yield _sse({"type": "status", "message": "Resolving quiz context"})
+                try:
+                    quiz = await generate_context_based_quiz(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        doc_ids=quiz_doc_ids,
+                        document_names=document_names,
+                        question=question,
+                        conversation=conversation,
+                        memory_summary=memory.get("summary", ""),
+                        number_of_questions=intent.number_of_questions,
+                        difficulty=(
+                            intent.difficulty.value
+                            if intent.difficulty
+                            else None
+                        ),
+                        question_formats=[
+                            question_format.value
+                            for question_format in intent.question_formats
+                        ],
+                        mode=intent.mode.value if intent.mode else None,
+                    )
+                except ValueError as exc:
+                    yield _sse({"type": "error", "message": str(exc)})
+                    yield _sse({"type": "done"})
+                    return
+                except Exception:
+                    logger.exception("Context-based quiz pipeline failed")
+                    yield _sse(
+                        {
+                            "type": "error",
+                            "message": "Unable to generate the quiz. Please try again.",
+                        }
+                    )
+                    yield _sse({"type": "done"})
+                    return
+
+                _schedule_generated_quiz_save(quiz)
+                yield _sse({"type": "quiz", "data": quiz.model_dump(mode="json")})
+                yield _sse(
+                    {
+                        "type": "token",
+                        "content": (
+                            "Quiz generated. Check the browser console for the "
+                            "quiz_question object."
+                        ),
+                    }
+                )
+                yield _sse({"type": "done"})
+                return
+
             if intent.quiz_scope == QuizScope.TOPIC_BASED:
                 quiz_doc_ids = [
                     doc_id for doc_id in (intent.doc_ids or document_ids)

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, RotateCcw, Trophy, XCircle } from "lucide-react";
 import type { GradedResult, Quiz } from "@/lib/quiz/types";
+import { useCountUp } from "@/lib/quiz/use-count-up";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -10,36 +10,6 @@ interface QuizResultProps {
   quiz: Quiz;
   results: GradedResult[];
   onRestart: () => void;
-}
-
-function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
-
-/** Ease-out count-up for the score, respecting reduced-motion. */
-function useCountUp(target: number, duration = 900): number {
-  const [value, setValue] = useState(() =>
-    prefersReducedMotion() ? target : 0,
-  );
-  const raf = useRef<number>(0);
-
-  useEffect(() => {
-    if (prefersReducedMotion()) return;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const t = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - t, 3);
-      setValue(Math.round(eased * target));
-      if (t < 1) raf.current = requestAnimationFrame(tick);
-    };
-    raf.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf.current);
-  }, [target, duration]);
-
-  return value;
 }
 
 export function QuizResult({ quiz, results, onRestart }: QuizResultProps) {

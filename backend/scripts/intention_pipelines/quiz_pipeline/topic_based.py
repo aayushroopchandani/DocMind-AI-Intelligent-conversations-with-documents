@@ -16,6 +16,7 @@ from db.models.generated_quiz import (
     QuizDifficulty,
     QuizMode,
     QuizQuestionFormat,
+    QuizScope,
 )
 from scripts.chat_with_pdf import (
     create_multi_query_retriever,
@@ -271,12 +272,58 @@ async def generate_topic_based_quiz(
         document_names=request.document_names,
         max_context_tokens=settings.retrieval_max_context_tokens,
     )
-    if not context or not rag_citations:
+    return await generate_quiz_from_context(
+        user_id=request.user_id,
+        chat_id=request.chat_id,
+        doc_ids=request.doc_ids,
+        quiz_scope="topic_based",
+        target=request.target,
+        query=request.query,
+        context=context,
+        allowed_citations=[
+            _to_quiz_citation(citation) for citation in rag_citations
+        ],
+        mode=request.mode,
+        number_of_questions=request.number_of_questions,
+        difficulty=request.difficulty,
+        question_formats=request.question_formats,
+    )
+
+
+async def generate_quiz_from_context(
+    *,
+    user_id: str,
+    chat_id: str,
+    doc_ids: list[str],
+    quiz_scope: QuizScope,
+    target: str,
+    context: str,
+    allowed_citations: list[QuizCitation],
+    query: str = "",
+    number_of_questions: int | None = None,
+    difficulty: QuizDifficulty | str | None = None,
+    question_formats: Sequence[QuizQuestionFormat | str] | None = None,
+    mode: QuizMode | str | None = None,
+) -> GeneratedQuizCreate:
+    """Generate a quiz from an already selected, citation-ready context block."""
+    cleaned_target = target.strip() or "the referenced context"
+    if not context.strip() or not allowed_citations:
         raise ValueError(
-            f'Could not prepare quiz context for topic "{request.target}".'
+            f'Could not prepare quiz context for topic "{cleaned_target}".'
         )
 
-    allowed_citations = [_to_quiz_citation(citation) for citation in rag_citations]
+    request = TopicBasedQuizRequest(
+        user_id=user_id,
+        chat_id=chat_id,
+        doc_ids=doc_ids,
+        target=cleaned_target,
+        query=query.strip(),
+        number_of_questions=number_of_questions or 5,
+        difficulty=_normalize_difficulty(difficulty),
+        question_formats=_normalize_question_formats(question_formats),
+        mode=_normalize_mode(mode),
+    )
+
     llm_response: TopicQuizLLMResponse = await _get_topic_quiz_llm().ainvoke(
         [
             SystemMessage(content=_system_prompt()),
@@ -302,7 +349,7 @@ async def generate_topic_based_quiz(
         user_id=request.user_id,
         chat_id=request.chat_id,
         doc_ids=request.doc_ids,
-        quiz_scope="topic_based",
+        quiz_scope=quiz_scope,
         target=request.target,
         mode=request.mode,
         number_of_questions=request.number_of_questions,

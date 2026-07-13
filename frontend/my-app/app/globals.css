@@ -412,15 +412,117 @@
         transparent
       );
   }
+
+  /* ---------------------------------------------------------------- */
+  /* Quiz — rapid-fire mode                                           */
+  /* ---------------------------------------------------------------- */
+
+  /* Timer pulse in the final seconds. */
+  @keyframes rf-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.08);
+    }
+  }
+  .animate-rf-pulse {
+    animation: rf-pulse 0.7s ease-in-out infinite;
+  }
+
+  /* The active question card; sits above a static stack for depth. */
+  .rf-card {
+    transition:
+      transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.32s ease;
+  }
+  /* Resolved state just before the next card arrives. */
+  .rf-card--locked {
+    transform: scale(0.975) rotate(-0.6deg);
+  }
+
+  /* Decorative stacked cards behind the active one. */
+  .rf-stack-card {
+    position: absolute;
+    inset: 0;
+    border-radius: var(--radius-xl);
+    border: 1px solid var(--border);
+    background: color-mix(in oklch, var(--card) 70%, var(--background));
+  }
+
+  /* Full-card verdict flash on lock-in. */
+  @keyframes rf-flash {
+    0% {
+      opacity: 0;
+    }
+    25% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+  .animate-rf-flash {
+    animation: rf-flash 0.85s ease-out both;
+  }
+
+  /* Floating "+points" that drifts up and fades. */
+  @keyframes rf-float-up {
+    0% {
+      opacity: 0;
+      transform: translateY(6px) scale(0.9);
+    }
+    30% {
+      opacity: 1;
+      transform: translateY(-4px) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(-26px) scale(1);
+    }
+  }
+  .animate-rf-float {
+    animation: rf-float-up 0.9s ease-out both;
+  }
+
+  /* Streak counter bump when it increases. */
+  @keyframes rf-streak-pop {
+    0% {
+      transform: scale(0.7);
+    }
+    60% {
+      transform: scale(1.2);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+  .animate-rf-streak {
+    animation: rf-streak-pop 0.4s ease-out;
+  }
+
+  /* Exam container: disable text selection to discourage copying. */
+  .exam-noselect {
+    user-select: none;
+    -webkit-user-select: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .animate-rf-pulse,
+  .animate-rf-flash,
+  .animate-rf-float,
+  .animate-rf-streak,
   .animate-quiz-in,
   .animate-option-in,
   .animate-quiz-pop,
   .animate-quiz-shake,
   .animate-explanation-in {
     animation: none;
+  }
+  .rf-card {
+    transition: none;
   }
   .animate-float {
     animation: none;
