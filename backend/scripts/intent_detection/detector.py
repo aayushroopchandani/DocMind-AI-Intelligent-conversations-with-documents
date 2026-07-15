@@ -119,6 +119,18 @@ TOPIC_TARGET_PATTERNS = (
     re.compile(r"\b(?:on|about|regarding|over|covering)\s+(.+)$", re.IGNORECASE),
     re.compile(r"\b(?:from|for)\s+(.+)$", re.IGNORECASE),
 )
+CONTEXT_REFERENCE_TARGET_PATTERN = re.compile(
+    r"^(?:"
+    r"(?:(?:both|all)\s+of\s+)?(?:this|that|these|those|it|them)"
+    r"(?:\s+(?:topics?|concepts?|points?|things?|sections?|answers?|"
+    r"explanations?|ones))?"
+    r"|(?:the\s+)?(?:above|previous|last|earlier)"
+    r"(?:\s+(?:topics?|discussion|answer|explanation|messages?|concepts?))?"
+    r"|what\s+we\s+just\s+discussed"
+    r"|we\s+just\s+discussed"
+    r")$",
+    re.IGNORECASE,
+)
 COUNT_PATTERNS = (
     re.compile(
         rf"\b({COUNT_NUMBER_TOKEN_PATTERN})\s*[- ]\s*"
@@ -234,8 +246,12 @@ def _clean_target(value: str | None) -> str | None:
     if not value:
         return None
     target = re.sub(r"\s+", " ", value).strip(" .,:;-\"'")
+    if _looks_like_context_reference_target(target):
+        return None
     target = re.sub(r"^(?:the|this|that)\s+", "", target, flags=re.IGNORECASE)
     if not target:
+        return None
+    if _looks_like_context_reference_target(target):
         return None
     if target.lower() in {
         "this",
@@ -264,6 +280,15 @@ def _clean_target(value: str | None) -> str | None:
     }:
         return None
     return target
+
+
+def _looks_like_context_reference_target(value: str | None) -> bool:
+    if not value:
+        return False
+    normalized = re.sub(r"\s+", " ", value).strip(" .,:;-\"'").lower()
+    if not normalized:
+        return False
+    return bool(CONTEXT_REFERENCE_TARGET_PATTERN.fullmatch(normalized))
 
 
 def _parse_number(value: str) -> int | None:
@@ -350,7 +375,7 @@ def _clean_quiz_topic_target(value: str | None) -> str | None:
     for pattern in QUIZ_TARGET_CLEANUP_PATTERNS:
         target = pattern.sub("", target).strip(" .,:;-\"'")
     target = re.sub(
-        r"^(?:the\s+)?(?:topic|subject|section)\s+(?:of\s+)?",
+        r"^(?:the\s+)?(?:topics?|subjects?|sections?)\s+(?:of\s+)?",
         "",
         target,
         flags=re.IGNORECASE,
@@ -618,7 +643,7 @@ async def _llm_detect(
                     "If the user does not name a specific document, return selected_doc_ids. "
                     "Return target only when the user specifies a chapter, section, topic, heading, or focus area; otherwise null.\n"
                     "Quiz schema rules:\n"
-                    "- quiz_scope=context_based when the user refers to previous conversation context, such as this, it, above, or what we just discussed.\n"
+                    "- quiz_scope=context_based when the user refers to previous conversation context, such as this, it, these, those, above, both of these topics, or what we just discussed.\n"
                     "- quiz_scope=topic_based when the user gives a topic but not an exact document location.\n"
                     "- quiz_scope=structure_based only for exact document structures such as Chapter 5, Section 3.2, or the introduction.\n"
                     "- If the user says something like 'the section supervised learning', treat it as topic_based with target 'supervised learning'.\n"

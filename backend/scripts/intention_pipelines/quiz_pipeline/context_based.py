@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from collections import defaultdict
 from functools import lru_cache
 from math import inf
@@ -46,6 +47,15 @@ USER_ID_FIELD = f"{METADATA_KEY}.user_id"
 DOC_ID_FIELD = f"{METADATA_KEY}.doc_id"
 NODE_ID_FIELD = f"{METADATA_KEY}.node_id"
 PAGE_NUMBER_FIELD = f"{METADATA_KEY}.page_number"
+MULTI_CONTEXT_REFERENCE_PATTERN = re.compile(
+    r"\b(?:both|all)\s+of\s+(?:these|those|them)\b"
+    r"|\b(?:these|those|them|all)\b.{0,40}\b(?:topics?|concepts?|points?)\b",
+    re.IGNORECASE,
+)
+BOTH_CONTEXT_REFERENCE_PATTERN = re.compile(
+    r"\bboth(?:\s+of\s+(?:these|those|them))?\b",
+    re.IGNORECASE,
+)
 
 ResolutionSource = Literal[
     "recent_messages",
@@ -272,7 +282,10 @@ async def _resolve_context_reference(
         logger.exception("Context quiz reference resolution failed")
         return ContextQuizResolution(
             resolved_topic=None,
-            relevant_message_indexes=[entry["index"] for entry in entries],
+            relevant_message_indexes=_fallback_relevant_message_indexes(
+                question,
+                entries,
+            ),
             source="recent_messages",
             confidence=0.25,
             use_node_metadata=True,
@@ -287,12 +300,58 @@ def _selected_entries(
     resolution: ContextQuizResolution,
 ) -> list[dict[str, Any]]:
     by_index = {entry["index"]: entry for entry in entries}
-    selected = [
-        by_index[index]
+    selected_indexes = {
+        index
         for index in resolution.relevant_message_indexes
         if index in by_index
+    }
+    if not selected_indexes:
+        return _latest_assistant_scope(entries)
+
+    expanded_indexes = set(selected_indexes)
+    for position, entry in enumerate(entries):
+        if entry["index"] not in selected_indexes:
+            continue
+        if entry.get("role") != "user":
+            continue
+
+        # User turns usually do not contain retrieval metadata; the answer
+        # immediately after them is where node_metadata/citations live.
+        for neighbor in entries[position + 1 :]:
+            if neighbor.get("role") == "assistant":
+                expanded_indexes.add(neighbor["index"])
+                break
+            if neighbor.get("role") == "user":
+                break
+
+    scoped = [entry for entry in entries if entry["index"] in expanded_indexes]
+    return scoped or _latest_assistant_scope(entries)
+
+
+def _latest_assistant_scope(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for entry in reversed(entries):
+        if entry.get("role") == "assistant":
+            return [entry]
+    return entries[-1:] if entries else []
+
+
+def _fallback_relevant_message_indexes(
+    question: str,
+    entries: list[dict[str, Any]],
+) -> list[int]:
+    assistant_indexes = [
+        entry["index"]
+        for entry in entries
+        if entry.get("role") == "assistant"
     ]
-    return selected or entries
+    if not assistant_indexes:
+        return [entries[-1]["index"]] if entries else []
+
+    if BOTH_CONTEXT_REFERENCE_PATTERN.search(question):
+        return assistant_indexes[-2:]
+    if MULTI_CONTEXT_REFERENCE_PATTERN.search(question):
+        return assistant_indexes[-3:]
+    return assistant_indexes[-1:]
 
 
 def _merge_node_metadata(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -601,8 +660,6 @@ async def generate_context_based_quiz(
 
     documents: list[Document] = []
     node_metadata = _merge_node_metadata(selected)
-    if not node_metadata:
-        node_metadata = _merge_node_metadata(entries)
     if node_metadata:
         documents = await _retrieve_documents_by_node_metadata(
             user_id=user_id,
@@ -612,8 +669,6 @@ async def generate_context_based_quiz(
 
     if not documents:
         citations = _merge_citations(selected)
-        if not citations:
-            citations = _merge_citations(entries)
         if citations:
             documents = await _retrieve_documents_by_citation_pages(
                 user_id=user_id,
