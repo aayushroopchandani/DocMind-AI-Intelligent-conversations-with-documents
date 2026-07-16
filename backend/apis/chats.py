@@ -25,7 +25,7 @@ from db.models.chat import ChatMemory, ConversationMessage
 from db.models.document import PdfDocument
 from db.models.generated_quiz import GeneratedQuizCreate
 from services.cloudinary_setup import delete_pdf, upload_pdf
-from scripts.chat_with_pdf import ask_question
+from scripts.chat_with_pdf import ask_question, save_chat_messages
 from scripts.intention_pipelines.quiz_pipeline.context_based import (
     generate_context_based_quiz,
 )
@@ -47,7 +47,12 @@ from scripts.intent_detection import (
     detect_intent,
 )
 from scripts.ingest import delete_pdf_embeddings, ingest_pdf
-from utils.pydantic_schemas import ChatRequest, IngestData, StreamAskRequest
+from utils.pydantic_schemas import (
+    ChatRequest,
+    DocMindResponse,
+    IngestData,
+    StreamAskRequest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -547,15 +552,70 @@ async def stream_chat(
                 doc_id for doc_id in (intent.doc_ids or document_ids)
                 if doc_id in document_names
             ] or document_ids
-            async for event in stream_level1_pdf_with_outline(
-                target=intent.target,
-                doc_ids=summary_doc_ids,
+            summary_request = ChatRequest(
                 user_id=user_id,
-                document_names=document_names,
+                chat_id=chat_id,
                 question=question,
-                deep_summary=body.deep_summary,
-            ):
-                yield _sse(event)
+                document_ids=summary_doc_ids,
+                document_names=document_names,
+                summary=memory.get("summary", ""),
+                recent_messages=[
+                    {"role": m.get("role"), "content": m.get("content", "")}
+                    for m in conversation[-settings.memory_recent_messages :]
+                ],
+            )
+            answer_parts: list[str] = []
+            summary_response: DocMindResponse | None = None
+            done_event: dict = {"type": "done"}
+
+            try:
+                async for event in stream_level1_pdf_with_outline(
+                    target=intent.target,
+                    doc_ids=summary_doc_ids,
+                    user_id=user_id,
+                    document_names=document_names,
+                    question=question,
+                    deep_summary=body.deep_summary,
+                ):
+                    event_type = event.get("type")
+                    if event_type == "token":
+                        answer_parts.append(str(event.get("content") or ""))
+                    elif event_type == "final" and isinstance(event.get("data"), dict):
+                        summary_response = DocMindResponse(**event["data"])
+                    elif event_type == "done":
+                        done_event = event
+                        continue
+                    yield _sse(event)
+            except asyncio.CancelledError:
+                partial_answer = "".join(answer_parts).strip()
+                if partial_answer:
+                    try:
+                        await asyncio.shield(
+                            save_chat_messages(
+                                summary_request,
+                                partial_answer,
+                                None,
+                                cancelled=True,
+                            )
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to persist partial summary after disconnect"
+                        )
+                raise
+
+            if summary_response is not None:
+                try:
+                    await asyncio.shield(
+                        save_chat_messages(
+                            summary_request,
+                            summary_response.answer,
+                            summary_response,
+                        )
+                    )
+                except Exception:
+                    logger.exception("Failed to persist summary conversation")
+            yield _sse(done_event)
             return
 
         request = ChatRequest(
