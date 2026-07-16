@@ -162,9 +162,29 @@ def _post_process_questions(
     number_of_questions: int,
 ) -> list[GeneratedQuizQuestion]:
     processed: list[GeneratedQuizQuestion] = []
+    canonical_main_topics: dict[str, str] = {}
+    canonical_sub_topics: dict[str, str] = {}
 
     for index, question in enumerate(questions[:number_of_questions], start=1):
         question.id = f"q{index}"
+        main_topic = " ".join(question.topic.main_topic.split())
+        question.topic.main_topic = canonical_main_topics.setdefault(
+            main_topic.casefold(),
+            main_topic,
+        )
+
+        normalized_sub_topics: list[str] = []
+        seen_sub_topics: set[str] = set()
+        for sub_topic in question.topic.sub_topics:
+            cleaned_sub_topic = " ".join(sub_topic.split())
+            key = cleaned_sub_topic.casefold()
+            if not cleaned_sub_topic or key in seen_sub_topics:
+                continue
+            seen_sub_topics.add(key)
+            normalized_sub_topics.append(
+                canonical_sub_topics.setdefault(key, cleaned_sub_topic)
+            )
+        question.topic.sub_topics = normalized_sub_topics
         question.citations = _valid_question_citations(
             question.citations,
             allowed_citations,
@@ -184,7 +204,12 @@ def _system_prompt() -> str:
         "For MCQ answers, the answer text must exactly match the selected option. "
         "For multiple-correct MCQs, include every correct option and no incorrect options. "
         "For fill-in-the-blank, use clear blanks and accepted answer variants. "
-        "For match-the-following, keep left and right ids stable and unambiguous."
+        "For match-the-following, keep left and right ids stable and unambiguous. "
+        "Before writing questions, choose one canonical topic vocabulary for the "
+        "entire quiz. Every question must include topic.main_topic and one or more "
+        "topic.sub_topics. Reuse the exact same spelling and capitalization whenever "
+        "a main topic or subtopic repeats. Never create label variants by adding an "
+        "acronym, abbreviation, alias, or extra qualifier."
     )
 
 
@@ -211,6 +236,12 @@ def _human_prompt(
         "mix them evenly.\n"
         "- Prefer conceptual understanding over copy-paste recall.\n"
         "- Keep explanations short and grounded in the cited context.\n"
+        "- Classify each question with one broad topic.main_topic and one or more "
+        "specific topic.sub_topics.\n"
+        "- Decide the canonical topic and subtopic names across the full quiz before "
+        "generating questions, then copy those names exactly when they repeat. For "
+        "example, use 'Neural Networks' consistently; do not mix it with 'neural "
+        "networks NN' or 'NN'.\n"
         "- Copy citation fields only from the allowed citation sources below.\n\n"
         "Allowed citation sources JSON:\n"
         f"{json.dumps(citation_payload, ensure_ascii=False)}\n\n"

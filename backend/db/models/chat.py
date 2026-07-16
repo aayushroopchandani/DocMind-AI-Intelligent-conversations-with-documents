@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
+
 class ConversationMessage(BaseModel):
+    id: Optional[str] = Field(
+        default=None,
+        description="Stable backend-generated message ID",
+    )
     role: Literal["user", "assistant"] = Field(..., description="Message author role")
     content: str = Field(..., description="Message content")
     created_at: datetime = Field(default_factory=utc_now)

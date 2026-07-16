@@ -54,8 +54,36 @@ class MultipleCorrectScoring(BaseModel):
     allow_partial_credit: bool = False
 
 
+class QuizQuestionTopic(BaseModel):
+    main_topic: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Canonical broad topic tested by this question. Reuse the exact same "
+            "name, spelling, and capitalization for questions on the same topic; "
+            "do not create variants by adding acronyms or aliases."
+        ),
+    )
+    sub_topics: list[str] = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Canonical specific concepts tested by this question. Use concise "
+            "names and reuse their exact spelling and capitalization everywhere "
+            "the same concepts appear in the quiz."
+        ),
+    )
+
+
 class QuizQuestionBase(BaseModel):
     id: str = Field(..., description="Stable question id, e.g. q1")
+    topic: QuizQuestionTopic = Field(
+        ...,
+        description=(
+            "Topic classification used to aggregate question performance in quiz "
+            "results."
+        ),
+    )
     short_explanation: str = ""
     citations: list[QuizCitation] = Field(default_factory=list)
 

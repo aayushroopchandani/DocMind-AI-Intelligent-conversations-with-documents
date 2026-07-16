@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Optional
+from uuid import uuid4
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -547,6 +548,8 @@ async def append_conversation_messages(
 
     now = _utc_now()
     for message in messages:
+        if not message.get("id"):
+            message["id"] = str(uuid4())
         message.setdefault("created_at", now)
 
     db = get_db()
