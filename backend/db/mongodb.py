@@ -57,7 +57,7 @@ def get_db() -> "AsyncIOMotorDatabase":
 
 
 async def ensure_indexes() -> None:
-    """Ensure indexes for user, chat, document, and generated quiz collections."""
+    """Ensure indexes for the application's MongoDB collections."""
     db = get_db()
     await db.users.create_index("email", unique=True)
     await db.users.create_index("clerk_user_id", unique=True)
@@ -90,3 +90,11 @@ async def ensure_indexes() -> None:
     await db.generated_quiz.create_index("status")
     await db.generated_quiz.create_index("created_at")
     await db.generated_quiz.create_index("updated_at")
+    await db.quiz_attempts.create_index("quiz_id")
+    await db.quiz_attempts.create_index("chat_id")
+    await db.quiz_attempts.create_index([("user_id", 1), ("created_at", -1)])
+    await db.quiz_attempts.create_index(
+        [("user_id", 1), ("quiz_id", 1), ("attempt_number", 1)],
+        unique=True,
+    )
+    await db.quiz_attempts.create_index("weak_topics.main_topic")

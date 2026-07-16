@@ -57,7 +57,6 @@ from utils.pydantic_schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chats", tags=["chats"])
-_background_quiz_tasks: set[asyncio.Task] = set()
 _background_summary_index_tasks: set[asyncio.Task] = set()
 
 
@@ -315,20 +314,12 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-def _schedule_generated_quiz_save(quiz: GeneratedQuizCreate) -> None:
-    """Store generated quizzes without delaying the SSE response."""
-    task = asyncio.create_task(crud.create_generated_quiz(quiz=quiz))
-    _background_quiz_tasks.add(task)
-
-    def _log_result(done_task: asyncio.Task) -> None:
-        _background_quiz_tasks.discard(done_task)
-        try:
-            saved = done_task.result()
-            logger.info("Generated quiz stored: %s", saved.get("id"))
-        except Exception:
-            logger.exception("Generated quiz persistence failed")
-
-    task.add_done_callback(_log_result)
+async def _persist_generated_quiz(quiz: GeneratedQuizCreate) -> dict:
+    """Persist a generated quiz and expose its MongoDB id in the SSE payload."""
+    saved = await crud.create_generated_quiz(quiz=quiz)
+    payload = quiz.model_dump(mode="json")
+    payload["id"] = saved["id"]
+    return payload
 
 
 @router.post("/{chat_id}/stream")
@@ -465,8 +456,19 @@ async def stream_chat(
                     yield _sse({"type": "done"})
                     return
 
-                _schedule_generated_quiz_save(quiz)
-                yield _sse({"type": "quiz", "data": quiz.model_dump(mode="json")})
+                try:
+                    quiz_payload = await _persist_generated_quiz(quiz)
+                except Exception:
+                    logger.exception("Generated quiz persistence failed")
+                    yield _sse(
+                        {
+                            "type": "error",
+                            "message": "Unable to store the generated quiz.",
+                        }
+                    )
+                    yield _sse({"type": "done"})
+                    return
+                yield _sse({"type": "quiz", "data": quiz_payload})
                 yield _sse(
                     {
                         "type": "token",
@@ -521,8 +523,19 @@ async def stream_chat(
                     yield _sse({"type": "done"})
                     return
 
-                _schedule_generated_quiz_save(quiz)
-                yield _sse({"type": "quiz", "data": quiz.model_dump(mode="json")})
+                try:
+                    quiz_payload = await _persist_generated_quiz(quiz)
+                except Exception:
+                    logger.exception("Generated quiz persistence failed")
+                    yield _sse(
+                        {
+                            "type": "error",
+                            "message": "Unable to store the generated quiz.",
+                        }
+                    )
+                    yield _sse({"type": "done"})
+                    return
+                yield _sse({"type": "quiz", "data": quiz_payload})
                 yield _sse(
                     {
                         "type": "token",

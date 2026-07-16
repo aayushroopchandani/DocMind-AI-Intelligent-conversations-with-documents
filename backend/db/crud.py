@@ -17,6 +17,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from config.settings import settings
+from db.models.attempt_quiz import QuizAttemptCreate
 from db.models.generated_quiz import GeneratedQuizCreate
 from db.mongodb import get_db
 
@@ -591,6 +592,20 @@ async def update_chat_memory(
 # --------------------------------------------------------------------------- #
 # Generated quizzes
 # --------------------------------------------------------------------------- #
+async def get_generated_quiz(
+    *, quiz_id: str, user_id: str
+) -> Optional[dict[str, Any]]:
+    """Fetch an evaluable generated quiz owned by the authenticated user."""
+    oid = _as_object_id(quiz_id)
+    if oid is None:
+        return None
+    db = get_db()
+    document = await db.generated_quiz.find_one(
+        {"_id": oid, "user_id": user_id, "status": "generated"}
+    )
+    return _serialize(document)
+
+
 async def create_generated_quiz(*, quiz: GeneratedQuizCreate) -> dict[str, Any]:
     """Persist one generated quiz document and return the serialized record."""
     db = get_db()
@@ -602,6 +617,37 @@ async def create_generated_quiz(*, quiz: GeneratedQuizCreate) -> dict[str, Any]:
     result = await db.generated_quiz.insert_one(document)
     document["_id"] = result.inserted_id
     return _serialize(document)  # type: ignore[return-value]
+
+
+# --------------------------------------------------------------------------- #
+# Quiz attempts
+# --------------------------------------------------------------------------- #
+async def create_quiz_attempt(*, attempt: QuizAttemptCreate) -> dict[str, Any]:
+    """Persist an evaluated quiz attempt with a race-safe attempt number."""
+    db = get_db()
+    now = _utc_now()
+    document = attempt.model_dump(mode="python")
+    document["created_at"] = now
+    document["updated_at"] = now
+
+    for _ in range(5):
+        latest = await db.quiz_attempts.find_one(
+            {"quiz_id": attempt.quiz_id, "user_id": attempt.user_id},
+            {"attempt_number": 1},
+            sort=[("attempt_number", -1)],
+        )
+        candidate = dict(document)
+        candidate["attempt_number"] = (
+            int(latest.get("attempt_number", 0)) + 1 if latest else 1
+        )
+        try:
+            result = await db.quiz_attempts.insert_one(candidate)
+        except DuplicateKeyError:
+            continue
+        candidate["_id"] = result.inserted_id
+        return _serialize(candidate)  # type: ignore[return-value]
+
+    raise RuntimeError("Could not allocate a quiz attempt number. Please retry.")
 
 
 async def detach_document_from_chat(

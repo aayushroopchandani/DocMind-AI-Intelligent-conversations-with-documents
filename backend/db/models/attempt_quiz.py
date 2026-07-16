@@ -54,6 +54,27 @@ class QuizQuestionResponse(BaseModel):
     blank_answers: list[BlankResponse] = Field(default_factory=list)
     matches: list[MatchResponse] = Field(default_factory=list)
 
+    model_config = {"extra": "forbid"}
+
+
+class QuizAnswerSubmission(BaseModel):
+    """Client-controlled fields accepted when a quiz is submitted."""
+
+    question_id: str = Field(..., min_length=1)
+    response: QuizQuestionResponse = Field(default_factory=QuizQuestionResponse)
+    time_taken_seconds: int = Field(default=0, ge=0, le=86_400)
+
+    model_config = {"extra": "forbid"}
+
+
+class QuizAttemptSubmission(BaseModel):
+    answers: list[QuizAnswerSubmission] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    model_config = {"extra": "forbid"}
+
 
 class QuizAnswerEvaluation(BaseModel):
     status: QuizAnswerStatus
