@@ -55,6 +55,46 @@ class RepresentativeSelection:
     cluster_count: int
 
 
+def select_mmr_indices(
+    embeddings: np.ndarray,
+    budget: int,
+    *,
+    mandatory_indices: set[int] | None = None,
+) -> list[int]:
+    """Downselect existing candidates with MMR, without rerunning clustering."""
+    chunk_count = len(embeddings)
+    if chunk_count == 0 or budget <= 0:
+        return []
+    if chunk_count <= budget:
+        return list(range(chunk_count))
+
+    normalized = normalize_embeddings(embeddings)
+    selected = {
+        index
+        for index in (mandatory_indices or set())
+        if 0 <= index < chunk_count
+    }
+
+    if not selected:
+        if budget == 1:
+            center = normalized.mean(axis=0)
+            center_norm = float(np.linalg.norm(center))
+            if center_norm:
+                center /= center_norm
+            selected.add(int(np.argmax(normalized @ center)))
+        else:
+            selected.update({0, chunk_count - 1})
+
+    # A caller may provide more mandatory positions than its final budget.
+    # Preserve document boundaries deterministically in that unlikely case.
+    if len(selected) > budget:
+        ordered = sorted(selected)
+        return [ordered[0], ordered[-1]][:budget]
+
+    _fill_with_mmr(normalized, selected, budget)
+    return sorted(selected)
+
+
 def normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
     """L2-normalize dense chunk embeddings before clustering and MMR."""
     matrix = np.asarray(embeddings, dtype=np.float32)

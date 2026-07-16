@@ -108,6 +108,7 @@ def _retrieve_chunk_records(
     *,
     chunk_ids: list[str],
     batch_size: int,
+    include_vectors: bool,
 ) -> list[models.Record]:
     qdrant_client = get_client()
     records: list[models.Record] = []
@@ -118,7 +119,7 @@ def _retrieve_chunk_records(
                 collection_name=_chunk_collection_name(),
                 ids=[_point_id(chunk_id) for chunk_id in batch],
                 with_payload=[CONTENT_KEY, METADATA_KEY],
-                with_vectors=False,
+                with_vectors=include_vectors,
             )
         )
     return records
@@ -130,6 +131,7 @@ async def searching_for_chunks_by_ids(
     user_id: str,
     *,
     batch_size: int = DEFAULT_RETRIEVE_BATCH_SIZE,
+    include_vectors: bool = False,
 ) -> list[dict[str, Any]]:
     """Retrieve preselected chunks by ID and restore original document order."""
     if not doc_id or not user_id:
@@ -145,6 +147,7 @@ async def searching_for_chunks_by_ids(
         _retrieve_chunk_records,
         chunk_ids=unique_ids,
         batch_size=batch_size,
+        include_vectors=include_vectors,
     )
     chunks: list[dict[str, Any]] = []
     for record in records:
@@ -158,13 +161,23 @@ async def searching_for_chunks_by_ids(
         # Qdrant payloads before any content reaches the LLM.
         if metadata.get("user_id") != user_id or metadata.get("doc_id") != doc_id:
             raise ValueError("Representative chunk ownership mismatch")
-        chunks.append(
-            {
-                "id": record.id,
-                "page_content": payload.get(CONTENT_KEY, ""),
-                "metadata": metadata,
-            }
-        )
+        chunk = {
+            "id": record.id,
+            "page_content": payload.get(CONTENT_KEY, ""),
+            "metadata": metadata,
+        }
+        if include_vectors:
+            vector = record.vector
+            if isinstance(vector, dict):
+                if len(vector) != 1:
+                    raise ValueError(
+                        f"Qdrant point '{record.id}' does not have one dense vector"
+                    )
+                vector = next(iter(vector.values()))
+            if vector is None:
+                raise ValueError(f"Qdrant point '{record.id}' has no dense vector")
+            chunk["embedding"] = vector
+        chunks.append(chunk)
 
     chunks.sort(
         key=lambda chunk: (

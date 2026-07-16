@@ -67,6 +67,18 @@ class RepresentativeSelectorTests(unittest.TestCase):
             atol=1e-6,
         )
 
+    def test_scope_mmr_preserves_mandatory_endpoints(self) -> None:
+        indices = representative_selector.select_mmr_indices(
+            self._embeddings(20),
+            6,
+            mandatory_indices={0, 19},
+        )
+
+        self.assertEqual(len(indices), 6)
+        self.assertEqual(indices[0], 0)
+        self.assertEqual(indices[-1], 19)
+        self.assertEqual(indices, sorted(indices))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -335,6 +335,85 @@ async def user_has_deep_summary_access(*, user_id: str) -> bool:
     )
 
 
+async def get_cached_summary(
+    *,
+    user_id: str,
+    document_id: str,
+    scope_root_node_id: str,
+    mode: str,
+    summary_index_version: str,
+    prompt_version: str,
+    model: str,
+) -> Optional[dict[str, Any]]:
+    """Fetch an exact versioned root-scope summary and record its cache hit."""
+    db = get_db()
+    now = _utc_now()
+    document = await db.summary_cache.find_one_and_update(
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "scope_root_node_id": scope_root_node_id,
+            "mode": mode,
+            "summary_index_version": summary_index_version,
+            "prompt_version": prompt_version,
+            "model": model,
+            "status": "ready",
+        },
+        {
+            "$set": {"last_accessed_at": now},
+            "$inc": {"hit_count": 1},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    return _serialize(document)
+
+
+async def upsert_cached_summary(
+    *,
+    user_id: str,
+    document_id: str,
+    scope_root_node_id: str,
+    scope_node_ids: list[str],
+    mode: str,
+    summary_index_version: str,
+    prompt_version: str,
+    model: str,
+    response: dict[str, Any],
+    metrics: dict[str, Any],
+) -> None:
+    """Persist one canonical summary response for an exact requested scope."""
+    db = get_db()
+    now = _utc_now()
+    key = {
+        "user_id": user_id,
+        "document_id": document_id,
+        "scope_root_node_id": scope_root_node_id,
+        "mode": mode,
+        "summary_index_version": summary_index_version,
+        "prompt_version": prompt_version,
+        "model": model,
+    }
+    await db.summary_cache.update_one(
+        key,
+        {
+            "$setOnInsert": {
+                **key,
+                "created_at": now,
+                "hit_count": 0,
+            },
+            "$set": {
+                "scope_node_ids": scope_node_ids,
+                "status": "ready",
+                "response": response,
+                "metrics": metrics,
+                "last_accessed_at": now,
+                "updated_at": now,
+            },
+        },
+        upsert=True,
+    )
+
+
 async def mark_nodes_ingestion_ready(*, user_id: str, document_id: str) -> bool:
     """Mark node-vector ingestion complete for a user's document hash."""
     db = get_db()
@@ -553,7 +632,17 @@ async def delete_orphan_document(*, document_db_id: str, user_id: str) -> bool:
     if document_oid is None:
         return False
     db = get_db()
+    document = await db.documents.find_one(
+        {"_id": document_oid, "user_id": user_id},
+        {"document_id": 1},
+    )
+    if document is None:
+        return False
     result = await db.documents.delete_one(
         {"_id": document_oid, "user_id": user_id, "chat_ids": {"$size": 0}}
     )
+    if result.deleted_count == 1 and document.get("document_id"):
+        await db.summary_cache.delete_many(
+            {"user_id": user_id, "document_id": document["document_id"]}
+        )
     return result.deleted_count == 1

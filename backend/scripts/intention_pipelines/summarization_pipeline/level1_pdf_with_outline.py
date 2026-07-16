@@ -4,7 +4,9 @@ import asyncio
 import logging
 import os
 import re
+import time
 from collections import defaultdict
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, AsyncGenerator
@@ -22,6 +24,11 @@ from utils.pydantic_schemas import (
 )
 
 from .utils.operation_on_nodes import get_node_scope
+from .scope_budget import (
+    SectionAwareGroup,
+    build_section_aware_groups,
+    select_scope_representatives,
+)
 from .summary_index import SUMMARY_INDEX_VERSION
 from .utils.searching_for_chunks_with_node_id import (
     searching_for_chunks_by_ids,
@@ -52,6 +59,14 @@ MAX_PARALLEL_LLM_CALLS = _env_int("SUMMARY_MAX_PARALLEL_LLM_CALLS", 4)
 MAX_CHUNK_CHARS = _env_int("SUMMARY_MAX_CHUNK_CHARS", 1400)
 MAX_CITATIONS_PER_DOC = _env_int("SUMMARY_MAX_CITATIONS_PER_DOC", 8)
 MAX_CONTEXT_CHARS_PER_DOC = _env_int("SUMMARY_MAX_CONTEXT_CHARS_PER_DOC", 22000)
+MAX_SCOPE_REPRESENTATIVE_CHUNKS = max(
+    2,
+    _env_int("SUMMARY_MAX_SCOPE_REPRESENTATIVE_CHUNKS", 80),
+)
+MAX_REPRESENTATIVE_MAP_GROUPS = _env_int(
+    "SUMMARY_MAX_REPRESENTATIVE_MAP_GROUPS",
+    5,
+)
 
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "google/gemini-2.5-flash")
 SUMMARY_UTILITY_MODEL = os.getenv(
@@ -59,6 +74,7 @@ SUMMARY_UTILITY_MODEL = os.getenv(
     "google/gemini-2.5-flash-lite",
 )
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+SUMMARY_PROMPT_VERSION = "v1"
 
 
 @dataclass(slots=True)
@@ -70,11 +86,29 @@ class DocumentSummaryContext:
     node_id: str | None = None
     strategy: str = ""
     source_chunk_count: int = 0
+    candidate_chunk_count: int = 0
+    map_group_count: int = 0
     context: str = ""
     chunks: list[dict[str, Any]] = field(default_factory=list)
     nodes: list[dict[str, Any]] = field(default_factory=list)
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    scope_node_ids: list[str] = field(default_factory=list)
+    cache_key: dict[str, Any] = field(default_factory=dict)
+    cached_response: dict[str, Any] | None = None
     message: str = ""
+
+
+@dataclass(slots=True)
+class SummaryUsage:
+    llm_call_count: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+_summary_usage: ContextVar[SummaryUsage | None] = ContextVar(
+    "summary_usage",
+    default=None,
+)
 
 
 @lru_cache(maxsize=1)
@@ -105,6 +139,7 @@ def get_streaming_summary_llm() -> ChatOpenAI:
         api_key=os.getenv("OPENROUTER_API_KEY"),
         temperature=0.2,
         streaming=True,
+        stream_usage=True,
     )
 
 
@@ -160,6 +195,41 @@ def _message_text(content: Any) -> str:
                 parts.append(str(item))
         return "".join(parts)
     return str(content or "")
+
+
+def _begin_llm_call() -> None:
+    usage = _summary_usage.get()
+    if usage is not None:
+        usage.llm_call_count += 1
+
+
+def _token_usage(message: Any) -> tuple[int, int]:
+    metadata = getattr(message, "usage_metadata", None)
+    if not isinstance(metadata, dict):
+        response_metadata = getattr(message, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            metadata = (
+                response_metadata.get("token_usage")
+                or response_metadata.get("usage")
+            )
+    if not isinstance(metadata, dict):
+        return 0, 0
+
+    input_tokens = _integer_or_none(
+        metadata.get("input_tokens") or metadata.get("prompt_tokens")
+    )
+    output_tokens = _integer_or_none(
+        metadata.get("output_tokens") or metadata.get("completion_tokens")
+    )
+    return max(0, input_tokens or 0), max(0, output_tokens or 0)
+
+
+def _record_token_usage(input_tokens: int, output_tokens: int) -> None:
+    usage = _summary_usage.get()
+    if usage is None:
+        return
+    usage.input_tokens += input_tokens
+    usage.output_tokens += output_tokens
 
 
 def _unique_pages(chunks: list[dict[str, Any]]) -> list[int]:
@@ -485,8 +555,10 @@ async def _invoke_summary_llm(
     utility: bool = True,
 ) -> str:
     llm = get_summary_utility_llm() if utility else get_summary_llm()
+    _begin_llm_call()
     async with semaphore:
         result = await llm.ainvoke(messages)
+    _record_token_usage(*_token_usage(result))
     return _message_text(result.content).strip()
 
 
@@ -591,24 +663,32 @@ async def _map_reduce_context(
     )
 
 
-async def _representative_hierarchical_context(
+async def _representative_map_reduce_context(
     *,
     doc_name: str,
     target_label: str,
-    chunks: list[dict[str, Any]],
+    groups: list[SectionAwareGroup],
     semaphore: asyncio.Semaphore,
 ) -> str:
-    """
-    Summarize ordered representative chunks in bounded contiguous groups.
-
-    Node IDs remain in every formatted chunk, so the final model can retain the
-    outline without recursively summarizing and merging every outline node.
-    """
-    return await _map_reduce_context(
-        doc_name=doc_name,
-        target_label=target_label,
-        chunks=chunks,
-        semaphore=semaphore,
+    """Map section-aware representative groups without recursive node merges."""
+    summaries = await asyncio.gather(
+        *[
+            _summarize_chunk_group(
+                doc_name=doc_name,
+                target_label=target_label,
+                group_label=(
+                    f"{index + 1}/{len(groups)} — {group.label}"
+                ),
+                chunks=group.chunks,
+                semaphore=semaphore,
+            )
+            for index, group in enumerate(groups)
+        ]
+    )
+    return "\n\n".join(
+        f"Section group {index} ({groups[index - 1].label}):\n{summary}"
+        for index, summary in enumerate(summaries, start=1)
+        if summary
     )
 
 
@@ -764,6 +844,7 @@ async def _prepare_document_context(
     doc_name: str,
     semaphore: asyncio.Semaphore,
     deep_summary: bool = False,
+    use_summary_cache: bool = False,
 ) -> DocumentSummaryContext:
     document = await crud.get_document_nodes(
         user_id=user_id,
@@ -803,6 +884,53 @@ async def _prepare_document_context(
         )
 
     target_label = _node_path(nodes, node_id)
+    scope_nodes = _nodes_in_scope(nodes, node_id)
+    scope_node_ids = [
+        str(node["node_id"])
+        for node in scope_nodes
+        if node.get("node_id") is not None
+    ]
+    cache_key = {
+        "user_id": user_id,
+        "document_id": doc_id,
+        "scope_root_node_id": node_id or "__document__",
+        "mode": "deep" if deep_summary else "standard",
+        "summary_index_version": str(
+            document.get("summary_index_version") or SUMMARY_INDEX_VERSION
+        ),
+        "prompt_version": SUMMARY_PROMPT_VERSION,
+        "model": f"{SUMMARY_MODEL}|utility={SUMMARY_UTILITY_MODEL}",
+    }
+    if use_summary_cache:
+        try:
+            cached = await crud.get_cached_summary(**cache_key)
+        except Exception:
+            logger.exception(
+                "Summary cache lookup failed for doc=%s node=%s",
+                doc_id,
+                node_id or "__document__",
+            )
+            cached = None
+        if cached and isinstance(cached.get("response"), dict):
+            metrics = cached.get("metrics") or {}
+            return DocumentSummaryContext(
+                doc_id=doc_id,
+                doc_name=doc_name,
+                status="ready",
+                target_label=target_label,
+                node_id=node_id,
+                strategy="cached_summary",
+                source_chunk_count=int(metrics.get("source_chunk_count", 0)),
+                candidate_chunk_count=int(
+                    metrics.get("candidate_chunk_count", 0)
+                ),
+                map_group_count=int(metrics.get("map_group_count", 0)),
+                nodes=nodes,
+                scope_node_ids=scope_node_ids,
+                cache_key=cache_key,
+                cached_response=cached["response"],
+            )
+
     scope_index_ready, indexed_chunk_count, representative_ids = (
         _representative_index_for_scope(nodes, node_id)
     )
@@ -833,6 +961,9 @@ async def _prepare_document_context(
             chunk_ids=representative_ids,
             doc_id=doc_id,
             user_id=user_id,
+            include_vectors=(
+                len(representative_ids) > MAX_SCOPE_REPRESENTATIVE_CHUNKS
+            ),
         )
         if not representative_chunks:
             return DocumentSummaryContext(
@@ -845,11 +976,35 @@ async def _prepare_document_context(
                 message=f"No chunks were found for {target_label}.",
             )
 
-        context = await _representative_hierarchical_context(
+        scope_selection = select_scope_representatives(
+            chunks=representative_chunks,
+            nodes=_nodes_in_scope(nodes, node_id),
+            budget=MAX_SCOPE_REPRESENTATIVE_CHUNKS,
+        )
+        selected_chunks = scope_selection.chunks
+        groups = build_section_aware_groups(
+            chunks=selected_chunks,
+            nodes=nodes,
+            scope_root_node_id=node_id,
+            group_size=MAP_GROUP_CHUNKS,
+            max_groups=MAX_REPRESENTATIVE_MAP_GROUPS,
+        )
+        context = await _representative_map_reduce_context(
             doc_name=doc_name,
             target_label=target_label,
-            chunks=representative_chunks,
+            groups=groups,
             semaphore=semaphore,
+        )
+        logger.info(
+            "Summary scope budget doc=%s node=%s source=%d candidates=%d "
+            "selected=%d groups=%d estimated_llm_calls=%d",
+            doc_id,
+            node_id or "__document__",
+            source_chunk_count,
+            scope_selection.candidate_count,
+            len(selected_chunks),
+            len(groups),
+            len(groups) + 1,
         )
         return DocumentSummaryContext(
             doc_id=doc_id,
@@ -857,11 +1012,15 @@ async def _prepare_document_context(
             status="ready",
             target_label=target_label,
             node_id=node_id,
-            strategy="representative_hierarchical",
+            strategy="representative_map_reduce",
             source_chunk_count=source_chunk_count,
+            candidate_chunk_count=scope_selection.candidate_count,
+            map_group_count=len(groups),
             context=_truncate(context, MAX_CONTEXT_CHARS_PER_DOC),
-            chunks=representative_chunks,
+            chunks=selected_chunks,
             nodes=nodes,
+            scope_node_ids=scope_node_ids,
+            cache_key=cache_key,
         )
 
     # Ready indexes provide the source count without loading every chunk. This
@@ -949,9 +1108,17 @@ async def _prepare_document_context(
         node_id=node_id,
         strategy=strategy,
         source_chunk_count=len(chunks),
+        candidate_chunk_count=len(chunks),
+        map_group_count=(
+            len(_chunk_groups(chunks, MAP_GROUP_CHUNKS))
+            if strategy == "map_reduce"
+            else 0
+        ),
         context=_truncate(context, MAX_CONTEXT_CHARS_PER_DOC),
         chunks=chunks,
         nodes=nodes,
+        scope_node_ids=scope_node_ids,
+        cache_key=cache_key,
     )
 
 
@@ -960,7 +1127,7 @@ def _format_document_context(context: DocumentSummaryContext) -> str:
     source_count = context.source_chunk_count or chunk_count
     chunk_usage = (
         f"{chunk_count} representative chunks from {source_count} source chunks"
-        if context.strategy == "representative_hierarchical"
+        if context.strategy == "representative_map_reduce"
         else f"{chunk_count} chunks"
     )
     return (
@@ -1144,6 +1311,9 @@ async def stream_level1_pdf_with_outline(
     chat pipeline: status, token, citations, final, error, done.
     """
     answer_parts: list[str] = []
+    started_at = time.perf_counter()
+    usage = SummaryUsage()
+    usage_token = _summary_usage.set(usage)
     document_names = document_names or {}
     unique_doc_ids = list(dict.fromkeys(doc_ids))
 
@@ -1177,6 +1347,7 @@ async def stream_level1_pdf_with_outline(
                 doc_name=document_names.get(doc_id, "document.pdf"),
                 semaphore=semaphore,
                 deep_summary=deep_summary_allowed,
+                use_summary_cache=(len(unique_doc_ids) == 1),
             )
             for doc_id in unique_doc_ids
         ]
@@ -1198,6 +1369,30 @@ async def stream_level1_pdf_with_outline(
             return
 
         ready_contexts = [context for context in contexts if context.status == "ready"]
+        if len(ready_contexts) == 1 and ready_contexts[0].cached_response:
+            cached_response = DocMindResponse(**ready_contexts[0].cached_response)
+            logger.info(
+                "Summary cache hit doc=%s node=%s elapsed_ms=%.1f",
+                ready_contexts[0].doc_id,
+                ready_contexts[0].node_id or "__document__",
+                (time.perf_counter() - started_at) * 1000,
+            )
+            yield {"type": "status", "message": "Using cached summary"}
+            yield {"type": "token", "content": cached_response.answer}
+            yield {
+                "type": "citations",
+                "citations": [
+                    citation.model_dump()
+                    for citation in cached_response.citations
+                ],
+            }
+            yield {
+                "type": "final",
+                "data": cached_response.model_dump(),
+            }
+            yield {"type": "done"}
+            return
+
         citations, contributions = _build_sources(ready_contexts)
 
         yield {"type": "status", "message": "Generating summary"}
@@ -1206,33 +1401,86 @@ async def stream_level1_pdf_with_outline(
             target=target,
             contexts=ready_contexts,
         )
+        _begin_llm_call()
+        stream_input_tokens = 0
+        stream_output_tokens = 0
         async for chunk in get_streaming_summary_llm().astream(messages):
+            chunk_input_tokens, chunk_output_tokens = _token_usage(chunk)
+            # Streaming providers normally report cumulative usage on the
+            # final chunk, so maxima avoid counting the same tokens twice.
+            stream_input_tokens = max(stream_input_tokens, chunk_input_tokens)
+            stream_output_tokens = max(stream_output_tokens, chunk_output_tokens)
             text = _message_text(chunk.content)
             if not text:
                 continue
             answer_parts.append(text)
             yield {"type": "token", "content": text}
+        _record_token_usage(stream_input_tokens, stream_output_tokens)
 
         answer = "".join(answer_parts).strip()
         if not answer:
             raise RuntimeError("The model returned an empty summary")
 
+        response = DocMindResponse(
+            answer=answer,
+            answer_found=True,
+            status=AnswerStatus.COMPLETE,
+            document_contributions=contributions,
+            citations=citations,
+            confidence_score=0.85,
+            follow_up_questions=[],
+        )
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        metrics = {
+            "strategy": (
+                ready_contexts[0].strategy
+                if len(ready_contexts) == 1
+                else "multi_document"
+            ),
+            "source_chunk_count": sum(
+                context.source_chunk_count for context in ready_contexts
+            ),
+            "candidate_chunk_count": sum(
+                context.candidate_chunk_count or len(context.chunks)
+                for context in ready_contexts
+            ),
+            "selected_chunk_count": sum(
+                len(context.chunks) for context in ready_contexts
+            ),
+            "map_group_count": sum(
+                context.map_group_count for context in ready_contexts
+            ),
+            "llm_call_count": usage.llm_call_count,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "generation_time_ms": round(elapsed_ms, 1),
+        }
+        if len(ready_contexts) == 1 and ready_contexts[0].cache_key:
+            cached_context = ready_contexts[0]
+            try:
+                await crud.upsert_cached_summary(
+                    **cached_context.cache_key,
+                    scope_node_ids=cached_context.scope_node_ids,
+                    response=response.model_dump(mode="json"),
+                    metrics=metrics,
+                )
+            except Exception:
+                logger.exception(
+                    "Summary cache write failed for doc=%s node=%s",
+                    cached_context.doc_id,
+                    cached_context.node_id or "__document__",
+                )
+        logger.info(
+            "Summary metrics docs=%s %s",
+            [context.doc_id for context in ready_contexts],
+            metrics,
+        )
+
         yield {
             "type": "citations",
             "citations": [citation.model_dump() for citation in citations],
         }
-        yield {
-            "type": "final",
-            "data": DocMindResponse(
-                answer=answer,
-                answer_found=True,
-                status=AnswerStatus.COMPLETE,
-                document_contributions=contributions,
-                citations=citations,
-                confidence_score=0.85,
-                follow_up_questions=[],
-            ).model_dump(),
-        }
+        yield {"type": "final", "data": response.model_dump()}
         yield {"type": "done"}
 
     except asyncio.CancelledError:
@@ -1244,6 +1492,8 @@ async def stream_level1_pdf_with_outline(
             "message": "Unable to generate the summary. Please try again.",
         }
         yield {"type": "done"}
+    finally:
+        _summary_usage.reset(usage_token)
 
 
 async def level_1_pdf_with_outline(
