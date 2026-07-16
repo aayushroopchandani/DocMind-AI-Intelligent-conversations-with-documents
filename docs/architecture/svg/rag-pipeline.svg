@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 720" role="img" aria-labelledby="title">
+  <title id="title">RAG Pipeline</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#070b14"/><stop offset="100%" stop-color="#0f1b2d"/>
+    </linearGradient>
+    <marker id="a" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto">
+      <path d="M0,0 L5,2.5 L0,5 Z" fill="#38bdf8"/>
+    </marker>
+  </defs>
+  <rect width="280" height="720" fill="url(#bg)"/>
+  <text x="140" y="36" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="16" font-weight="700">RAG Pipeline</text>
+  <g font-family="Inter,Segoe UI,sans-serif" font-size="12" fill="#e2e8f0" text-anchor="middle">
+    <rect x="50" y="55" width="180" height="42" rx="12" fill="#111827" stroke="#38bdf8"/><text x="140" y="81">User Query</text>
+    <line x1="140" y1="97" x2="140" y2="118" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="118" width="180" height="42" rx="12" fill="#111827" stroke="#34d399"/><text x="140" y="144">Query Rewrite</text>
+    <line x1="140" y1="160" x2="140" y2="181" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="181" width="180" height="42" rx="12" fill="#111827" stroke="#a78bfa"/><text x="140" y="207">MultiQuery + Embed</text>
+    <line x1="140" y1="223" x2="140" y2="244" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="244" width="180" height="42" rx="12" fill="#111827" stroke="#f43f5e"/><text x="140" y="270">Metadata Filter</text>
+    <line x1="140" y1="286" x2="140" y2="307" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="307" width="180" height="42" rx="12" fill="#111827" stroke="#fbbf24"/><text x="140" y="333">Retriever</text>
+    <line x1="140" y1="349" x2="140" y2="370" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="370" width="180" height="42" rx="12" fill="#111827" stroke="#34d399"/><text x="140" y="396">Dedupe + Balance</text>
+    <line x1="140" y1="412" x2="140" y2="433" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="433" width="180" height="42" rx="12" fill="#111827" stroke="#38bdf8"/><text x="140" y="459">Citation Context</text>
+    <line x1="140" y1="475" x2="140" y2="496" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="496" width="180" height="42" rx="12" fill="#111827" stroke="#a78bfa"/><text x="140" y="522">Streaming LLM</text>
+    <line x1="140" y1="538" x2="140" y2="559" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="559" width="180" height="42" rx="12" fill="#111827" stroke="#22c55e"/><text x="140" y="585">Structured Final</text>
+    <line x1="140" y1="601" x2="140" y2="622" stroke="#38bdf8" stroke-width="2" marker-end="url(#a)"/>
+    <rect x="50" y="622" width="180" height="50" rx="12" fill="#0f172a" stroke="#38bdf8" stroke-width="2"/><text x="140" y="652">SSE Response</text>
+  </g>
+</svg>

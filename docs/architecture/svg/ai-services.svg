@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 560" role="img" aria-labelledby="title">
+  <title id="title">AI Services Map</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#070b14"/><stop offset="100%" stop-color="#101828"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="560" fill="url(#bg)"/>
+  <text x="400" y="40" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="18" font-weight="700">AI Services</text>
+
+  <rect x="280" y="70" width="240" height="50" rx="14" fill="#111827" stroke="#a78bfa" stroke-width="2"/>
+  <text x="400" y="100" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="14">Intent Router</text>
+
+  <g font-family="Inter,Segoe UI,sans-serif" font-size="12" fill="#e2e8f0" text-anchor="middle">
+    <rect x="40" y="160" width="160" height="56" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="120" y="193">Chat Service</text>
+    <rect x="220" y="160" width="160" height="56" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="300" y="193">Retrieval</text>
+    <rect x="400" y="160" width="160" height="56" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="480" y="193">Embeddings</text>
+    <rect x="580" y="160" width="180" height="56" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="670" y="193">Prompt Builder</text>
+
+    <rect x="40" y="250" width="160" height="56" rx="12" fill="#0f172a" stroke="#34d399"/><text x="120" y="283">Memory</text>
+    <rect x="220" y="250" width="160" height="56" rx="12" fill="#0f172a" stroke="#34d399"/><text x="300" y="283">Streaming</text>
+    <rect x="400" y="250" width="160" height="56" rx="12" fill="#0f172a" stroke="#fbbf24"/><text x="480" y="283">Summarization</text>
+    <rect x="580" y="250" width="180" height="56" rx="12" fill="#0f172a" stroke="#fbbf24"/><text x="670" y="283">Quiz Pipelines</text>
+  </g>
+
+  <text x="400" y="350" text-anchor="middle" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="12" font-weight="600">EXTERNAL DEPENDENCIES</text>
+  <g font-family="Inter,Segoe UI,sans-serif" font-size="12" fill="#e2e8f0" text-anchor="middle">
+    <rect x="60" y="380" width="150" height="70" rx="14" fill="#0f172a" stroke="#fbbf24"/><text x="135" y="410" fill="#fbbf24" font-size="11" font-weight="700">OPENROUTER</text><text x="135" y="430">Gemini</text>
+    <rect x="240" y="380" width="150" height="70" rx="14" fill="#0f172a" stroke="#60a5fa"/><text x="315" y="410" fill="#60a5fa" font-size="11" font-weight="700">OPENAI</text><text x="315" y="430">Embeddings</text>
+    <rect x="420" y="380" width="150" height="70" rx="14" fill="#0f172a" stroke="#f43f5e"/><text x="495" y="410" fill="#f43f5e" font-size="11" font-weight="700">QDRANT</text><text x="495" y="430">Vectors</text>
+    <rect x="600" y="380" width="150" height="70" rx="14" fill="#0f172a" stroke="#22c55e"/><text x="675" y="410" fill="#22c55e" font-size="11" font-weight="700">MONGODB</text><text x="675" y="430">State</text>
+  </g>
+
+  <rect x="200" y="480" width="400" height="50" rx="14" fill="#111827" stroke="#64748b" stroke-dasharray="4 4"/>
+  <text x="400" y="510" text-anchor="middle" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="12">Roadmap: LangGraph Research Agent · Auto Charts &amp; Dashboards</text>
+</svg>

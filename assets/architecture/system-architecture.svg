@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
+  <title id="title">DocMind High-Level System Architecture</title>
+  <desc id="desc">User to Next.js to FastAPI to AI services to OpenAI Qdrant MongoDB Cloudinary</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#070b14"/>
+      <stop offset="100%" stop-color="#101a2e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#38bdf8"/>
+    </marker>
+  </defs>
+  <rect width="960" height="720" fill="url(#bg)"/>
+  <text x="480" y="42" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="22" font-weight="700">DocMind  System Architecture</text>
+
+  <!-- User -->
+  <rect x="380" y="70" width="200" height="48" rx="14" fill="#0f172a" stroke="url(#accent)" stroke-width="2" filter="url(#glow)"/>
+  <text x="480" y="100" text-anchor="middle" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">User</text>
+  <line x1="480" y1="118" x2="480" y2="150" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Next.js -->
+  <rect x="340" y="150" width="280" height="52" rx="14" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="480" y="182" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">Next.js Frontend + BFF</text>
+  <line x1="480" y1="202" x2="480" y2="234" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- FastAPI -->
+  <rect x="340" y="234" width="280" height="52" rx="14" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+  <text x="480" y="266" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">FastAPI Backend</text>
+  <line x1="480" y1="286" x2="480" y2="318" stroke="#34d399" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- AI Services box -->
+  <rect x="120" y="318" width="720" height="220" rx="18" fill="#0b1220" stroke="#334155" stroke-width="1.5"/>
+  <text x="140" y="348" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="600">AI SERVICES</text>
+
+  <rect x="150" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="225" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Chat / RAG</text>
+  <rect x="320" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="395" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Retrieval</text>
+  <rect x="490" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="565" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Embeddings</text>
+  <rect x="660" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="735" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Intent Router</text>
+
+  <rect x="150" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#a78bfa"/>
+  <text x="225" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Summarization</text>
+  <rect x="320" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#a78bfa"/>
+  <text x="395" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Quiz Agent</text>
+  <rect x="490" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#34d399"/>
+  <text x="565" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Memory</text>
+  <rect x="660" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#34d399"/>
+  <text x="735" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Streaming</text>
+
+  <line x1="480" y1="538" x2="480" y2="575" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Externals -->
+  <rect x="100" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#fbbf24"/>
+  <text x="185" y="605" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">OPENROUTER</text>
+  <text x="185" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Gemini LLMs</text>
+
+  <rect x="300" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#f43f5e"/>
+  <text x="385" y="605" text-anchor="middle" fill="#f43f5e" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">QDRANT</text>
+  <text x="385" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Vectors</text>
+
+  <rect x="500" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#22c55e"/>
+  <text x="585" y="605" text-anchor="middle" fill="#22c55e" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">MONGODB</text>
+  <text x="585" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">App State</text>
+
+  <rect x="700" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#38bdf8"/>
+  <text x="785" y="605" text-anchor="middle" fill="#38bdf8" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">CLOUDINARY</text>
+  <text x="785" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">PDF Storage</text>
+</svg>

@@ -8,12 +8,14 @@
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-DC244C)](https://qdrant.tech/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20%2F%20Local-47A248?logo=mongodb)](https://www.mongodb.com/)
 [![Clerk](https://img.shields.io/badge/Auth-Clerk-6C47FF?logo=clerk)](https://clerk.com/)
+[![Architecture](https://img.shields.io/badge/Architecture-Interactive%20Map-22d3ee)](https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 
 <p align="center">
   <a href="#features">Features</a> ·
   <a href="#tech-stack">Tech Stack</a> ·
   <a href="#architecture">Architecture</a> ·
+  <a href="https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/">Interactive Map</a> ·
   <a href="#ai-services">AI Services</a> ·
   <a href="#installation">Installation</a>
 </p>
@@ -21,6 +23,9 @@
 ---
 
 Upload up to **four PDFs per chat**, ask questions across them, get **citation-backed streaming answers**, generate **outline-aware summaries**, and create **practice / rapid-fire / exam quizzes** — all from a single conversational workspace.
+
+> **Interactive architecture:** [Open the animated system map →](https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/)  
+> Deep-dive docs: [`docs/architecture/`](docs/architecture/)
 
 ---
 
@@ -99,7 +104,22 @@ Upload up to **four PDFs per chat**, ask questions across them, get **citation-b
 
 ## Architecture
 
-### High-level system
+<p align="center">
+  <a href="https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/">
+    <strong>Launch interactive architecture map →</strong>
+  </a>
+</p>
+
+Glowing nodes, animated flow lines, zoom/pan, and clickable service details live on the hosted map. Static diagrams for the README are below; written deep-dives are in [`docs/architecture/`](docs/architecture/).
+
+### System overview
+
+<p align="center">
+  <img src="assets/architecture/system-architecture.svg" alt="DocMind system architecture" width="900" />
+</p>
+
+<details>
+<summary>Mermaid version</summary>
 
 ```mermaid
 flowchart TB
@@ -116,10 +136,24 @@ flowchart TB
   AI --> Qdrant[(Qdrant)]
   AI --> Mongo[(MongoDB)]
   FastAPI --> Cloudinary[(Cloudinary)]
-  AI --> OR
 ```
 
+</details>
+
+### AI services map
+
+<p align="center">
+  <img src="assets/architecture/ai-services.svg" alt="DocMind AI services" width="820" />
+</p>
+
 ### Document ingestion
+
+<p align="center">
+  <img src="assets/architecture/ingestion-pipeline.svg" alt="Document ingestion pipeline" width="900" />
+</p>
+
+<details>
+<summary>Mermaid version</summary>
 
 ```mermaid
 flowchart LR
@@ -135,7 +169,16 @@ flowchart LR
   G --> K[Summary Index<br/>Clustering + MMR]
 ```
 
+</details>
+
 ### RAG pipeline
+
+<p align="center">
+  <img src="assets/architecture/rag-pipeline.svg" alt="RAG pipeline" width="320" />
+</p>
+
+<details>
+<summary>Mermaid version</summary>
 
 ```mermaid
 flowchart TB
@@ -151,7 +194,16 @@ flowchart TB
   M --> P[Persist + Memory Update]
 ```
 
+</details>
+
 ### Intent / agent workflow
+
+<p align="center">
+  <img src="assets/architecture/agent-workflow.svg" alt="Intent and agent workflow" width="720" />
+</p>
+
+<details>
+<summary>Mermaid version</summary>
 
 ```mermaid
 flowchart TB
@@ -167,6 +219,8 @@ flowchart TB
   CB --> T
   TB --> T
 ```
+
+</details>
 
 ---
 
@@ -270,6 +324,11 @@ flowchart TB
 DocMind-AI-Intelligent-conversations-with-documents/
 ├── README.md
 ├── SETUP_CLOUDINARY_MONGODB.md
+├── assets/
+│   └── architecture/                  # SVG diagrams embedded in README
+├── docs/
+│   ├── index.html                     # GitHub Pages — interactive map
+│   └── architecture/                  # Deep-dive docs + architecture.html
 ├── backend/
 │   ├── main.py                        # FastAPI app + CORS + routers
 │   ├── requirements.txt
@@ -488,6 +547,16 @@ Contributions are welcome.
 
 Please do not commit secrets (`.env` files). Use the env tables above as the contract.
 
+### Publishing the architecture map (GitHub Pages)
+
+After pushing `docs/`, enable Pages once:
+
+1. Repo **Settings → Pages**
+2. **Source:** Deploy from a branch
+3. **Branch:** `main` (or your default) · **Folder:** `/docs`
+4. Save — the map will be at  
+   https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/
+
 ---
 
 ## License
@@ -498,4 +567,6 @@ This project is available under the **MIT License** — free to use, modify, and
 
 <p align="center">
   Built for researchers, students, and teams who need <strong>grounded answers</strong> from their documents — not hallucinations.
+  <br />
+  <a href="https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/">Open Interactive Architecture →</a>
 </p>

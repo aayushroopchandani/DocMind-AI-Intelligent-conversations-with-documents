@@ -38,7 +38,3 @@ ehthumbs.db
 notes.txt
 imp_commands.txt
 .cursor/
-
-# Local architecture visuals (HTML / SVG / deep-dive docs) — keep private
-# Public docs live in README.md only.
-docs/

@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DocMind Architecture — Interactive Map</title>
+  <meta name="description" content="Interactive architecture visualization for DocMind AI — multi-document RAG, intent routing, summarization, and quiz pipelines." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg0: #05070d;
+      --bg1: #0a1020;
+      --card: rgba(15, 23, 42, 0.55);
+      --card-border: rgba(148, 163, 184, 0.18);
+      --text: #e8eef9;
+      --muted: #94a3b8;
+      --cyan: #22d3ee;
+      --mint: #34d399;
+      --violet: #a78bfa;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --glow-cyan: 0 0 24px rgba(34, 211, 238, 0.45);
+      --glow-mint: 0 0 24px rgba(52, 211, 153, 0.4);
+      --glow-violet: 0 0 24px rgba(167, 139, 250, 0.45);
+      --radius: 16px;
+      --font: "Instrument Sans", system-ui, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--bg0);
+      color: var(--text);
+      font-family: var(--font);
+      overflow: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 20% -10%, rgba(34, 211, 238, 0.14), transparent 55%),
+        radial-gradient(ellipse 60% 40% at 90% 10%, rgba(167, 139, 250, 0.12), transparent 50%),
+        radial-gradient(ellipse 50% 40% at 50% 100%, rgba(52, 211, 153, 0.08), transparent 55%),
+        linear-gradient(180deg, var(--bg0), var(--bg1));
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    /* subtle animated grid */
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+      animation: gridDrift 40s linear infinite;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    @keyframes gridDrift {
+      from { background-position: 0 0; }
+      to { background-position: 48px 48px; }
+    }
+
+    .shell {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      height: 100%;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--card-border);
+      backdrop-filter: blur(16px);
+      background: rgba(5, 7, 13, 0.65);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+
+    .logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--cyan), var(--mint));
+      box-shadow: var(--glow-cyan);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .logo::after {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background: linear-gradient(120deg, transparent, rgba(255,255,255,0.45), transparent);
+      animation: shine 3.2s ease-in-out infinite;
+    }
+
+    @keyframes shine {
+      0%, 100% { transform: translateX(-40%) rotate(20deg); }
+      50% { transform: translateX(40%) rotate(20deg); }
+    }
+
+    .brand h1 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand p {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid var(--card-border);
+      background: var(--card);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 0.45rem 0.9rem;
+      font: 500 0.8rem/1 var(--font);
+      cursor: pointer;
+      transition: transform 0.2s ease, border-color 0.2s, box-shadow 0.2s, background 0.2s;
+      backdrop-filter: blur(10px);
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(34, 211, 238, 0.5);
+      box-shadow: var(--glow-cyan);
+    }
+
+    .btn.active {
+      border-color: rgba(52, 211, 153, 0.6);
+      box-shadow: var(--glow-mint);
+      background: rgba(52, 211, 153, 0.12);
+    }
+
+    .stage-wrap {
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+    }
+
+    .stage-wrap.dragging { cursor: grabbing; }
+
+    .stage {
+      position: absolute;
+      inset: 0;
+      transform-origin: 0 0;
+      will-change: transform;
+    }
+
+    .canvas {
+      position: relative;
+      width: 1400px;
+      height: 1100px;
+      margin: 40px auto;
+      padding: 40px;
+    }
+
+    /* SVG flow layer */
+    .flows {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    .flow-path {
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      opacity: 0.55;
+      filter: drop-shadow(0 0 6px currentColor);
+    }
+
+    .flow-path.cyan { stroke: var(--cyan); color: var(--cyan); }
+    .flow-path.mint { stroke: var(--mint); color: var(--mint); }
+    .flow-path.violet { stroke: var(--violet); color: var(--violet); }
+    .flow-path.amber { stroke: var(--amber); color: var(--amber); }
+
+    .flow-dash {
+      stroke-dasharray: 8 12;
+      animation: dashMove 1.4s linear infinite;
+    }
+
+    .flow-pulse {
+      stroke-dasharray: 6 80;
+      animation: pulseMove 2.4s ease-in-out infinite;
+      opacity: 0.95;
+      stroke-width: 3;
+    }
+
+    @keyframes dashMove {
+      to { stroke-dashoffset: -40; }
+    }
+
+    @keyframes pulseMove {
+      to { stroke-dashoffset: -160; }
+    }
+
+    /* Nodes */
+    .node {
+      position: absolute;
+      min-width: 160px;
+      padding: 0.9rem 1.1rem;
+      border-radius: var(--radius);
+      background: linear-gradient(160deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02));
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(18px) saturate(140%);
+      box-shadow:
+        0 10px 40px rgba(0,0,0,0.35),
+        inset 0 1px 0 rgba(255,255,255,0.06);
+      cursor: pointer;
+      transition: transform 0.25s cubic-bezier(.2,.8,.2,1), border-color 0.25s, box-shadow 0.25s;
+      animation: nodeIn 0.7s ease both;
+    }
+
+    .node::before {
+      content: "";
+      position: absolute;
+      inset: -1px;
+      border-radius: inherit;
+      padding: 1px;
+      background: linear-gradient(135deg, transparent, rgba(255,255,255,0.15), transparent);
+      -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+      opacity: 0.6;
+    }
+
+    @keyframes nodeIn {
+      from { opacity: 0; transform: translateY(14px) scale(0.96); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .node:hover, .node.focused {
+      transform: translateY(-4px) scale(1.03);
+      z-index: 5;
+    }
+
+    .node.tier-user { border-color: rgba(34, 211, 238, 0.45); box-shadow: var(--glow-cyan), 0 10px 40px rgba(0,0,0,0.35); }
+    .node.tier-fe { border-color: rgba(34, 211, 238, 0.35); }
+    .node.tier-be { border-color: rgba(52, 211, 153, 0.4); box-shadow: var(--glow-mint), 0 10px 40px rgba(0,0,0,0.35); }
+    .node.tier-ai { border-color: rgba(167, 139, 250, 0.4); }
+    .node.tier-ext { border-color: rgba(251, 191, 36, 0.35); }
+    .node.tier-out { border-color: rgba(251, 113, 133, 0.45); box-shadow: 0 0 24px rgba(251, 113, 133, 0.35), 0 10px 40px rgba(0,0,0,0.35); }
+
+    .node .label {
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.25rem;
+      font-family: var(--mono);
+    }
+
+    .node .title {
+      font-size: 0.95rem;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .node .sub {
+      margin-top: 0.25rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      max-width: 200px;
+    }
+
+    .pulse-dot {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.7);
+      animation: ping 2s infinite;
+    }
+
+    @keyframes ping {
+      0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
+      70% { box-shadow: 0 0 0 10px rgba(52, 211, 153, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+    }
+
+    /* Group frame for AI services */
+    .group {
+      position: absolute;
+      border-radius: 24px;
+      border: 1px solid rgba(167, 139, 250, 0.22);
+      background: rgba(167, 139, 250, 0.04);
+      backdrop-filter: blur(8px);
+      overflow: hidden;
+    }
+
+    .group.collapsed .group-body { display: none; }
+    .group.collapsed { height: 56px !important; }
+
+    .group-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.85rem 1.1rem;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(167, 139, 250, 0.15);
+      user-select: none;
+    }
+
+    .group-header h3 {
+      font-size: 0.85rem;
+      font-weight: 650;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .chev {
+      transition: transform 0.25s ease;
+      color: var(--violet);
+    }
+
+    .group.collapsed .chev { transform: rotate(-90deg); }
+
+    .group-body {
+      position: relative;
+      height: calc(100% - 52px);
+    }
+
+    .group .node {
+      position: absolute;
+    }
+
+    /* Side panel */
+    .panel {
+      position: fixed;
+      top: 72px;
+      right: 16px;
+      width: min(360px, calc(100vw - 24px));
+      max-height: calc(100vh - 96px);
+      overflow: auto;
+      z-index: 20;
+      border-radius: 20px;
+      border: 1px solid var(--card-border);
+      background: rgba(8, 12, 22, 0.82);
+      backdrop-filter: blur(22px) saturate(150%);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.45);
+      padding: 1.25rem;
+      transform: translateX(120%);
+      transition: transform 0.35s cubic-bezier(.2,.8,.2,1);
+    }
+
+    .panel.open { transform: translateX(0); }
+
+    .panel h2 {
+      font-size: 1.15rem;
+      margin-bottom: 0.35rem;
+      letter-spacing: -0.02em;
+    }
+
+    .panel .tag {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--cyan);
+      border: 1px solid rgba(34, 211, 238, 0.35);
+      border-radius: 999px;
+      padding: 0.2rem 0.55rem;
+      margin-bottom: 0.85rem;
+    }
+
+    .panel p {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.55;
+      margin-bottom: 0.85rem;
+    }
+
+    .panel ul {
+      list-style: none;
+      display: grid;
+      gap: 0.45rem;
+    }
+
+    .panel li {
+      font-size: 0.82rem;
+      padding: 0.55rem 0.7rem;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+    }
+
+    .panel .close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+    }
+
+    .hint {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      z-index: 15;
+      font-size: 0.75rem;
+      color: var(--muted);
+      padding: 0.65rem 0.9rem;
+      border-radius: 12px;
+      background: rgba(8, 12, 22, 0.7);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(10px);
+      max-width: 280px;
+      line-height: 1.4;
+    }
+
+    .legend {
+      position: fixed;
+      left: 16px;
+      top: 88px;
+      z-index: 15;
+      display: grid;
+      gap: 0.4rem;
+      padding: 0.75rem;
+      border-radius: 14px;
+      background: rgba(8, 12, 22, 0.7);
+      border: 1px solid var(--card-border);
+      backdrop-filter: blur(10px);
+      font-size: 0.72rem;
+      color: var(--muted);
+    }
+
+    .legend span {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      box-shadow: 0 0 10px currentColor;
+    }
+
+    .zoom-badge {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--muted);
+      min-width: 3.5rem;
+      text-align: center;
+    }
+
+    @media (max-width: 720px) {
+      header { flex-direction: column; align-items: flex-start; }
+      .legend { display: none; }
+      .hint { display: none; }
+      .canvas { width: 1100px; height: 1000px; padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true"></div>
+        <div>
+          <h1>DocMind Architecture</h1>
+          <p>Interactive AI &amp; systems map</p>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button class="btn" id="btn-zoom-in" type="button">Zoom +</button>
+        <button class="btn" id="btn-zoom-out" type="button">Zoom −</button>
+        <button class="btn" id="btn-reset" type="button">Reset view</button>
+        <span class="zoom-badge" id="zoom-label">100%</span>
+        <button class="btn active" id="btn-animate" type="button">Animations on</button>
+        <a class="btn" href="https://github.com/aayushroopchandani/DocMind-AI-Intelligent-conversations-with-documents#readme">README</a>
+      </div>
+    </header>
+
+    <div class="stage-wrap" id="viewport">
+      <div class="stage" id="stage">
+        <div class="canvas" id="canvas">
+          <svg class="flows" id="flows" aria-hidden="true"></svg>
+
+          <!-- User -->
+          <div class="node tier-user" id="n-user" style="left:560px; top:20px; animation-delay:0.05s"
+               data-title="User" data-tag="Client"
+               data-desc="Researchers, students, and teams interacting with multi-PDF chats, summaries, and quizzes."
+               data-points="Asks grounded questions|Uploads up to 4 PDFs per chat|Reviews citations in the PDF viewer">
+            <div class="pulse-dot"></div>
+            <div class="label">Entry</div>
+            <div class="title">User</div>
+            <div class="sub">Browser session</div>
+          </div>
+
+          <!-- Next.js -->
+          <div class="node tier-fe" id="n-next" style="left:520px; top:130px; min-width:240px; animation-delay:0.12s"
+               data-title="Next.js Frontend + BFF" data-tag="Presentation"
+               data-desc="App Router UI with Clerk auth. Server routes proxy to FastAPI and re-stream SSE so secrets never reach the browser."
+               data-points="Clerk-protected /chat routes|PDF viewer + streaming chat UI|Quiz practice / rapid-fire / exam|/api/* BFF proxies">
+            <div class="label">Frontend</div>
+            <div class="title">Next.js + BFF</div>
+            <div class="sub">React 19 · Clerk · SSE client</div>
+          </div>
+
+          <!-- FastAPI -->
+          <div class="node tier-be" id="n-api" style="left:520px; top:250px; min-width:240px; animation-delay:0.18s"
+               data-title="FastAPI Backend" data-tag="API Gateway"
+               data-desc="Thin HTTP layer for users, chats, documents, and the streaming ask endpoint. Validates identity headers and ownership."
+               data-points="POST /chats/{id}/stream|PDF upload &amp; detach|Document node status|Internal secret guard">
+            <div class="label">Backend</div>
+            <div class="title">FastAPI</div>
+            <div class="sub">REST + Server-Sent Events</div>
+          </div>
+
+          <!-- Router -->
+          <div class="node tier-ai" id="n-router" style="left:540px; top:370px; min-width:200px; animation-delay:0.24s"
+               data-title="Intent Router" data-tag="Orchestration"
+               data-desc="Classifies each message as general_qa, summarization, or quiz using heuristics + structured LLM output, then dispatches a specialized pipeline."
+               data-points="general_qa → RAG|summarization → outline L1|quiz → context / topic scopes">
+            <div class="label">Control plane</div>
+            <div class="title">Intent Router</div>
+            <div class="sub">Heuristic + LLM classify</div>
+          </div>
+
+          <!-- AI group -->
+          <div class="group" id="ai-group" style="left:120px; top:470px; width:1160px; height:360px;">
+            <div class="group-header" id="ai-toggle">
+              <h3><span style="color:var(--violet)">✦</span> AI Services <span style="color:var(--muted); font-weight:500; font-size:0.75rem;">click to collapse</span></h3>
+              <span class="chev">▾</span>
+            </div>
+            <div class="group-body">
+              <div class="node tier-ai" id="n-chat" style="left:30px; top:30px;"
+                   data-title="Chat Service" data-tag="RAG"
+                   data-desc="Streams grounded Markdown answers with inline [Cn] citations using Gemini 2.5 Flash via OpenRouter."
+                   data-points="ask_question() generator|Grounded system prompts|Citation-aware streaming">
+                <div class="label">Service</div>
+                <div class="title">Chat Service</div>
+              </div>
+              <div class="node tier-ai" id="n-retrieval" style="left:220px; top:30px;"
+                   data-title="Retrieval Service" data-tag="RAG"
+                   data-desc="MultiQueryRetriever over Qdrant with user/doc filters, then dedupe + per-document balancing."
+                   data-points="Query rewrite|Multi-query expansion|Token / chunk budgets">
+                <div class="label">Service</div>
+                <div class="title">Retrieval</div>
+              </div>
+              <div class="node tier-ai" id="n-embed" style="left:410px; top:30px;"
+                   data-title="Embedding Service" data-tag="Vectors"
+                   data-desc="OpenAI text-embedding-3-small for chunks (1536-d) and outline nodes (512-d)."
+                   data-points="Chunk embeddings|Node embeddings|Cached factories">
+                <div class="label">Service</div>
+                <div class="title">Embeddings</div>
+              </div>
+              <div class="node tier-ai" id="n-prompt" style="left:600px; top:30px;"
+                   data-title="Prompt Builder" data-tag="Prompts"
+                   data-desc="Central templates for answering, rewriting, rolling summaries, and structured metadata enrichment."
+                   data-points="Grounding rules|Rewrite prompts|Memory compression">
+                <div class="label">Service</div>
+                <div class="title">Prompt Builder</div>
+              </div>
+              <div class="node tier-ai" id="n-memory" style="left:790px; top:30px;"
+                   data-title="Conversation Memory" data-tag="Memory"
+                   data-desc="Recent verbatim messages plus a rolling MongoDB summary refreshed on a configurable cadence."
+                   data-points="MEMORY_RECENT_MESSAGES|MEMORY_SUMMARY_EVERY|chat.memory document">
+                <div class="label">Service</div>
+                <div class="title">Memory</div>
+              </div>
+              <div class="node tier-ai" id="n-summary" style="left:120px; top:140px;"
+                   data-title="Summarization Pipeline" data-tag="Document Intelligence"
+                   data-desc="Outline-aware Level-1 summarization with hybrid node search, scope budgets, clustering/MMR representatives, and hierarchical map-reduce."
+                   data-points="TOC node tree|Scope budgets|Summary index cache">
+                <div class="label">Pipeline</div>
+                <div class="title">Summarization</div>
+                <div class="sub">Outline · MMR · map-reduce</div>
+              </div>
+              <div class="node tier-ai" id="n-quiz" style="left:380px; top:140px;"
+                   data-title="Quiz Pipelines" data-tag="Assessment"
+                   data-desc="Context-based and topic-based quiz generation with multiple formats and practice / rapid-fire / exam modes."
+                   data-points="Context resolution|Topic retrieval|Citation-linked items">
+                <div class="label">Pipeline</div>
+                <div class="title">Quiz Agent</div>
+                <div class="sub">Context · Topic scopes</div>
+              </div>
+              <div class="node tier-ai" id="n-stream" style="left:640px; top:140px;"
+                   data-title="Streaming Service" data-tag="Transport"
+                   data-desc="SSE events (status, intent, token, citations, quiz, final, done) flushed through FastAPI and the Next.js proxy."
+                   data-points="text/event-stream|Cancel-safe persistence|UI progress states">
+                <div class="label">Transport</div>
+                <div class="title">Streaming</div>
+              </div>
+              <div class="node tier-ai" id="n-future" style="left:900px; top:140px; border-style:dashed;"
+                   data-title="Research Agent (Roadmap)" data-tag="Coming soon"
+                   data-desc="In progress: LangGraph research &amp; data-analysis agent that auto-builds charts and dashboards from document findings."
+                   data-points="LangGraph workflows|Data analysis tools|Auto charts &amp; dashboards">
+                <div class="label">Roadmap</div>
+                <div class="title">LangGraph Agent</div>
+                <div class="sub">Charts · Dashboards</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Externals -->
+          <div class="node tier-ext" id="n-or" style="left:140px; top:880px; animation-delay:0.4s"
+               data-title="OpenRouter / Gemini" data-tag="LLM"
+               data-desc="Primary LLM gateway. Gemini 2.5 Flash for streaming answers; Flash-Lite for rewrite, memory, and structured utilities."
+               data-points="OPENROUTER_API_KEY|Streaming chat completions|Structured outputs">
+            <div class="label">External</div>
+            <div class="title">OpenRouter</div>
+            <div class="sub">Gemini 2.5</div>
+          </div>
+          <div class="node tier-ext" id="n-openai" style="left:360px; top:880px; animation-delay:0.45s"
+               data-title="OpenAI Embeddings" data-tag="Vectors"
+               data-desc="text-embedding-3-small powers semantic search for chunks and outline nodes."
+               data-points="Chunk vectors 1536-d|Node vectors 512-d">
+            <div class="label">External</div>
+            <div class="title">OpenAI</div>
+            <div class="sub">Embeddings</div>
+          </div>
+          <div class="node tier-ext" id="n-qdrant" style="left:580px; top:880px; animation-delay:0.5s"
+               data-title="Qdrant" data-tag="Vector DB"
+               data-desc="Dual collections for chunks and nodes with payload indexes on user_id, doc_id, and node_id. Embedded path or remote URL."
+               data-points="Cosine similarity|Filtered retrieval|Local qdrant_storage">
+            <div class="label">External</div>
+            <div class="title">Qdrant</div>
+            <div class="sub">Chunks + Nodes</div>
+          </div>
+          <div class="node tier-ext" id="n-mongo" style="left:800px; top:880px; animation-delay:0.55s"
+               data-title="MongoDB" data-tag="App DB"
+               data-desc="Users, chats, conversation memory, PDF metadata, outline nodes, summary-index status, and generated quizzes."
+               data-points="Motor async driver|Clerk user sync|Chat history">
+            <div class="label">External</div>
+            <div class="title">MongoDB</div>
+            <div class="sub">State &amp; history</div>
+          </div>
+          <div class="node tier-ext" id="n-cloud" style="left:1020px; top:880px; animation-delay:0.6s"
+               data-title="Cloudinary" data-tag="Object storage"
+               data-desc="Private raw PDF hosting. Secure URLs feed the ingest pipeline and the in-browser PDF viewer."
+               data-points="Private uploads|SHA-256 document ids">
+            <div class="label">External</div>
+            <div class="title">Cloudinary</div>
+            <div class="sub">PDF binaries</div>
+          </div>
+
+          <!-- Response -->
+          <div class="node tier-out" id="n-response" style="left:560px; top:1000px; min-width:220px; animation-delay:0.65s"
+               data-title="Streaming Response" data-tag="Output"
+               data-desc="Tokens, citations, structured finals, and quiz payloads reach the UI in real time for a responsive workspace experience."
+               data-points="Markdown answers|Citation jump-to-page|Quiz launch events">
+            <div class="pulse-dot" style="background:var(--rose); box-shadow:0 0 0 0 rgba(251,113,133,0.6);"></div>
+            <div class="label">Output</div>
+            <div class="title">Response</div>
+            <div class="sub">SSE → UI</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend" aria-hidden="true">
+    <span><i class="swatch" style="background:var(--cyan); color:var(--cyan)"></i> Client / Frontend</span>
+    <span><i class="swatch" style="background:var(--mint); color:var(--mint)"></i> Backend</span>
+    <span><i class="swatch" style="background:var(--violet); color:var(--violet)"></i> AI pipelines</span>
+    <span><i class="swatch" style="background:var(--amber); color:var(--amber)"></i> Externals</span>
+    <span><i class="swatch" style="background:var(--rose); color:var(--rose)"></i> Response</span>
+  </div>
+
+  <div class="hint">
+    Drag to pan · Scroll to zoom · Click a node for details · Collapse AI Services to focus the stack
+  </div>
+
+  <aside class="panel" id="panel" aria-live="polite">
+    <button class="btn close" id="panel-close" type="button">Close</button>
+    <div class="tag" id="panel-tag">Service</div>
+    <h2 id="panel-title">Select a node</h2>
+    <p id="panel-desc">Click any glowing node on the map to inspect its role in the DocMind AI pipeline.</p>
+    <ul id="panel-points"></ul>
+  </aside>
+
+  <script>
+    (() => {
+      const viewport = document.getElementById("viewport");
+      const stage = document.getElementById("stage");
+      const flows = document.getElementById("flows");
+      const zoomLabel = document.getElementById("zoom-label");
+      const panel = document.getElementById("panel");
+      const aiGroup = document.getElementById("ai-group");
+
+      let scale = 0.85;
+      let tx = 40;
+      let ty = 10;
+      let dragging = false;
+      let lastX = 0;
+      let lastY = 0;
+      let animOn = true;
+
+      const links = [
+        ["n-user", "n-next", "cyan"],
+        ["n-next", "n-api", "cyan"],
+        ["n-api", "n-router", "mint"],
+        ["n-router", "n-chat", "violet"],
+        ["n-router", "n-summary", "violet"],
+        ["n-router", "n-quiz", "violet"],
+        ["n-chat", "n-retrieval", "violet"],
+        ["n-retrieval", "n-embed", "violet"],
+        ["n-chat", "n-prompt", "violet"],
+        ["n-chat", "n-memory", "mint"],
+        ["n-chat", "n-stream", "mint"],
+        ["n-summary", "n-stream", "mint"],
+        ["n-quiz", "n-stream", "amber"],
+        ["n-embed", "n-openai", "amber"],
+        ["n-retrieval", "n-qdrant", "amber"],
+        ["n-chat", "n-or", "amber"],
+        ["n-memory", "n-mongo", "amber"],
+        ["n-api", "n-cloud", "amber"],
+        ["n-stream", "n-response", "rose"],
+      ];
+
+      function applyTransform() {
+        stage.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+        zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+      }
+
+      function centerOf(el) {
+        const canvas = document.getElementById("canvas");
+        const c = canvas.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        // Both rects share the stage transform — divide by scale for canvas-local coords.
+        return {
+          x: (r.left + r.width / 2 - c.left) / scale,
+          y: (r.top + r.height / 2 - c.top) / scale,
+        };
+      }
+
+      function drawFlows() {
+        const canvas = document.getElementById("canvas");
+        flows.setAttribute("viewBox", `0 0 ${canvas.offsetWidth} ${canvas.offsetHeight}`);
+        flows.innerHTML = "";
+
+        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        defs.innerHTML = `
+          <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3.5" result="coloredBlur"/>
+            <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        `;
+        flows.appendChild(defs);
+
+        for (const [fromId, toId, color] of links) {
+          const a = document.getElementById(fromId);
+          const b = document.getElementById(toId);
+          if (!a || !b) continue;
+          if (aiGroup.classList.contains("collapsed") && a.closest(".group-body")) continue;
+          if (aiGroup.classList.contains("collapsed") && b.closest(".group-body") && fromId !== "n-router") continue;
+
+          const p1 = centerOf(a);
+          const p2 = centerOf(b);
+          const midY = (p1.y + p2.y) / 2;
+          const d = `M ${p1.x} ${p1.y} C ${p1.x} ${midY}, ${p2.x} ${midY}, ${p2.x} ${p2.y}`;
+
+          const base = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          base.setAttribute("d", d);
+          base.setAttribute("class", `flow-path ${color === "rose" ? "amber" : color}`);
+          if (color === "rose") base.style.stroke = "var(--rose)";
+          base.setAttribute("filter", "url(#softGlow)");
+          flows.appendChild(base);
+
+          if (animOn) {
+            const dash = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            dash.setAttribute("d", d);
+            dash.setAttribute("class", `flow-path flow-dash ${color === "rose" ? "amber" : color}`);
+            if (color === "rose") dash.style.stroke = "var(--rose)";
+            flows.appendChild(dash);
+
+            const pulse = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            pulse.setAttribute("d", d);
+            pulse.setAttribute("class", `flow-path flow-pulse ${color === "rose" ? "amber" : color}`);
+            if (color === "rose") pulse.style.stroke = "var(--rose)";
+            flows.appendChild(pulse);
+          }
+        }
+      }
+
+      function openPanel(node) {
+        document.querySelectorAll(".node.focused").forEach((n) => n.classList.remove("focused"));
+        node.classList.add("focused");
+        document.getElementById("panel-title").textContent = node.dataset.title || node.querySelector(".title")?.textContent || "Node";
+        document.getElementById("panel-tag").textContent = node.dataset.tag || "Component";
+        document.getElementById("panel-desc").textContent = node.dataset.desc || "";
+        const list = document.getElementById("panel-points");
+        list.innerHTML = "";
+        (node.dataset.points || "").split("|").filter(Boolean).forEach((item) => {
+          const li = document.createElement("li");
+          li.textContent = item;
+          list.appendChild(li);
+        });
+        panel.classList.add("open");
+      }
+
+      document.querySelectorAll(".node").forEach((node) => {
+        node.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openPanel(node);
+        });
+      });
+
+      document.getElementById("panel-close").addEventListener("click", () => {
+        panel.classList.remove("open");
+        document.querySelectorAll(".node.focused").forEach((n) => n.classList.remove("focused"));
+      });
+
+      document.getElementById("ai-toggle").addEventListener("click", () => {
+        aiGroup.classList.toggle("collapsed");
+        requestAnimationFrame(() => {
+          drawFlows();
+          setTimeout(drawFlows, 50);
+        });
+      });
+
+      // Pan
+      viewport.addEventListener("pointerdown", (e) => {
+        if (e.target.closest(".node") || e.target.closest(".group-header") || e.target.closest(".panel")) return;
+        dragging = true;
+        viewport.classList.add("dragging");
+        lastX = e.clientX;
+        lastY = e.clientY;
+        viewport.setPointerCapture(e.pointerId);
+      });
+
+      viewport.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        tx += e.clientX - lastX;
+        ty += e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        applyTransform();
+      });
+
+      viewport.addEventListener("pointerup", () => {
+        dragging = false;
+        viewport.classList.remove("dragging");
+      });
+
+      // Zoom (wheel)
+      viewport.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const rect = viewport.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const prev = scale;
+        const delta = e.deltaY > 0 ? 0.92 : 1.08;
+        scale = Math.min(2.2, Math.max(0.35, scale * delta));
+        tx = mx - (mx - tx) * (scale / prev);
+        ty = my - (my - ty) * (scale / prev);
+        applyTransform();
+        drawFlows();
+      }, { passive: false });
+
+      document.getElementById("btn-zoom-in").onclick = () => {
+        scale = Math.min(2.2, scale * 1.15);
+        applyTransform();
+        drawFlows();
+      };
+      document.getElementById("btn-zoom-out").onclick = () => {
+        scale = Math.max(0.35, scale / 1.15);
+        applyTransform();
+        drawFlows();
+      };
+      document.getElementById("btn-reset").onclick = () => {
+        scale = 0.85;
+        tx = 40;
+        ty = 10;
+        applyTransform();
+        drawFlows();
+      };
+
+      const animBtn = document.getElementById("btn-animate");
+      animBtn.onclick = () => {
+        animOn = !animOn;
+        animBtn.classList.toggle("active", animOn);
+        animBtn.textContent = animOn ? "Animations on" : "Animations off";
+        drawFlows();
+      };
+
+      window.addEventListener("resize", () => drawFlows());
+
+      // Initial
+      applyTransform();
+      // Wait for layout / fonts
+      requestAnimationFrame(() => {
+        drawFlows();
+        setTimeout(drawFlows, 120);
+        setTimeout(drawFlows, 400);
+      });
+
+      // Keep connectors aligned if fonts load late
+      document.fonts?.ready?.then(() => drawFlows());
+    })();
+  </script>
+</body>
+</html>
