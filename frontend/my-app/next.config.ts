@@ -7,6 +7,11 @@ import { fileURLToPath } from "node:url";
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
+  experimental: {
+    // The UI accepts PDFs up to 25 MB. Leave room for multipart headers so
+    // Next.js does not truncate the body before forwarding it to FastAPI.
+    proxyClientMaxBodySize: "30mb",
+  },
   turbopack: {
     root: appDir,
   },

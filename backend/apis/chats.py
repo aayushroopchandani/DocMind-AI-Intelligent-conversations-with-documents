@@ -35,6 +35,11 @@ from scripts.intention_pipelines.quiz_pipeline.topic_based import (
 from scripts.intention_pipelines.summarization_pipeline.level1_pdf_with_outline import (
     stream_level1_pdf_with_outline,
 )
+from scripts.intention_pipelines.summarization_pipeline.summary_index import (
+    SUMMARY_INDEX_VERSION,
+    build_summary_index,
+    initialize_pending_summary_indexes,
+)
 from scripts.intent_detection import (
     IntentDocument,
     IntentType,
@@ -48,6 +53,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 _background_quiz_tasks: set[asyncio.Task] = set()
+_background_summary_index_tasks: set[asyncio.Task] = set()
 
 
 class ChatResponse(BaseModel):
@@ -101,6 +107,25 @@ async def _to_chat_response(chat: dict) -> ChatResponse:
         created_at=chat.get("created_at"),
         updated_at=chat.get("updated_at"),
     )
+
+
+def _schedule_summary_index(*, user_id: str, document_id: str) -> None:
+    """Start idempotent representative indexing without delaying upload."""
+    task = asyncio.create_task(
+        build_summary_index(user_id=user_id, document_id=document_id)
+    )
+    _background_summary_index_tasks.add(task)
+
+    def _log_result(done_task: asyncio.Task) -> None:
+        _background_summary_index_tasks.discard(done_task)
+        try:
+            built = done_task.result()
+            if built:
+                logger.info("Summary index ready for document %s", document_id)
+        except Exception:
+            logger.exception("Summary-index build failed for document %s", document_id)
+
+    task.add_done_callback(_log_result)
 
 
 @router.post("", response_model=ChatResponse)
@@ -194,6 +219,7 @@ async def upload_pdfs(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
+            _schedule_summary_index(user_id=user_id, document_id=document_id)
             continue
 
         pending_document, claimed = await crud.create_pending_document(
@@ -208,6 +234,7 @@ async def upload_pdfs(
                     user_id=user_id,
                     document_db_id=pending_document["id"],
                 )
+                _schedule_summary_index(user_id=user_id, document_id=document_id)
                 continue
             raise HTTPException(
                 status_code=409,
@@ -227,6 +254,7 @@ async def upload_pdfs(
                 user_id=user_id,
             )
             nodes = ingest_pdf(ingest_data)
+            indexed_nodes = initialize_pending_summary_indexes(nodes)
 
             ready_document = await crud.mark_document_ready(
                 document_db_id=pending_document["id"],
@@ -239,9 +267,15 @@ async def upload_pdfs(
                     "filename": asset["filename"],
                     "bytes": asset.get("bytes"),
                     "pages": asset.get("pages"),
-                    "nodes": {"nodes":nodes,"ingestion_status":"not_ready"},
+                    "nodes": {
+                        "nodes": indexed_nodes,
+                        "ingestion_status": "not_ready",
+                    },
+                    "summary_index_status": "pending",
+                    "summary_index_version": SUMMARY_INDEX_VERSION,
                 },
             )
+            _schedule_summary_index(user_id=user_id, document_id=document_id)
         except Exception as exc:  # pragma: no cover - surface upstream errors
             logger.exception("PDF ingestion failed for %s", filename)
             if asset is not None:
@@ -513,13 +547,13 @@ async def stream_chat(
                 doc_id for doc_id in (intent.doc_ids or document_ids)
                 if doc_id in document_names
             ] or document_ids
-
             async for event in stream_level1_pdf_with_outline(
                 target=intent.target,
                 doc_ids=summary_doc_ids,
                 user_id=user_id,
                 document_names=document_names,
                 question=question,
+                deep_summary=body.deep_summary,
             ):
                 yield _sse(event)
             return

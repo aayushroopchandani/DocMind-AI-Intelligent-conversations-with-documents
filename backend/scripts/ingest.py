@@ -88,12 +88,18 @@ def ingest_pdf(data: IngestData):
     
     for document in documents:
         page = document.metadata.get("page", 0) + 1 # 0-based index to 1-based index
+        node_id = find_node_id(page, nodes)
+        # Outlined PDFs often have cover/front-matter pages before the first
+        # TOC entry. Keep those chunks indexable instead of leaving them outside
+        # every per-node representative set.
+        if node_id is None and nodes:
+            node_id = nodes[0]["node_id"]
         document.metadata.update({
             "source": data.filename,
             "doc_id": data.document_id,
             "user_id": data.user_id,
             "page_number": page,
-            "node_id": find_node_id(page,nodes)
+            "node_id": node_id,
         })
 
     # text splitting(chunking)

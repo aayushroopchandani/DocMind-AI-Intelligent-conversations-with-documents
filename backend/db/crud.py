@@ -199,7 +199,7 @@ async def get_nodes_ingestion_status(
 async def get_document_nodes(
     *, user_id: str, document_id: str
 ) -> Optional[dict[str, Any]]:
-    """Fetch only the outline nodes for one user's document hash."""
+    """Fetch outline and summary-index metadata for one user's document hash."""
     db = get_db()
     document = await db.documents.find_one(
         {"user_id": user_id, "document_id": document_id},
@@ -208,6 +208,8 @@ async def get_document_nodes(
             "user_id": 1,
             "document_id": 1,
             "nodes": 1,
+            "summary_index_status": 1,
+            "summary_index_version": 1,
         },
     )
     if document is None:
@@ -223,6 +225,114 @@ async def get_document_nodes(
     nodes_data.setdefault("ingestion_status", "not_ready")
     document["nodes"] = nodes_data
     return document
+
+
+async def claim_summary_index_build(
+    *, user_id: str, document_id: str, version: str
+) -> bool:
+    """Atomically claim a pending, failed, missing, or outdated index build."""
+    db = get_db()
+    document = await db.documents.find_one_and_update(
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "ingestion_status": "ready",
+            "$or": [
+                {"summary_index_version": {"$ne": version}},
+                {"summary_index_status": {"$in": ["pending", "failed"]}},
+                {"summary_index_status": {"$exists": False}},
+            ],
+        },
+        {
+            "$set": {
+                "summary_index_status": "processing",
+                "summary_index_version": version,
+                "updated_at": _utc_now(),
+            },
+            "$unset": {"summary_index_error": ""},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    return document is not None
+
+
+async def complete_summary_index_build(
+    *,
+    user_id: str,
+    document_id: str,
+    version: str,
+    nodes: list[dict[str, Any]],
+) -> bool:
+    """Persist representative IDs and mark the claimed build ready atomically."""
+    db = get_db()
+    result = await db.documents.update_one(
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "summary_index_status": "processing",
+            "summary_index_version": version,
+        },
+        {
+            "$set": {
+                "nodes.nodes": nodes,
+                "summary_index_status": "ready",
+                "summary_index_version": version,
+                "updated_at": _utc_now(),
+            },
+            "$unset": {"summary_index_error": ""},
+        },
+    )
+    return result.matched_count == 1
+
+
+async def mark_summary_index_failed(
+    *,
+    user_id: str,
+    document_id: str,
+    version: str,
+    error: str,
+) -> bool:
+    """Record a failed build without exposing its diagnostic to API clients."""
+    db = get_db()
+    result = await db.documents.update_one(
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "summary_index_status": "processing",
+            "summary_index_version": version,
+        },
+        {
+            "$set": {
+                "summary_index_status": "failed",
+                "summary_index_error": error[:1000],
+                "updated_at": _utc_now(),
+            }
+        },
+    )
+    return result.matched_count == 1
+
+
+async def user_has_deep_summary_access(*, user_id: str) -> bool:
+    """Return server-side entitlement for the monetized full hierarchy mode."""
+    db = get_db()
+    user = await db.users.find_one(
+        {"clerk_user_id": user_id},
+        {
+            "plan": 1,
+            "features.deep_summary": 1,
+            "entitlements.deep_summary": 1,
+        },
+    )
+    if user is None:
+        return False
+
+    features = user.get("features") or {}
+    entitlements = user.get("entitlements") or {}
+    return bool(
+        features.get("deep_summary") is True
+        or entitlements.get("deep_summary") is True
+        or str(user.get("plan", "")).lower() in {"pro", "premium"}
+    )
 
 
 async def mark_nodes_ingestion_ready(*, user_id: str, document_id: str) -> bool:

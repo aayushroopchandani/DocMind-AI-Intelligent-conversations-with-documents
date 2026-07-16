@@ -10,6 +10,18 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+SummaryIndexStatus = Literal["pending", "processing", "ready", "failed"]
+
+
+class NodeSummaryIndex(BaseModel):
+    status: SummaryIndexStatus = "pending"
+    chunk_count: int = 0
+    representative_chunk_ids: list[str] = Field(default_factory=list)
+    method: str = "pending"
+    cluster_count: int = 0
+    version: str = "v1"
+
+
 class Node(BaseModel):
     node_id: str = Field(..., description="Node ID")
     title: str = Field(..., description="Node title")
@@ -20,6 +32,11 @@ class Node(BaseModel):
     normalized_title: Optional[str] = Field(
         default=None, description="Normalized title used for node search"
     )
+    summary_index: Optional[NodeSummaryIndex] = Field(
+        default=None,
+        description="Precomputed representative chunks for budgeted summaries",
+    )
+
 
 class NodeData(BaseModel):
     nodes: Optional[list[Node]] = Field(default=None, description="Nodes")
@@ -39,6 +56,8 @@ class PdfDocument(BaseModel):
     bytes: Optional[int] = None
     pages: Optional[int] = None
     nodes: NodeData = Field(default_factory=NodeData)
+    summary_index_status: SummaryIndexStatus = "pending"
+    summary_index_version: str = "v1"
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

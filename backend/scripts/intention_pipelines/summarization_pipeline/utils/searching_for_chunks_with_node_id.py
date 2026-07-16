@@ -40,6 +40,7 @@ DOC_ID_FIELD = f"{METADATA_KEY}.doc_id"
 NODE_ID_FIELD = f"{METADATA_KEY}.node_id"
 
 DEFAULT_SCROLL_PAGE_SIZE = 512
+DEFAULT_RETRIEVE_BATCH_SIZE = 256
 
 
 def _integer_or_infinity(value: Any) -> int | float:
@@ -96,6 +97,86 @@ def _scroll_chunk_records(
         offset = next_offset
 
     return all_records
+
+
+def _point_id(value: str) -> str | int:
+    """Restore numeric Qdrant point IDs that were serialized for MongoDB."""
+    return int(value) if value.isdigit() else value
+
+
+def _retrieve_chunk_records(
+    *,
+    chunk_ids: list[str],
+    batch_size: int,
+) -> list[models.Record]:
+    qdrant_client = get_client()
+    records: list[models.Record] = []
+    for start in range(0, len(chunk_ids), batch_size):
+        batch = chunk_ids[start : start + batch_size]
+        records.extend(
+            qdrant_client.retrieve(
+                collection_name=_chunk_collection_name(),
+                ids=[_point_id(chunk_id) for chunk_id in batch],
+                with_payload=[CONTENT_KEY, METADATA_KEY],
+                with_vectors=False,
+            )
+        )
+    return records
+
+
+async def searching_for_chunks_by_ids(
+    chunk_ids: list[str],
+    doc_id: str,
+    user_id: str,
+    *,
+    batch_size: int = DEFAULT_RETRIEVE_BATCH_SIZE,
+) -> list[dict[str, Any]]:
+    """Retrieve preselected chunks by ID and restore original document order."""
+    if not doc_id or not user_id:
+        raise ValueError("doc_id and user_id are required")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero")
+
+    unique_ids = list(dict.fromkeys(str(chunk_id) for chunk_id in chunk_ids))
+    if not unique_ids:
+        return []
+
+    records = await asyncio.to_thread(
+        _retrieve_chunk_records,
+        chunk_ids=unique_ids,
+        batch_size=batch_size,
+    )
+    chunks: list[dict[str, Any]] = []
+    for record in records:
+        payload = record.payload or {}
+        metadata = payload.get(METADATA_KEY)
+        if not isinstance(metadata, dict):
+            raise ValueError(
+                f"Qdrant point '{record.id}' contains invalid metadata"
+            )
+        # The ID list lives in MongoDB, but ownership is still verified against
+        # Qdrant payloads before any content reaches the LLM.
+        if metadata.get("user_id") != user_id or metadata.get("doc_id") != doc_id:
+            raise ValueError("Representative chunk ownership mismatch")
+        chunks.append(
+            {
+                "id": record.id,
+                "page_content": payload.get(CONTENT_KEY, ""),
+                "metadata": metadata,
+            }
+        )
+
+    chunks.sort(
+        key=lambda chunk: (
+            _integer_or_infinity(
+                chunk["metadata"].get("document_chunk_index")
+            ),
+            _integer_or_infinity(chunk["metadata"].get("page_number")),
+            _integer_or_infinity(chunk["metadata"].get("start_index")),
+            str(chunk["id"]),
+        )
+    )
+    return chunks
 
 
 async def searching_for_chunks_with_node_id(

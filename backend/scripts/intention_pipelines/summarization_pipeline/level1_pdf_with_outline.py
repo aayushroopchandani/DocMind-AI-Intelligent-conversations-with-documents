@@ -22,7 +22,11 @@ from utils.pydantic_schemas import (
 )
 
 from .utils.operation_on_nodes import get_node_scope
-from .utils.searching_for_chunks_with_node_id import searching_for_chunks_with_node_id
+from .summary_index import SUMMARY_INDEX_VERSION
+from .utils.searching_for_chunks_with_node_id import (
+    searching_for_chunks_by_ids,
+    searching_for_chunks_with_node_id,
+)
 from .utils.searching_for_nodes import exact_matching, hybrid_search, normalize_title
 
 load_dotenv()
@@ -42,7 +46,7 @@ MEDIUM_MAX_CHUNKS = max(
     SMALL_MAX_CHUNKS + 1,
     _env_int("SUMMARY_MEDIUM_MAX_CHUNKS", 60),
 )
-MAP_GROUP_CHUNKS = _env_int("SUMMARY_MAP_GROUP_CHUNKS", 10)
+MAP_GROUP_CHUNKS = _env_int("SUMMARY_MAP_GROUP_CHUNKS", 20)
 HIERARCHICAL_GROUP_CHUNKS = _env_int("SUMMARY_HIERARCHICAL_GROUP_CHUNKS", 8)
 MAX_PARALLEL_LLM_CALLS = _env_int("SUMMARY_MAX_PARALLEL_LLM_CALLS", 4)
 MAX_CHUNK_CHARS = _env_int("SUMMARY_MAX_CHUNK_CHARS", 1400)
@@ -65,6 +69,7 @@ class DocumentSummaryContext:
     target_label: str = "the whole document"
     node_id: str | None = None
     strategy: str = ""
+    source_chunk_count: int = 0
     context: str = ""
     chunks: list[dict[str, Any]] = field(default_factory=list)
     nodes: list[dict[str, Any]] = field(default_factory=list)
@@ -216,6 +221,47 @@ def _nodes_by_id(nodes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         for node in nodes
         if node.get("node_id") is not None
     }
+
+
+def _nodes_in_scope(
+    nodes: list[dict[str, Any]],
+    node_id: str | None,
+) -> list[dict[str, Any]]:
+    scope_ids = get_node_scope(nodes, node_id)
+    if scope_ids is None:
+        return nodes
+    by_id = _nodes_by_id(nodes)
+    return [by_id[current_id] for current_id in scope_ids if current_id in by_id]
+
+
+def _representative_index_for_scope(
+    nodes: list[dict[str, Any]],
+    node_id: str | None,
+) -> tuple[bool, int, list[str]]:
+    """Return readiness, original chunk count, and ordered representative IDs."""
+    source_chunk_count = 0
+    representative_ids: list[str] = []
+
+    for node in _nodes_in_scope(nodes, node_id):
+        summary_index = node.get("summary_index")
+        if not isinstance(summary_index, dict):
+            return False, 0, []
+        if (
+            summary_index.get("status") != "ready"
+            or summary_index.get("version") != SUMMARY_INDEX_VERSION
+        ):
+            return False, 0, []
+
+        source_chunk_count += max(
+            0,
+            _integer_or_none(summary_index.get("chunk_count")) or 0,
+        )
+        representative_ids.extend(
+            str(chunk_id)
+            for chunk_id in summary_index.get("representative_chunk_ids", [])
+        )
+
+    return True, source_chunk_count, list(dict.fromkeys(representative_ids))
 
 
 def _ensure_normalized_titles(nodes: list[dict[str, Any]]) -> None:
@@ -545,6 +591,27 @@ async def _map_reduce_context(
     )
 
 
+async def _representative_hierarchical_context(
+    *,
+    doc_name: str,
+    target_label: str,
+    chunks: list[dict[str, Any]],
+    semaphore: asyncio.Semaphore,
+) -> str:
+    """
+    Summarize ordered representative chunks in bounded contiguous groups.
+
+    Node IDs remain in every formatted chunk, so the final model can retain the
+    outline without recursively summarizing and merging every outline node.
+    """
+    return await _map_reduce_context(
+        doc_name=doc_name,
+        target_label=target_label,
+        chunks=chunks,
+        semaphore=semaphore,
+    )
+
+
 async def _summarize_chunks_to_notes(
     *,
     doc_name: str,
@@ -696,6 +763,7 @@ async def _prepare_document_context(
     user_id: str,
     doc_name: str,
     semaphore: asyncio.Semaphore,
+    deep_summary: bool = False,
 ) -> DocumentSummaryContext:
     document = await crud.get_document_nodes(
         user_id=user_id,
@@ -735,6 +803,76 @@ async def _prepare_document_context(
         )
 
     target_label = _node_path(nodes, node_id)
+    scope_index_ready, indexed_chunk_count, representative_ids = (
+        _representative_index_for_scope(nodes, node_id)
+    )
+    document_index_ready = bool(
+        document.get("summary_index_status") == "ready"
+        and document.get("summary_index_version") == SUMMARY_INDEX_VERSION
+    )
+    summary_index_ready = document_index_ready and scope_index_ready
+
+    async def representative_context(
+        source_chunk_count: int,
+    ) -> DocumentSummaryContext:
+        if source_chunk_count and not representative_ids:
+            return DocumentSummaryContext(
+                doc_id=doc_id,
+                doc_name=doc_name,
+                status="summary_index_failed",
+                target_label=target_label,
+                node_id=node_id,
+                nodes=nodes,
+                message=(
+                    "Summary optimization could not be prepared for this "
+                    "document. Please try again shortly."
+                ),
+            )
+
+        representative_chunks = await searching_for_chunks_by_ids(
+            chunk_ids=representative_ids,
+            doc_id=doc_id,
+            user_id=user_id,
+        )
+        if not representative_chunks:
+            return DocumentSummaryContext(
+                doc_id=doc_id,
+                doc_name=doc_name,
+                status="not_found",
+                target_label=target_label,
+                node_id=node_id,
+                nodes=nodes,
+                message=f"No chunks were found for {target_label}.",
+            )
+
+        context = await _representative_hierarchical_context(
+            doc_name=doc_name,
+            target_label=target_label,
+            chunks=representative_chunks,
+            semaphore=semaphore,
+        )
+        return DocumentSummaryContext(
+            doc_id=doc_id,
+            doc_name=doc_name,
+            status="ready",
+            target_label=target_label,
+            node_id=node_id,
+            strategy="representative_hierarchical",
+            source_chunk_count=source_chunk_count,
+            context=_truncate(context, MAX_CONTEXT_CHARS_PER_DOC),
+            chunks=representative_chunks,
+            nodes=nodes,
+        )
+
+    # Ready indexes provide the source count without loading every chunk. This
+    # is the common large-document path and only fetches representative IDs.
+    if (
+        not deep_summary
+        and summary_index_ready
+        and indexed_chunk_count > MEDIUM_MAX_CHUNKS
+    ):
+        return await representative_context(indexed_chunk_count)
+
     chunks = await searching_for_chunks_with_node_id(
         node_id=node_id,
         doc_id=doc_id,
@@ -762,8 +900,8 @@ async def _prepare_document_context(
             chunks=chunks,
             semaphore=semaphore,
         )
-    else:
-        strategy = "hierarchical"
+    elif deep_summary:
+        strategy = "full_hierarchical"
         context = await _hierarchical_context(
             doc_name=doc_name,
             target_label=target_label,
@@ -771,6 +909,36 @@ async def _prepare_document_context(
             nodes=nodes,
             chunks=chunks,
             semaphore=semaphore,
+        )
+    elif summary_index_ready:
+        # Defensive path for a stale count. The representative index still
+        # wins; normal users never fall through to the full hierarchy.
+        return await representative_context(len(chunks))
+    else:
+        index_status = str(document.get("summary_index_status") or "pending")
+        message = (
+            "Summary optimization is still being prepared for this document. "
+            "Please try again shortly."
+            if index_status in {"pending", "processing"}
+            else (
+                "Summary optimization could not be prepared for this document. "
+                "Please try again shortly."
+            )
+        )
+        return DocumentSummaryContext(
+            doc_id=doc_id,
+            doc_name=doc_name,
+            status=(
+                "summary_index_pending"
+                if index_status in {"pending", "processing"}
+                else "summary_index_failed"
+            ),
+            target_label=target_label,
+            node_id=node_id,
+            source_chunk_count=len(chunks),
+            chunks=[],
+            nodes=nodes,
+            message=message,
         )
 
     return DocumentSummaryContext(
@@ -780,6 +948,7 @@ async def _prepare_document_context(
         target_label=target_label,
         node_id=node_id,
         strategy=strategy,
+        source_chunk_count=len(chunks),
         context=_truncate(context, MAX_CONTEXT_CHARS_PER_DOC),
         chunks=chunks,
         nodes=nodes,
@@ -788,11 +957,17 @@ async def _prepare_document_context(
 
 def _format_document_context(context: DocumentSummaryContext) -> str:
     chunk_count = len(context.chunks)
+    source_count = context.source_chunk_count or chunk_count
+    chunk_usage = (
+        f"{chunk_count} representative chunks from {source_count} source chunks"
+        if context.strategy == "representative_hierarchical"
+        else f"{chunk_count} chunks"
+    )
     return (
         f"<document name=\"{context.doc_name}\" id=\"{context.doc_id}\">\n"
         f"Scope: {context.target_label}\n"
         f"Strategy: {context.strategy}\n"
-        f"Chunks used: {chunk_count} ({_page_label(context.chunks)})\n\n"
+        f"Chunks used: {chunk_usage} ({_page_label(context.chunks)})\n\n"
         f"{context.context}\n"
         "</document>"
     )
@@ -900,8 +1075,9 @@ def _build_sources(
                 document_id=context.doc_id,
                 document_name=context.doc_name,
                 contribution=(
-                    f"Summarized {context.target_label} from {len(context.chunks)} "
-                    f"ordered chunks using {context.strategy.replace('_', '-')}."
+                    f"Summarized {context.target_label} from "
+                    f"{context.source_chunk_count or len(context.chunks)} ordered "
+                    f"source chunks using {context.strategy.replace('_', '-')}."
                 ),
                 relevant_pages=sorted(relevant_pages),
                 citation_ids=citation_ids,
@@ -916,6 +1092,19 @@ def _format_issue_answer(
     target: str | None,
     issues: list[DocumentSummaryContext],
 ) -> str:
+    optimization_issues = [
+        issue
+        for issue in issues
+        if issue.status in {"summary_index_pending", "summary_index_failed"}
+    ]
+    if optimization_issues and len(optimization_issues) == len(issues):
+        if len(optimization_issues) == 1:
+            return optimization_issues[0].message
+        return "\n\n".join(
+            f"**{issue.doc_name}**\n{issue.message}"
+            for issue in optimization_issues
+        )
+
     target_label = target.strip() if target and target.strip() else "that request"
     lines = [
         "I need one clarification before I can summarize this.",
@@ -946,6 +1135,7 @@ async def stream_level1_pdf_with_outline(
     user_id: str,
     document_names: dict[str, str] | None = None,
     question: str | None = None,
+    deep_summary: bool = False,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Stream an outline-aware level-1 summary for one or more PDFs.
@@ -973,6 +1163,10 @@ async def stream_level1_pdf_with_outline(
             return
 
         semaphore = asyncio.Semaphore(MAX_PARALLEL_LLM_CALLS)
+        deep_summary_allowed = bool(
+            deep_summary
+            and await crud.user_has_deep_summary_access(user_id=user_id)
+        )
 
         yield {"type": "status", "message": "Resolving PDF outline target"}
         prepare_tasks = [
@@ -982,6 +1176,7 @@ async def stream_level1_pdf_with_outline(
                 user_id=user_id,
                 doc_name=document_names.get(doc_id, "document.pdf"),
                 semaphore=semaphore,
+                deep_summary=deep_summary_allowed,
             )
             for doc_id in unique_doc_ids
         ]
@@ -1058,6 +1253,7 @@ async def level_1_pdf_with_outline(
     user_id: str,
     document_name: str | None = None,
     question: str | None = None,
+    deep_summary: bool = False,
 ) -> DocMindResponse:
     """Convenience function for a single outline PDF when streaming is not needed."""
     final_data: dict[str, Any] | None = None
@@ -1067,6 +1263,7 @@ async def level_1_pdf_with_outline(
         user_id=user_id,
         document_names={doc_id: document_name or "document.pdf"},
         question=question,
+        deep_summary=deep_summary,
     ):
         if event.get("type") == "final":
             final_data = event["data"]

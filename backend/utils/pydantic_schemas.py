@@ -107,3 +107,10 @@ class StreamAskRequest(BaseModel):
         default=None,
         description="Subset of the chat's PDFs to search. Defaults to all attached PDFs.",
     )
+    deep_summary: bool = Field(
+        default=False,
+        description=(
+            "Request the Pro full-hierarchy summarizer. The backend still "
+            "verifies the user's entitlement."
+        ),
+    )

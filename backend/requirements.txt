@@ -20,3 +20,5 @@ langchain-text-splitters
 qdrant-client
 pymupdf
 requests
+numpy
+scikit-learn

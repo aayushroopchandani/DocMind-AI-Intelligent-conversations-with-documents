@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from apis.deps import current_user_id, verify_internal_secret
 from db import crud
-from db.models.document import NodeData
+from db.models.document import NodeData, SummaryIndexStatus
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -23,6 +23,8 @@ class DocumentNodesResponse(BaseModel):
     document_id: str
     user_id: str
     nodes: NodeData
+    summary_index_status: SummaryIndexStatus = "pending"
+    summary_index_version: str = "v1"
 
 
 @router.get("/{document_id}/nodes", response_model=DocumentNodesResponse)

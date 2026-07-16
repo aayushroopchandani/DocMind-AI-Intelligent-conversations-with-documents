@@ -69,6 +69,7 @@ async def ensure_indexes() -> None:
     )
     await db.documents.create_index("chat_ids")
     await db.documents.create_index("ingestion_status")
+    await db.documents.create_index("summary_index_status")
     await db.generated_quiz.create_index("user_id")
     await db.generated_quiz.create_index("chat_id")
     await db.generated_quiz.create_index([("user_id", 1), ("chat_id", 1)])
