@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from bson import ObjectId
 from fastapi import HTTPException
 
-from apis.quiz_attempts import submit_quiz_attempt
+from apis.quiz_attempts import get_generated_quiz, submit_quiz_attempt
 from db.models.attempt_quiz import QuizAttemptSubmission
 from db.models.generated_quiz import (
     GeneratedQuizInDB,
@@ -48,6 +48,41 @@ def _stored_quiz(quiz_id: str) -> dict:
 
 
 class QuizAttemptApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generated_quiz_read_is_scoped_to_authenticated_user(self) -> None:
+        quiz_id = str(ObjectId())
+        get_quiz = AsyncMock(return_value=_stored_quiz(quiz_id))
+
+        with patch(
+            "apis.quiz_attempts.crud.get_generated_quiz",
+            new=get_quiz,
+        ):
+            result = await get_generated_quiz(
+                quiz_id=quiz_id,
+                user_id="user-1",
+                _=None,
+            )
+
+        get_quiz.assert_awaited_once_with(
+            quiz_id=quiz_id,
+            user_id="user-1",
+        )
+        self.assertEqual(result.id, quiz_id)
+        self.assertFalse(hasattr(result.questions[0], "correct_answer"))
+
+    async def test_generated_quiz_read_hides_missing_or_unowned_quiz(self) -> None:
+        with patch(
+            "apis.quiz_attempts.crud.get_generated_quiz",
+            new=AsyncMock(return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as context:
+                await get_generated_quiz(
+                    quiz_id=str(ObjectId()),
+                    user_id="another-user",
+                    _=None,
+                )
+
+        self.assertEqual(context.exception.status_code, 404)
+
     async def test_submission_is_evaluated_and_persisted(self) -> None:
         quiz_id = str(ObjectId())
         attempt_id = str(ObjectId())
@@ -78,6 +113,7 @@ class QuizAttemptApiTests(unittest.IsolatedAsyncioTestCase):
             result = await submit_quiz_attempt(
                 quiz_id=quiz_id,
                 body=QuizAttemptSubmission(
+                    submission_id="submission-1",
                     answers=[
                         {
                             "question_id": "q1",
@@ -93,7 +129,9 @@ class QuizAttemptApiTests(unittest.IsolatedAsyncioTestCase):
         create_attempt.assert_awaited_once()
         self.assertEqual(result.id, attempt_id)
         self.assertEqual(result.user_id, "user-1")
+        self.assertEqual(result.submission_id, "submission-1")
         self.assertEqual(result.result.score, 1)
+        self.assertEqual(result.review_questions[0].correct_answer.option, "A")
 
     async def test_missing_or_unowned_quiz_returns_not_found(self) -> None:
         with patch(

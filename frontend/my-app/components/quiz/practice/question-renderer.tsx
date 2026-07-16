@@ -1,4 +1,4 @@
-import type { GradedResult, QuizAnswer, QuizQuestion } from "@/lib/quiz/types";
+import type { QuizAnswer, QuizQuestion } from "@/lib/quiz/types";
 import { SingleCorrectMCQ } from "./questions/single-correct-mcq";
 import { MultipleCorrectMCQ } from "./questions/multiple-correct-mcq";
 import { TrueFalse } from "./questions/true-false";
@@ -8,8 +8,6 @@ import { MatchTheFollowing } from "./questions/match-the-following";
 interface QuestionRendererProps {
   question: QuizQuestion;
   answer: QuizAnswer;
-  submitted: boolean;
-  graded?: GradedResult;
   onChange: (answer: QuizAnswer) => void;
 }
 
@@ -20,8 +18,6 @@ interface QuestionRendererProps {
 export function QuestionRenderer({
   question,
   answer,
-  submitted,
-  graded,
   onChange,
 }: QuestionRendererProps) {
   return (
@@ -43,7 +39,6 @@ export function QuestionRenderer({
           <SingleCorrectMCQ
             question={question}
             selected={answer.option}
-            submitted={submitted}
             onSelect={(option) =>
               onChange({ type: "single_correct_mcq", option })
             }
@@ -55,7 +50,6 @@ export function QuestionRenderer({
           <MultipleCorrectMCQ
             question={question}
             selected={answer.options}
-            submitted={submitted}
             onToggle={(option) => {
               const set = new Set(answer.options);
               if (set.has(option)) set.delete(option);
@@ -72,7 +66,6 @@ export function QuestionRenderer({
         <TrueFalse
           question={question}
           value={answer.value}
-          submitted={submitted}
           onSelect={(value) => onChange({ type: "true_false", value })}
         />
       )}
@@ -82,8 +75,6 @@ export function QuestionRenderer({
           <FillInTheBlank
             question={question}
             values={answer.values}
-            submitted={submitted}
-            parts={graded?.parts}
             onChange={(blankId, value) =>
               onChange({
                 type: "fill_in_the_blank",
@@ -98,8 +89,6 @@ export function QuestionRenderer({
           <MatchTheFollowing
             question={question}
             pairs={answer.pairs}
-            submitted={submitted}
-            parts={graded?.parts}
             onChange={(leftId, rightId) =>
               onChange({
                 type: "match_the_following",

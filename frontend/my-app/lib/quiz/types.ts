@@ -1,9 +1,8 @@
 /**
  * Frontend quiz domain types.
  *
- * These mirror the JSON emitted by the backend `GeneratedQuiz` model 1:1
- * (snake_case, discriminated on `type`) so the practice UI can be wired to the
- * real `type: "quiz"` SSE payload later without any shape translation.
+ * Playable question types intentionally omit solutions. Full solved questions
+ * appear only in an evaluated attempt's `review_questions` payload.
  */
 
 export type OptionKey = "A" | "B" | "C" | "D";
@@ -35,6 +34,10 @@ export interface QuizCitation {
 
 interface QuizQuestionBase {
   id: string;
+  topic?: {
+    main_topic: string;
+    sub_topics: string[];
+  };
   short_explanation?: string;
   citations?: QuizCitation[];
 }
@@ -55,14 +58,14 @@ export interface SingleCorrectMCQQuestion extends QuizQuestionBase {
   type: "single_correct_mcq";
   question: string;
   options: MCQOptions;
-  correct_answer: OptionAnswer;
+  correct_answer?: OptionAnswer;
 }
 
 export interface MultipleCorrectMCQQuestion extends QuizQuestionBase {
   type: "multiple_correct_mcq";
   question: string;
   options: MCQOptions;
-  correct_answers: OptionAnswer[];
+  correct_answers?: OptionAnswer[];
   scoring?: {
     requires_all_correct: boolean;
     allow_partial_credit: boolean;
@@ -72,13 +75,13 @@ export interface MultipleCorrectMCQQuestion extends QuizQuestionBase {
 export interface TrueFalseQuestion extends QuizQuestionBase {
   type: "true_false";
   statement: string;
-  correct_answer: boolean;
+  correct_answer?: boolean;
 }
 
 export interface FillInTheBlankAnswer {
   blank_id: string;
-  correct_answers: string[];
-  case_sensitive: boolean;
+  correct_answers?: string[];
+  case_sensitive?: boolean;
 }
 
 export interface FillInTheBlankQuestion extends QuizQuestionBase {
@@ -102,7 +105,7 @@ export interface MatchTheFollowingQuestion extends QuizQuestionBase {
   question: string;
   left_items: MatchItem[];
   right_items: MatchItem[];
-  correct_matches: CorrectMatch[];
+  correct_matches?: CorrectMatch[];
 }
 
 export type QuizQuestion =
@@ -112,10 +115,28 @@ export type QuizQuestion =
   | FillInTheBlankQuestion
   | MatchTheFollowingQuestion;
 
+/** Full solved question returned only after the backend evaluates an attempt. */
+export type ReviewQuizQuestion =
+  | (SingleCorrectMCQQuestion & { correct_answer: OptionAnswer })
+  | (MultipleCorrectMCQQuestion & { correct_answers: OptionAnswer[] })
+  | (TrueFalseQuestion & { correct_answer: boolean })
+  | (Omit<FillInTheBlankQuestion, "blanks"> & {
+      type: "fill_in_the_blank";
+      blanks: (FillInTheBlankAnswer & {
+        correct_answers: string[];
+        case_sensitive: boolean;
+      })[];
+    })
+  | (MatchTheFollowingQuestion & { correct_matches: CorrectMatch[] });
+
 export interface Quiz {
-  user_id: string;
-  chat_id: string;
-  doc_ids: string[];
+  /** MongoDB id returned by the persisted generated-quiz endpoint. */
+  id?: string;
+  user_id?: string;
+  chat_id?: string;
+  doc_ids?: string[];
+  source_message_id?: string | null;
+  response_message_id?: string | null;
   quiz_scope: QuizScope;
   target?: string | null;
   mode?: QuizMode | null;
@@ -127,7 +148,7 @@ export interface Quiz {
 }
 
 /* ------------------------------------------------------------------ */
-/* Client-side answer + grading shapes                                 */
+/* Client-side in-progress answer shapes                               */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -141,13 +162,102 @@ export type QuizAnswer =
   | { type: "fill_in_the_blank"; values: Record<string, string> }
   | { type: "match_the_following"; pairs: Record<string, string> };
 
-/** Result of grading a single answered question. */
-export interface GradedResult {
-  /** Whole-question correctness (used for scoring + top-level feedback). */
-  correct: boolean;
-  /**
-   * Optional per-part correctness, used to paint individual blanks / matches
-   * / options green or red in the review UI.
-   */
-  parts?: Record<string, boolean>;
+/* ------------------------------------------------------------------ */
+/* Backend-authoritative attempt shapes                                */
+/* ------------------------------------------------------------------ */
+
+export type QuizAnswerStatus =
+  | "correct"
+  | "incorrect"
+  | "partially_correct"
+  | "skipped";
+
+export interface QuizQuestionResponse {
+  selected_options: OptionKey[];
+  boolean_answer: boolean | null;
+  blank_answers: { blank_id: string; answer: string }[];
+  matches: { left_id: string; right_id: string }[];
+}
+
+export interface QuizAnswerSubmission {
+  question_id: string;
+  response: QuizQuestionResponse;
+  time_taken_seconds: number;
+}
+
+export interface QuizAnswerEvaluation {
+  status: QuizAnswerStatus;
+  is_correct: boolean;
+  awarded_marks: number;
+  maximum_marks: number;
+}
+
+export interface QuizAttemptAnswer {
+  question_id: string;
+  question_type: QuizQuestionFormat;
+  response: QuizQuestionResponse;
+  evaluation: QuizAnswerEvaluation | null;
+  topic: {
+    main_topic: string;
+    sub_topics: string[];
+  };
+  time_taken_seconds: number;
+  answered_at?: string | null;
+}
+
+export interface QuizAttemptResult {
+  score: number;
+  maximum_score: number;
+  percentage: number;
+  correct: number;
+  incorrect: number;
+  partially_correct: number;
+  skipped: number;
+}
+
+export interface SubTopicPerformance {
+  name: string;
+  correct: number;
+  attempted: number;
+  total_questions: number;
+  percentage: number;
+  status: "weak" | "needs_practice" | "strong" | "insufficient_data";
+}
+
+export interface MainTopicPerformance {
+  main_topic: string;
+  correct: number;
+  partially_correct: number;
+  incorrect: number;
+  attempted: number;
+  total_questions: number;
+  percentage: number;
+  status: "weak" | "needs_practice" | "strong" | "insufficient_data";
+  sub_topics: SubTopicPerformance[];
+}
+
+export interface QuizAttempt {
+  id?: string;
+  quiz_id: string;
+  user_id: string;
+  chat_id: string;
+  submission_id?: string | null;
+  attempt_number: number;
+  status: "in_progress" | "submitted" | "evaluated" | "abandoned";
+  started_at: string;
+  submitted_at?: string | null;
+  duration_seconds?: number | null;
+  answers: QuizAttemptAnswer[];
+  result: QuizAttemptResult | null;
+  topic_performance: MainTopicPerformance[];
+  weak_topics: {
+    main_topic: string;
+    sub_topic: string;
+    percentage: number;
+    question_count: number;
+  }[];
+  /** Solved definitions returned transiently after evaluation, never on quiz GET. */
+  review_questions: ReviewQuizQuestion[];
+  created_at: string;
+  updated_at: string;
 }

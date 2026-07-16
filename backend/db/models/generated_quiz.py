@@ -148,10 +148,68 @@ GeneratedQuizQuestion = Union[
 ]
 
 
+class PlayableQuizQuestionBase(BaseModel):
+    """Question metadata safe to reveal before an attempt is submitted."""
+
+    id: str
+    topic: QuizQuestionTopic
+
+
+class PlayableSingleCorrectMCQQuestion(PlayableQuizQuestionBase):
+    type: Literal["single_correct_mcq"] = "single_correct_mcq"
+    question: str
+    options: MCQOptions
+
+
+class PlayableMultipleCorrectMCQQuestion(PlayableQuizQuestionBase):
+    type: Literal["multiple_correct_mcq"] = "multiple_correct_mcq"
+    question: str
+    options: MCQOptions
+
+
+class PlayableTrueFalseQuestion(PlayableQuizQuestionBase):
+    type: Literal["true_false"] = "true_false"
+    statement: str
+
+
+class PlayableBlank(BaseModel):
+    blank_id: str
+
+
+class PlayableFillInTheBlankQuestion(PlayableQuizQuestionBase):
+    type: Literal["fill_in_the_blank"] = "fill_in_the_blank"
+    question: str
+    blanks: list[PlayableBlank] = Field(default_factory=list)
+
+
+class PlayableMatchTheFollowingQuestion(PlayableQuizQuestionBase):
+    type: Literal["match_the_following"] = "match_the_following"
+    question: str
+    left_items: list[MatchItem] = Field(default_factory=list)
+    right_items: list[MatchItem] = Field(default_factory=list)
+
+
+PlayableGeneratedQuizQuestion = Union[
+    PlayableSingleCorrectMCQQuestion,
+    PlayableMultipleCorrectMCQQuestion,
+    PlayableTrueFalseQuestion,
+    PlayableFillInTheBlankQuestion,
+    PlayableMatchTheFollowingQuestion,
+]
+
+
 class GeneratedQuizBase(BaseModel):
     user_id: str
     chat_id: str
     doc_ids: list[str] = Field(default_factory=list)
+    source_message_id: Optional[str] = Field(
+        default=None,
+        description="User conversation message that requested this quiz",
+    )
+    response_message_id: Optional[str] = Field(
+        default=None,
+        description="Assistant conversation message that presents this quiz",
+    )
 
     quiz_scope: QuizScope
     target: Optional[str] = None
@@ -175,3 +233,51 @@ class GeneratedQuizInDB(GeneratedQuizBase):
     updated_at: datetime = Field(default_factory=utc_now)
 
     model_config = {"populate_by_name": True}
+
+
+class PlayableGeneratedQuiz(BaseModel):
+    """Owned quiz definition with solutions and explanations removed."""
+
+    id: str
+    source_message_id: Optional[str] = None
+    response_message_id: Optional[str] = None
+    quiz_scope: QuizScope
+    target: Optional[str] = None
+    mode: Optional[QuizMode] = None
+    number_of_questions: int = Field(ge=1, le=20)
+    difficulty: QuizDifficulty
+    question_formats: list[QuizQuestionFormat] = Field(default_factory=list)
+    status: QuizStatus
+    questions: list[PlayableGeneratedQuizQuestion] = Field(default_factory=list)
+
+
+def to_playable_generated_quiz(quiz: GeneratedQuizInDB) -> PlayableGeneratedQuiz:
+    """Redact solutions, explanations, and citations from a stored quiz."""
+    if not quiz.id:
+        raise ValueError("A playable quiz requires a persisted id.")
+    playable_questions: list[PlayableGeneratedQuizQuestion] = []
+    model_by_type = {
+        "single_correct_mcq": PlayableSingleCorrectMCQQuestion,
+        "multiple_correct_mcq": PlayableMultipleCorrectMCQQuestion,
+        "true_false": PlayableTrueFalseQuestion,
+        "fill_in_the_blank": PlayableFillInTheBlankQuestion,
+        "match_the_following": PlayableMatchTheFollowingQuestion,
+    }
+    for question in quiz.questions:
+        playable_questions.append(
+            model_by_type[question.type].model_validate(question.model_dump())
+        )
+
+    return PlayableGeneratedQuiz(
+        id=quiz.id,
+        source_message_id=quiz.source_message_id,
+        response_message_id=quiz.response_message_id,
+        quiz_scope=quiz.quiz_scope,
+        target=quiz.target,
+        mode=quiz.mode,
+        number_of_questions=quiz.number_of_questions,
+        difficulty=quiz.difficulty,
+        question_formats=quiz.question_formats,
+        status=quiz.status,
+        questions=playable_questions,
+    )

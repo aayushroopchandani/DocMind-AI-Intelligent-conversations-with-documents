@@ -47,7 +47,8 @@ export function ExamIntro({ quiz, durationMinutes, onStart }: ExamIntroProps) {
         <ul className="mt-2.5 space-y-1.5 text-[13px] text-muted-foreground">
           <li className="flex items-start gap-2">
             <Maximize className="mt-0.5 size-3.5 shrink-0" />
-            The exam runs in full-screen. Exiting full-screen pauses the exam.
+            The exam runs in full-screen. Exiting it records a violation while
+            the timer continues.
           </li>
           <li className="flex items-start gap-2">
             <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />

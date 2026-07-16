@@ -1,13 +1,12 @@
 import { RotateCcw, ShieldAlert } from "lucide-react";
-import type { GradedResult, Quiz, QuizAnswer } from "@/lib/quiz/types";
+import type { QuizAnswer, QuizAttempt } from "@/lib/quiz/types";
 import { Button } from "@/components/ui/button";
 import { QuestionReview } from "@/components/quiz/shared/question-review";
 import { cn } from "@/lib/utils";
 
 interface ExamReviewProps {
-  quiz: Quiz;
   answers: QuizAnswer[];
-  results: GradedResult[];
+  attempt: QuizAttempt;
   violations: number;
   autoSubmitted: boolean;
   onRetake: () => void;
@@ -15,17 +14,19 @@ interface ExamReviewProps {
 
 /** Post-submission report. Professional and static — no celebratory animation. */
 export function ExamReview({
-  quiz,
   answers,
-  results,
+  attempt,
   violations,
   autoSubmitted,
   onRetake,
 }: ExamReviewProps) {
-  const total = quiz.questions.length;
-  const correct = results.filter((r) => r.correct).length;
-  const pct = Math.round((correct / total) * 100);
+  const result = attempt.result;
+  if (!result) return null;
+  const pct = Math.round(result.percentage);
   const passed = pct >= 50;
+  const evaluationById = new Map(
+    attempt.answers.map((answer) => [answer.question_id, answer.evaluation]),
+  );
 
   return (
     <div className="space-y-6">
@@ -39,7 +40,7 @@ export function ExamReview({
               {pct}%
             </span>
             <span className="ml-2 text-sm text-muted-foreground">
-              {correct}/{total} correct
+              {result.score}/{result.maximum_score} marks
             </span>
           </div>
           <span
@@ -53,6 +54,11 @@ export function ExamReview({
             {passed ? "Passed" : "Below passing"}
           </span>
         </div>
+
+        <p className="mt-3 text-sm text-muted-foreground">
+          {result.correct} correct · {result.partially_correct} partial ·{" "}
+          {result.incorrect} incorrect · {result.skipped} skipped
+        </p>
 
         {(violations > 0 || autoSubmitted) && (
           <div className="mt-4 flex items-start gap-2 rounded-lg border border-[color:var(--accent-amber)]/30 bg-[color:var(--accent-amber)]/[0.07] px-3 py-2 text-[13px] text-muted-foreground">
@@ -76,15 +82,18 @@ export function ExamReview({
           Detailed review
         </p>
         <div className="space-y-2.5">
-          {quiz.questions.map((question, i) => (
-            <QuestionReview
-              key={question.id}
-              index={i}
-              question={question}
-              answer={answers[i]}
-              result={results[i]}
-            />
-          ))}
+          {attempt.review_questions.map((question, i) => {
+            const evaluation = evaluationById.get(question.id);
+            return evaluation ? (
+              <QuestionReview
+                key={question.id}
+                index={i}
+                question={question}
+                answer={answers[i]}
+                evaluation={evaluation}
+              />
+            ) : null;
+          })}
         </div>
       </div>
     </div>

@@ -4,7 +4,6 @@ import { OptionRow, type OptionState } from "@/components/quiz/shared/option-row
 interface Props {
   question: SingleCorrectMCQQuestion;
   selected: OptionKey | null;
-  submitted: boolean;
   onSelect: (option: OptionKey) => void;
 }
 
@@ -13,16 +12,10 @@ const KEYS: OptionKey[] = ["A", "B", "C", "D"];
 export function SingleCorrectMCQ({
   question,
   selected,
-  submitted,
   onSelect,
 }: Props) {
-  const correctKey = question.correct_answer.option;
-
   function stateFor(key: OptionKey): OptionState {
-    if (!submitted) return key === selected ? "selected" : "idle";
-    if (key === correctKey) return "correct";
-    if (key === selected) return "incorrect";
-    return "idle";
+    return key === selected ? "selected" : "idle";
   }
 
   return (
@@ -34,7 +27,7 @@ export function SingleCorrectMCQ({
           optionKey={key}
           text={question.options[key]}
           state={stateFor(key)}
-          disabled={submitted}
+          disabled={false}
           onClick={() => onSelect(key)}
         />
       ))}

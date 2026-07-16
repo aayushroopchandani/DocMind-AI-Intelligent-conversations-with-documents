@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
@@ -39,6 +40,35 @@ class _Database:
 
 
 class QuizAttemptPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_same_submission_id_returns_the_existing_attempt(self) -> None:
+        existing_id = ObjectId()
+        collection = SimpleNamespace(
+            find_one=AsyncMock(
+                return_value={
+                    "_id": existing_id,
+                    "quiz_id": "quiz-1",
+                    "user_id": "user-1",
+                    "submission_id": "submission-1",
+                    "attempt_number": 1,
+                }
+            ),
+            insert_one=AsyncMock(),
+        )
+        database = SimpleNamespace(quiz_attempts=collection)
+        attempt = QuizAttemptCreate(
+            quiz_id="quiz-1",
+            user_id="user-1",
+            chat_id="chat-1",
+            submission_id="submission-1",
+            status="evaluated",
+        )
+
+        with patch("db.crud.get_db", return_value=database):
+            stored = await crud.create_quiz_attempt(attempt=attempt)
+
+        self.assertEqual(stored["id"], str(existing_id))
+        collection.insert_one.assert_not_awaited()
+
     async def test_attempt_number_retries_after_concurrent_insert(self) -> None:
         database = _Database()
         attempt = QuizAttemptCreate(

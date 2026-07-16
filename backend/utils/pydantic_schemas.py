@@ -2,6 +2,8 @@ from enum import Enum
 from typing import Optional
 from pydantic import BaseModel, Field
 
+from db.models.generated_quiz import QuizMode, QuizQuestionFormat
+
 
 class AnswerStatus(str, Enum):
     COMPLETE = "complete"           # fully answered from context
@@ -88,6 +90,10 @@ class ChatRequest(BaseModel):
 
     user_id: str = Field(..., description="User ID")
     chat_id: str = Field(..., description="Chat ID")
+    message_id: Optional[str] = Field(
+        default=None,
+        description="Stable ID of the originating user conversation message",
+    )
     question: str = Field(..., description="Question")
     document_ids: list[str] = Field(..., description="Document IDs to search")
     document_names: dict[str, str] = Field(
@@ -99,10 +105,24 @@ class ChatRequest(BaseModel):
     )
 
 
+class QuizGenerationConfig(BaseModel):
+    """Explicit quiz choices collected by the frontend when intent omitted them."""
+
+    source_message_id: Optional[str] = Field(default=None, min_length=1)
+    mode: Optional[QuizMode] = None
+    number_of_questions: Optional[int] = Field(default=None, ge=1, le=20)
+    question_formats: Optional[list[QuizQuestionFormat]] = Field(
+        default=None,
+        min_length=1,
+        max_length=5,
+    )
+
+
 class StreamAskRequest(BaseModel):
     """Body of POST /chats/{chat_id}/stream (user identity comes from headers)."""
 
     question: str = Field(..., min_length=1, max_length=4000)
+    message_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     document_ids: Optional[list[str]] = Field(
         default=None,
         description="Subset of the chat's PDFs to search. Defaults to all attached PDFs.",
@@ -114,3 +134,4 @@ class StreamAskRequest(BaseModel):
             "verifies the user's entitlement."
         ),
     )
+    quiz_config: Optional[QuizGenerationConfig] = None

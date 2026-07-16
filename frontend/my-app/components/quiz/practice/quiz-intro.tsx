@@ -45,8 +45,8 @@ export function QuizIntro({ quiz, onStart }: QuizIntroProps) {
         {quiz.target ?? "Document quiz"}
       </h1>
       <p className="mt-2 max-w-lg text-sm leading-relaxed text-muted-foreground">
-        One question at a time with instant feedback and explanations. Take your
-        time — there&apos;s no timer here.
+        Work through one question at a time with no timer. Your full attempt is
+        evaluated by DocMind when you submit it.
       </p>
 
       <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">

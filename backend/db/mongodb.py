@@ -86,6 +86,11 @@ async def ensure_indexes() -> None:
     await db.generated_quiz.create_index("user_id")
     await db.generated_quiz.create_index("chat_id")
     await db.generated_quiz.create_index([("user_id", 1), ("chat_id", 1)])
+    await db.generated_quiz.create_index(
+        [("user_id", 1), ("chat_id", 1), ("source_message_id", 1)],
+        unique=True,
+        partialFilterExpression={"source_message_id": {"$type": "string"}},
+    )
     await db.generated_quiz.create_index("doc_ids")
     await db.generated_quiz.create_index("status")
     await db.generated_quiz.create_index("created_at")
@@ -96,5 +101,10 @@ async def ensure_indexes() -> None:
     await db.quiz_attempts.create_index(
         [("user_id", 1), ("quiz_id", 1), ("attempt_number", 1)],
         unique=True,
+    )
+    await db.quiz_attempts.create_index(
+        [("user_id", 1), ("quiz_id", 1), ("submission_id", 1)],
+        unique=True,
+        partialFilterExpression={"submission_id": {"$type": "string"}},
     )
     await db.quiz_attempts.create_index("weak_topics.main_topic")

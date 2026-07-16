@@ -1,21 +1,8 @@
-import { Check, X } from "lucide-react";
 import type { OptionKey } from "@/lib/quiz/types";
 import { cn } from "@/lib/utils";
 
-/**
- * Visual state of a single option.
- * - `idle`      : not selected, quiz still answerable
- * - `selected`  : chosen by the learner, not yet checked
- * - `correct`   : revealed as a right answer (after checking)
- * - `incorrect` : the learner picked this but it is wrong
- * - `missed`    : a right answer the learner failed to pick
- */
-export type OptionState =
-  | "idle"
-  | "selected"
-  | "correct"
-  | "incorrect"
-  | "missed";
+/** Input-only state; correctness is evaluated and rendered from the backend. */
+export type OptionState = "idle" | "selected";
 
 interface OptionRowProps {
   optionKey: OptionKey;
@@ -42,6 +29,7 @@ export function OptionRow({
     <button
       type="button"
       disabled={disabled}
+      aria-pressed={state === "selected"}
       onClick={onClick}
       style={{ "--i": index } as React.CSSProperties}
       className={cn(
@@ -51,10 +39,6 @@ export function OptionRow({
         state === "idle" && "border-border bg-card",
         state === "selected" &&
           "border-[color:var(--accent-cyan)]/60 bg-[color:var(--accent-cyan)]/10 quiz-glow",
-        state === "correct" && "quiz-correct-surface animate-quiz-pop",
-        state === "incorrect" && "quiz-incorrect-surface animate-quiz-shake",
-        state === "missed" &&
-          "border-[color:var(--quiz-correct)]/40 border-dashed bg-transparent",
         disabled && "cursor-default",
       )}
     >
@@ -64,21 +48,11 @@ export function OptionRow({
           multi ? "rounded-md" : "rounded-full",
           state === "selected" &&
             "border-transparent bg-[color:var(--accent-cyan)] text-black",
-          state === "correct" &&
-            "border-transparent bg-[color:var(--quiz-correct)] text-black",
-          state === "incorrect" &&
-            "border-transparent bg-[color:var(--quiz-incorrect)] text-white",
-          state === "missed" && "border-[color:var(--quiz-correct)]/60 text-quiz-correct",
-          (state === "idle") && "border-border text-muted-foreground group-hover:text-foreground",
+          state === "idle" &&
+            "border-border text-muted-foreground group-hover:text-foreground",
         )}
       >
-        {state === "correct" || state === "missed" ? (
-          <Check className="size-3.5" />
-        ) : state === "incorrect" ? (
-          <X className="size-3.5" />
-        ) : (
-          optionKey
-        )}
+        {optionKey}
       </span>
 
       <span className="text-sm leading-snug text-foreground">{text}</span>

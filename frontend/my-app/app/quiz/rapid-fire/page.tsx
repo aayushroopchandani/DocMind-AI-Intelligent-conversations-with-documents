@@ -1,14 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { RapidFireQuiz } from "@/components/quiz/rapid-fire/rapid-fire-quiz";
-import { SAMPLE_RAPID_FIRE_QUIZ } from "@/lib/quiz/sample-quiz";
+import { GeneratedQuizLoader } from "@/components/quiz/generated-quiz-loader";
 
 export const metadata: Metadata = {
   title: "Rapid Fire Quiz — DocMind",
 };
 
-export default function RapidFireQuizPage() {
+export default async function RapidFireQuizPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ quizId?: string | string[] }>;
+}) {
+  const { quizId } = await searchParams;
+  const persistedQuizId = Array.isArray(quizId) ? quizId[0] : quizId;
+
   return (
     <main className="relative min-h-screen overflow-hidden bg-background">
       <div
@@ -34,7 +40,7 @@ export default function RapidFireQuizPage() {
       </header>
 
       <div className="relative z-10">
-        <RapidFireQuiz quiz={SAMPLE_RAPID_FIRE_QUIZ} />
+        <GeneratedQuizLoader quizId={persistedQuizId} mode="rapid_fire" />
       </div>
     </main>
   );

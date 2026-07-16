@@ -194,6 +194,85 @@ def _post_process_questions(
     return processed
 
 
+def _validate_generated_questions(
+    questions: list[GeneratedQuizQuestion],
+    request: TopicBasedQuizRequest,
+) -> None:
+    if len(questions) != request.number_of_questions:
+        raise RuntimeError(
+            "The model returned an incomplete quiz "
+            f"({len(questions)} of {request.number_of_questions} questions)."
+        )
+
+    allowed_formats = set(request.question_formats)
+    for question in questions:
+        if question.type not in allowed_formats:
+            raise RuntimeError(
+                f"The model returned an unrequested question format: {question.type}."
+            )
+        if not question.topic.sub_topics:
+            raise RuntimeError(f"Question {question.id} has no valid subtopics.")
+
+        if question.type == "single_correct_mcq":
+            expected_answer = getattr(
+                question.options,
+                question.correct_answer.option,
+            )
+            if question.correct_answer.answer != expected_answer:
+                raise RuntimeError(
+                    f"Question {question.id} has an inconsistent correct option."
+                )
+        if question.type == "multiple_correct_mcq":
+            correct_options = {
+                answer.option for answer in question.correct_answers
+            }
+            has_duplicate_options = len(correct_options) != len(
+                question.correct_answers
+            )
+            has_inconsistent_text = any(
+                answer.answer != getattr(question.options, answer.option)
+                for answer in question.correct_answers
+            )
+            if (
+                not correct_options
+                or has_duplicate_options
+                or has_inconsistent_text
+            ):
+                raise RuntimeError(
+                    f"Question {question.id} has invalid correct options."
+                )
+        if question.type == "fill_in_the_blank":
+            blank_ids = {blank.blank_id for blank in question.blanks}
+            has_missing_answers = any(
+                not blank.correct_answers for blank in question.blanks
+            )
+            if (
+                not question.blanks
+                or has_missing_answers
+                or len(blank_ids) != len(question.blanks)
+            ):
+                raise RuntimeError(
+                    f"Question {question.id} has incomplete blank answers."
+                )
+        if question.type == "match_the_following":
+            left_ids = {item.id for item in question.left_items}
+            right_ids = {item.id for item in question.right_items}
+            matched_left = {match.left_id for match in question.correct_matches}
+            matched_right = {match.right_id for match in question.correct_matches}
+            if (
+                not left_ids
+                or len(left_ids) != len(question.left_items)
+                or len(right_ids) != len(question.right_items)
+                or matched_left != left_ids
+                or len(matched_left) != len(question.correct_matches)
+                or len(matched_right) != len(question.correct_matches)
+                or not matched_right.issubset(right_ids)
+            ):
+                raise RuntimeError(
+                    f"Question {question.id} has invalid matching pairs."
+                )
+
+
 def _system_prompt() -> str:
     return (
         "You generate document-grounded quiz questions for a PDF chat app. "
@@ -373,8 +452,7 @@ async def generate_quiz_from_context(
         allowed_citations,
         request.number_of_questions,
     )
-    if not questions:
-        raise RuntimeError("The model did not generate any quiz questions.")
+    _validate_generated_questions(questions, request)
 
     return GeneratedQuizCreate(
         user_id=request.user_id,

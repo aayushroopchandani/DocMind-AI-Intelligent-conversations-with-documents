@@ -4,10 +4,10 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
  * Next.js 16 renames Middleware to Proxy (same functionality, new filename).
  * Clerk's `clerkMiddleware` runs unchanged here.
  *
- * Only the "Chat with PDF" experience requires authentication; the marketing
- * homepage and Clerk's own auth routes stay public.
+ * Document chats and their generated quizzes require authentication; the
+ * marketing homepage and Clerk's own auth routes stay public.
  */
-const isProtectedRoute = createRouteMatcher(["/chat(.*)"]);
+const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/quiz(.*)"]);
 
 export default clerkMiddleware(async (auth, request) => {
   if (isProtectedRoute(request)) {

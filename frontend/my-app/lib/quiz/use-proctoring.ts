@@ -74,15 +74,22 @@ export function useProctoring({
     if (!active) return;
 
     const report = (type: ViolationType) => onViolationRef.current(type);
+    let lastFocusLossAt = 0;
+    const reportFocusLoss = (type: ViolationType) => {
+      const now = performance.now();
+      if (now - lastFocusLossAt < 1000) return;
+      lastFocusLossAt = now;
+      report(type);
+    };
 
     const onVisibility = () => {
-      if (document.hidden) report("tab-hidden");
+      if (document.hidden) reportFocusLoss("tab-hidden");
     };
-    const onBlur = () => report("window-blur");
+    const onBlur = () => reportFocusLoss("window-blur");
     const onFullscreenChange = () => {
       const fs = Boolean(document.fullscreenElement);
       setIsFullscreen(fs);
-      if (!fs) report("fullscreen-exit");
+      if (!fs) reportFocusLoss("fullscreen-exit");
     };
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();

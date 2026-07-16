@@ -565,6 +565,37 @@ async def append_conversation_messages(
     return _serialize(doc)
 
 
+async def append_conversation_message_if_missing(
+    *, chat_id: str, user_id: str, message: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    """Append a stable-id message once, making quiz retries idempotent."""
+    oid = _as_object_id(chat_id)
+    message_id = message.get("id")
+    if oid is None or not message_id:
+        return None
+
+    now = _utc_now()
+    stored_message = dict(message)
+    stored_message.setdefault("created_at", now)
+
+    db = get_db()
+    doc = await db.chats.find_one_and_update(
+        {
+            "_id": oid,
+            "user_id": user_id,
+            "conversation.id": {"$ne": message_id},
+        },
+        {
+            "$push": {"conversation": stored_message},
+            "$set": {"updated_at": now},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if doc is None:
+        doc = await db.chats.find_one({"_id": oid, "user_id": user_id})
+    return _serialize(doc)
+
+
 async def update_chat_memory(
     *, chat_id: str, user_id: str, summary: str, summarized_count: int
 ) -> None:
@@ -606,6 +637,22 @@ async def get_generated_quiz(
     return _serialize(document)
 
 
+async def get_generated_quiz_by_source_message(
+    *, chat_id: str, user_id: str, source_message_id: str
+) -> Optional[dict[str, Any]]:
+    """Find a generated quiz for an originating chat message."""
+    db = get_db()
+    document = await db.generated_quiz.find_one(
+        {
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "source_message_id": source_message_id,
+            "status": "generated",
+        }
+    )
+    return _serialize(document)
+
+
 async def create_generated_quiz(*, quiz: GeneratedQuizCreate) -> dict[str, Any]:
     """Persist one generated quiz document and return the serialized record."""
     db = get_db()
@@ -622,6 +669,35 @@ async def create_generated_quiz(*, quiz: GeneratedQuizCreate) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 # Quiz attempts
 # --------------------------------------------------------------------------- #
+def _attempt_submission_signature(answers: list[Any]) -> list[dict[str, Any]]:
+    signature: list[dict[str, Any]] = []
+    for answer in answers:
+        value = (
+            answer.model_dump(mode="python")
+            if hasattr(answer, "model_dump")
+            else answer
+        )
+        signature.append(
+            {
+                "question_id": value.get("question_id"),
+                "response": value.get("response", {}),
+                "time_taken_seconds": value.get("time_taken_seconds", 0),
+            }
+        )
+    return signature
+
+
+def _ensure_same_attempt_submission(
+    existing: dict[str, Any], attempt: QuizAttemptCreate
+) -> None:
+    if _attempt_submission_signature(existing.get("answers", [])) != (
+        _attempt_submission_signature(attempt.answers)
+    ):
+        raise ValueError(
+            "This submission id was already used with different quiz answers."
+        )
+
+
 async def create_quiz_attempt(*, attempt: QuizAttemptCreate) -> dict[str, Any]:
     """Persist an evaluated quiz attempt with a race-safe attempt number."""
     db = get_db()
@@ -629,6 +705,18 @@ async def create_quiz_attempt(*, attempt: QuizAttemptCreate) -> dict[str, Any]:
     document = attempt.model_dump(mode="python")
     document["created_at"] = now
     document["updated_at"] = now
+
+    if attempt.submission_id:
+        existing = await db.quiz_attempts.find_one(
+            {
+                "quiz_id": attempt.quiz_id,
+                "user_id": attempt.user_id,
+                "submission_id": attempt.submission_id,
+            }
+        )
+        if existing is not None:
+            _ensure_same_attempt_submission(existing, attempt)
+            return _serialize(existing)  # type: ignore[return-value]
 
     for _ in range(5):
         latest = await db.quiz_attempts.find_one(
@@ -643,6 +731,17 @@ async def create_quiz_attempt(*, attempt: QuizAttemptCreate) -> dict[str, Any]:
         try:
             result = await db.quiz_attempts.insert_one(candidate)
         except DuplicateKeyError:
+            if attempt.submission_id:
+                existing = await db.quiz_attempts.find_one(
+                    {
+                        "quiz_id": attempt.quiz_id,
+                        "user_id": attempt.user_id,
+                        "submission_id": attempt.submission_id,
+                    }
+                )
+                if existing is not None:
+                    _ensure_same_attempt_submission(existing, attempt)
+                    return _serialize(existing)  # type: ignore[return-value]
             continue
         candidate["_id"] = result.inserted_id
         return _serialize(candidate)  # type: ignore[return-value]

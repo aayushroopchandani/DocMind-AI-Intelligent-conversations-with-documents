@@ -13,7 +13,7 @@ def utc_now() -> datetime:
 class ConversationMessage(BaseModel):
     id: Optional[str] = Field(
         default=None,
-        description="Stable backend-generated message ID",
+        description="Stable conversation message ID",
     )
     role: Literal["user", "assistant"] = Field(..., description="Message author role")
     content: str = Field(..., description="Message content")

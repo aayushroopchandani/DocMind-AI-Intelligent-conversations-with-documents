@@ -388,7 +388,11 @@ async def save_chat_messages(
         chat_id=request.chat_id,
         user_id=request.user_id,
         messages=[
-            {"role": "user", "content": request.question},
+            {
+                "id": request.message_id,
+                "role": "user",
+                "content": request.question,
+            },
             {"role": "assistant", "content": answer, "meta": meta},
         ],
     )

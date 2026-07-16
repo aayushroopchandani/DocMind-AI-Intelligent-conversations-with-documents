@@ -1,26 +1,28 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { ArrowRight, CheckCheck } from "lucide-react";
-import type { GradedResult, Quiz, QuizAnswer } from "@/lib/quiz/types";
-import { emptyAnswer, gradeQuestion, isAnswerComplete } from "@/lib/quiz/grading";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, LoaderCircle } from "lucide-react";
+import type { Quiz, QuizAnswer, QuizAttempt } from "@/lib/quiz/types";
+import { emptyAnswer, isAnswerComplete } from "@/lib/quiz/grading";
+import {
+  createQuizSubmissionId,
+  submitQuizAttempt,
+} from "@/lib/quiz/api";
 import { Button } from "@/components/ui/button";
 import { QuizProgress } from "@/components/quiz/shared/quiz-progress";
-import { ExplanationPanel } from "@/components/quiz/shared/explanation-panel";
 import { QuestionRenderer } from "./question-renderer";
 import { QuizIntro } from "./quiz-intro";
 import { QuizResult } from "./quiz-result";
 
-type Phase = "intro" | "active" | "result";
+type Phase = "intro" | "active" | "submitting" | "result";
 
 interface PracticeQuizProps {
   quiz: Quiz;
 }
 
 /**
- * Practice-mode driver: presents one question at a time, checks the answer on
- * demand, reveals instant feedback + explanation, then advances. All state is
- * local; wiring to the backend only means swapping the `quiz` prop source.
+ * Practice-mode driver. Answers stay editable until the learner advances; the
+ * complete attempt is evaluated once by the backend at the end.
  */
 export function PracticeQuiz({ quiz }: PracticeQuizProps) {
   const questions = quiz.questions;
@@ -30,26 +32,31 @@ export function PracticeQuiz({ quiz }: PracticeQuizProps) {
   const [answers, setAnswers] = useState<QuizAnswer[]>(() =>
     questions.map(emptyAnswer),
   );
-  const [results, setResults] = useState<(GradedResult | null)[]>(() =>
-    questions.map(() => null),
-  );
+  const [attempt, setAttempt] = useState<QuizAttempt | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const submissionIdRef = useRef(createQuizSubmissionId());
+  const submissionStartedRef = useRef(false);
+  const questionStartedAtRef = useRef(0);
+  const timesRef = useRef<number[]>(questions.map(() => 0));
 
   const current = questions[index];
   const currentAnswer = answers[index];
-  const currentResult = results[index];
-  const submitted = currentResult !== null;
   const isLast = index === questions.length - 1;
 
-  const score = useMemo(
-    () => results.filter((r) => r?.correct).length,
-    [results],
-  );
   const answeredCount = useMemo(
-    () => results.filter((r) => r !== null).length,
-    [results],
+    () => answers.filter(isAnswerComplete).length,
+    [answers],
   );
 
+  useEffect(() => {
+    if (phase === "active") questionStartedAtRef.current = performance.now();
+  }, [index, phase]);
+
   function updateAnswer(answer: QuizAnswer) {
+    if (submissionStartedRef.current) {
+      submissionIdRef.current = createQuizSubmissionId();
+      submissionStartedRef.current = false;
+    }
     setAnswers((prev) => {
       const next = [...prev];
       next[index] = answer;
@@ -57,23 +64,45 @@ export function PracticeQuiz({ quiz }: PracticeQuizProps) {
     });
   }
 
-  function checkAnswer() {
-    const graded = gradeQuestion(current, currentAnswer);
-    setResults((prev) => {
-      const next = [...prev];
-      next[index] = graded;
-      return next;
-    });
-  }
+  async function advance() {
+    if (!submissionStartedRef.current) {
+      timesRef.current[index] += Math.max(
+        0,
+        Math.round((performance.now() - questionStartedAtRef.current) / 1000),
+      );
+    }
+    if (!isLast) {
+      setIndex((i) => i + 1);
+      return;
+    }
 
-  function advance() {
-    if (isLast) setPhase("result");
-    else setIndex((i) => i + 1);
+    setPhase("submitting");
+    setSubmitError(null);
+    submissionStartedRef.current = true;
+    try {
+      const evaluated = await submitQuizAttempt(
+        quiz,
+        answers,
+        submissionIdRef.current,
+        timesRef.current,
+      );
+      setAttempt(evaluated);
+      setPhase("result");
+    } catch (cause) {
+      setSubmitError(
+        cause instanceof Error ? cause.message : "Unable to evaluate quiz",
+      );
+      setPhase("active");
+    }
   }
 
   function restart() {
+    submissionIdRef.current = createQuizSubmissionId();
+    submissionStartedRef.current = false;
+    timesRef.current = questions.map(() => 0);
     setAnswers(questions.map(emptyAnswer));
-    setResults(questions.map(() => null));
+    setAttempt(null);
+    setSubmitError(null);
     setIndex(0);
     setPhase("intro");
   }
@@ -86,14 +115,30 @@ export function PracticeQuiz({ quiz }: PracticeQuizProps) {
     );
   }
 
-  if (phase === "result") {
+  if (phase === "result" && attempt) {
     return (
       <Shell>
         <QuizResult
           quiz={quiz}
-          results={results.map((r) => r ?? { correct: false })}
+          attempt={attempt}
           onRestart={restart}
         />
+      </Shell>
+    );
+  }
+
+  if (phase === "submitting") {
+    return (
+      <Shell>
+        <div className="animate-quiz-in rounded-2xl border border-border bg-card p-10 text-center">
+          <LoaderCircle className="mx-auto size-7 animate-spin text-[color:var(--accent-violet)]" />
+          <h2 className="mt-3 text-lg font-semibold text-foreground">
+            Evaluating your attempt
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Your answers are being checked securely by the backend.
+          </p>
+        </div>
       </Shell>
     );
   }
@@ -103,7 +148,6 @@ export function PracticeQuiz({ quiz }: PracticeQuizProps) {
       <QuizProgress
         current={index + 1}
         total={questions.length}
-        score={score}
         answered={answeredCount}
       />
 
@@ -115,43 +159,26 @@ export function PracticeQuiz({ quiz }: PracticeQuizProps) {
         <QuestionRenderer
           question={current}
           answer={currentAnswer}
-          submitted={submitted}
-          graded={currentResult ?? undefined}
           onChange={updateAnswer}
         />
-
-        {submitted ? (
-          <div className="mt-5">
-            <ExplanationPanel
-              correct={currentResult!.correct}
-              explanation={current.short_explanation}
-              citations={current.citations}
-            />
-          </div>
-        ) : null}
       </div>
 
+      {submitError ? (
+        <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {submitError}
+        </p>
+      ) : null}
+
       <div className="mt-5 flex justify-end">
-        {!submitted ? (
-          <Button
-            size="lg"
-            onClick={checkAnswer}
-            disabled={!isAnswerComplete(currentAnswer)}
-            className="h-10 px-6 font-semibold"
-          >
-            <CheckCheck className="size-4" data-icon="inline-start" />
-            Check answer
-          </Button>
-        ) : (
-          <Button
-            size="lg"
-            onClick={advance}
-            className="h-10 px-6 font-semibold"
-          >
-            {isLast ? "See results" : "Next question"}
-            <ArrowRight className="size-4" data-icon="inline-end" />
-          </Button>
-        )}
+        <Button
+          size="lg"
+          onClick={advance}
+          disabled={!isAnswerComplete(currentAnswer)}
+          className="h-10 px-6 font-semibold"
+        >
+          {isLast ? "Submit for evaluation" : "Save & continue"}
+          <ArrowRight className="size-4" data-icon="inline-end" />
+        </Button>
       </div>
     </Shell>
   );

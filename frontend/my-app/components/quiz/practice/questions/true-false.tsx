@@ -5,21 +5,14 @@ import { cn } from "@/lib/utils";
 interface Props {
   question: TrueFalseQuestion;
   value: boolean | null;
-  submitted: boolean;
   onSelect: (value: boolean) => void;
 }
 
-export function TrueFalse({ question, value, submitted, onSelect }: Props) {
+export function TrueFalse({ value, onSelect }: Props) {
   function stateClass(choice: boolean): string {
-    if (!submitted) {
-      return value === choice
-        ? "border-[color:var(--accent-cyan)]/60 bg-[color:var(--accent-cyan)]/10 quiz-glow"
-        : "border-border bg-card hover:border-foreground/25 hover:bg-accent";
-    }
-    const isCorrect = choice === question.correct_answer;
-    if (isCorrect) return "quiz-correct-surface animate-quiz-pop";
-    if (value === choice) return "quiz-incorrect-surface animate-quiz-shake";
-    return "border-border bg-card opacity-60";
+    return value === choice
+      ? "border-[color:var(--accent-cyan)]/60 bg-[color:var(--accent-cyan)]/10 quiz-glow"
+      : "border-border bg-card hover:border-foreground/25 hover:bg-accent";
   }
 
   const choices: { label: string; value: boolean; icon: typeof Check }[] = [
@@ -33,7 +26,7 @@ export function TrueFalse({ question, value, submitted, onSelect }: Props) {
         <button
           key={label}
           type="button"
-          disabled={submitted}
+          aria-pressed={value === choice}
           onClick={() => onSelect(choice)}
           style={{ "--i": i } as React.CSSProperties}
           className={cn(

@@ -48,6 +48,8 @@ export function CircularTimer({
 
   return (
     <div
+      role="timer"
+      aria-label={`${seconds} seconds remaining`}
       className={cn("relative shrink-0", low && running && "animate-rf-pulse")}
       style={{ width: size, height: size }}
     >

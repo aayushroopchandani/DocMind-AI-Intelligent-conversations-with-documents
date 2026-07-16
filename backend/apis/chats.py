@@ -12,18 +12,21 @@ import asyncio
 import hashlib
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from pymongo.errors import DuplicateKeyError
 
 from apis.deps import current_user_id, verify_internal_secret
 from config.settings import settings
 from db import crud
 from db.models.chat import ChatMemory, ConversationMessage
 from db.models.document import PdfDocument
-from db.models.generated_quiz import GeneratedQuizCreate
+from db.models.generated_quiz import GeneratedQuizCreate, GeneratedQuizInDB
 from services.cloudinary_setup import delete_pdf, upload_pdf
 from scripts.chat_with_pdf import ask_question, save_chat_messages
 from scripts.intention_pipelines.quiz_pipeline.context_based import (
@@ -41,8 +44,10 @@ from scripts.intention_pipelines.summarization_pipeline.summary_index import (
     initialize_pending_summary_indexes,
 )
 from scripts.intent_detection import (
+    DetectedIntent,
     IntentDocument,
     IntentType,
+    MentionStatus,
     QuizScope,
     detect_intent,
 )
@@ -51,6 +56,7 @@ from utils.pydantic_schemas import (
     ChatRequest,
     DocMindResponse,
     IngestData,
+    QuizGenerationConfig,
     StreamAskRequest,
 )
 
@@ -314,12 +320,231 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
+@dataclass(frozen=True)
+class _ResolvedQuizConfig:
+    mode: str | None
+    number_of_questions: int | None
+    question_formats: list[str]
+    missing_fields: list[str]
+
+
+def _intent_payload(intent: DetectedIntent) -> dict:
+    """Return the public intent shape shared by both quiz SSE events."""
+    return {
+        "intent": intent.intent.value,
+        "doc_ids": intent.doc_ids,
+        "target": intent.target,
+        "quiz_scope": intent.quiz_scope.value if intent.quiz_scope else None,
+        "question_formats": [value.value for value in intent.question_formats],
+        "question_formats_mention_status": (
+            intent.question_formats_mention_status.value
+            if intent.question_formats_mention_status
+            else None
+        ),
+        "difficulty": intent.difficulty.value if intent.difficulty else None,
+        "number_of_questions": intent.number_of_questions,
+        "number_of_questions_mention_status": (
+            intent.number_of_questions_mention_status.value
+            if intent.number_of_questions_mention_status
+            else None
+        ),
+        "mode": intent.mode.value if intent.mode else None,
+        "mode_mention_status": (
+            intent.mode_mention_status.value
+            if intent.mode_mention_status
+            else None
+        ),
+        "confidence": intent.confidence,
+    }
+
+
+def _resolve_quiz_config(
+    intent: DetectedIntent,
+    config: QuizGenerationConfig | None,
+) -> _ResolvedQuizConfig:
+    """Merge UI choices into fields omitted from the user's original request."""
+    explicit_mode = (
+        intent.mode_mention_status == MentionStatus.MENTIONED
+        and intent.mode is not None
+    )
+    mode = (
+        intent.mode.value
+        if explicit_mode
+        else (config.mode if config is not None else None)
+    )
+
+    explicit_count = (
+        intent.number_of_questions_mention_status == MentionStatus.MENTIONED
+        and intent.number_of_questions is not None
+    )
+    number_of_questions = (
+        intent.number_of_questions
+        if explicit_count
+        else (config.number_of_questions if config is not None else None)
+    )
+
+    explicit_formats = (
+        intent.question_formats_mention_status == MentionStatus.MENTIONED
+        and bool(intent.question_formats)
+    )
+    question_formats = (
+        [value.value for value in intent.question_formats]
+        if explicit_formats
+        else list(config.question_formats or []) if config is not None else []
+    )
+
+    missing_fields: list[str] = []
+    if mode is None:
+        missing_fields.append("mode")
+    if number_of_questions is None:
+        missing_fields.append("number_of_questions")
+    if not question_formats:
+        missing_fields.append("question_formats")
+
+    return _ResolvedQuizConfig(
+        mode=mode,
+        number_of_questions=number_of_questions,
+        question_formats=question_formats,
+        missing_fields=missing_fields,
+    )
+
+
+def _prior_quiz_conversation(
+    conversation: list[dict], source_message_id: str
+) -> list[dict]:
+    """Exclude the repeated setup request from context-reference resolution."""
+    return [
+        message
+        for message in conversation
+        if message.get("id") != source_message_id
+    ]
+
+
+async def _ensure_quiz_source_message(
+    *,
+    chat_id: str,
+    user_id: str,
+    question: str,
+    conversation: list[dict],
+    request_message_id: str | None,
+    config: QuizGenerationConfig | None,
+) -> str:
+    """Persist the originating user message exactly once and return its ID."""
+    source_message_id = (
+        config.source_message_id if config and config.source_message_id else None
+    ) or request_message_id or str(uuid4())
+    existing = next(
+        (
+            message
+            for message in conversation
+            if message.get("id") == source_message_id
+        ),
+        None,
+    )
+    if existing is not None:
+        if (
+            existing.get("role") != "user"
+            or str(existing.get("content", "")).strip() != question
+        ):
+            raise ValueError("The quiz source message does not match this request.")
+        return source_message_id
+
+    updated = await crud.append_conversation_message_if_missing(
+        chat_id=chat_id,
+        user_id=user_id,
+        message={
+            "id": source_message_id,
+            "role": "user",
+            "content": question,
+        },
+    )
+    if updated is None:
+        raise RuntimeError("Unable to store the quiz request message.")
+    stored = next(
+        (
+            message
+            for message in updated.get("conversation", [])
+            if message.get("id") == source_message_id
+        ),
+        None,
+    )
+    if stored is None:
+        raise RuntimeError("Unable to verify the quiz request message.")
+    if (
+        stored.get("role") != "user"
+        or str(stored.get("content", "")).strip() != question
+    ):
+        raise ValueError("The quiz source message does not match this request.")
+    return source_message_id
+
+
 async def _persist_generated_quiz(quiz: GeneratedQuizCreate) -> dict:
-    """Persist a generated quiz and expose its MongoDB id in the SSE payload."""
-    saved = await crud.create_generated_quiz(quiz=quiz)
-    payload = quiz.model_dump(mode="json")
-    payload["id"] = saved["id"]
-    return payload
+    """Persist once and return the authoritative stored representation."""
+    try:
+        saved = await crud.create_generated_quiz(quiz=quiz)
+    except DuplicateKeyError:
+        if not quiz.source_message_id:
+            raise
+        saved = await crud.get_generated_quiz_by_source_message(
+            chat_id=quiz.chat_id,
+            user_id=quiz.user_id,
+            source_message_id=quiz.source_message_id,
+        )
+        if saved is None:
+            raise
+    return GeneratedQuizInDB.model_validate(saved).model_dump(
+        mode="json",
+        by_alias=False,
+    )
+
+
+async def _ensure_quiz_response_message(quiz: dict) -> None:
+    """Attach a durable assistant quiz card to the chat conversation."""
+    response_message_id = quiz.get("response_message_id")
+    source_message_id = quiz.get("source_message_id")
+    quiz_id = quiz.get("id")
+    if not response_message_id or not source_message_id or not quiz_id:
+        raise RuntimeError("Stored quiz is missing its conversation linkage.")
+
+    updated = await crud.append_conversation_message_if_missing(
+        chat_id=quiz["chat_id"],
+        user_id=quiz["user_id"],
+        message={
+            "id": response_message_id,
+            "role": "assistant",
+            "content": "Your quiz is ready.",
+            "meta": {
+                "kind": "quiz",
+                "quiz_id": quiz_id,
+                "quiz_mode": quiz.get("mode"),
+                "source_message_id": source_message_id,
+                "number_of_questions": quiz.get("number_of_questions"),
+            },
+        },
+    )
+    if updated is None:
+        raise RuntimeError("Unable to store the quiz conversation message.")
+    stored = next(
+        (
+            message
+            for message in updated.get("conversation", [])
+            if message.get("id") == response_message_id
+        ),
+        None,
+    )
+    if stored is None or (stored.get("meta") or {}).get("quiz_id") != quiz_id:
+        raise RuntimeError("Unable to verify the quiz conversation message.")
+
+
+def _quiz_sse_reference(quiz: dict) -> dict:
+    """Expose only navigation metadata; quiz content is loaded via its owned GET."""
+    return {
+        "id": quiz["id"],
+        "mode": quiz.get("mode"),
+        "number_of_questions": quiz.get("number_of_questions"),
+        "source_message_id": quiz.get("source_message_id"),
+        "response_message_id": quiz.get("response_message_id"),
+    }
 
 
 @router.post("/{chat_id}/stream")
@@ -366,6 +591,7 @@ async def stream_chat(
 
     memory = chat.get("memory") or {}
     conversation = chat.get("conversation", [])
+
     async def event_stream():
         question = body.question.strip()
         document_names = {doc_id: attached[doc_id] for doc_id in document_ids}
@@ -379,116 +605,114 @@ async def stream_chat(
                 for doc_id in document_ids
             ],
         )
-        yield _sse(
-            {
-                "type": "intent",
-                "intent": intent.intent.value,
-                "doc_ids": intent.doc_ids,
-                "target": intent.target,
-                "quiz_scope": intent.quiz_scope.value if intent.quiz_scope else None,
-                "question_formats": [
-                    question_format.value
-                    for question_format in intent.question_formats
-                ],
-                "question_formats_mention_status": (
-                    intent.question_formats_mention_status.value
-                    if intent.question_formats_mention_status
-                    else None
-                ),
-                "difficulty": intent.difficulty.value if intent.difficulty else None,
-                "number_of_questions": intent.number_of_questions,
-                "number_of_questions_mention_status": (
-                    intent.number_of_questions_mention_status.value
-                    if intent.number_of_questions_mention_status
-                    else None
-                ),
-                "mode": intent.mode.value if intent.mode else None,
-                "mode_mention_status": (
-                    intent.mode_mention_status.value
-                    if intent.mode_mention_status
-                    else None
-                ),
-                "confidence": intent.confidence,
-            }
-        )
+        intent_payload = _intent_payload(intent)
+        yield _sse({"type": "intent", **intent_payload})
 
         if intent.intent == IntentType.QUIZ:
-            if intent.quiz_scope == QuizScope.CONTEXT_BASED:
-                quiz_doc_ids = [
-                    doc_id for doc_id in (intent.doc_ids or document_ids)
-                    if doc_id in document_names
-                ] or document_ids
-
-                yield _sse({"type": "status", "message": "Resolving quiz context"})
-                try:
-                    quiz = await generate_context_based_quiz(
-                        user_id=user_id,
-                        chat_id=chat_id,
-                        doc_ids=quiz_doc_ids,
-                        document_names=document_names,
-                        question=question,
-                        conversation=conversation,
-                        memory_summary=memory.get("summary", ""),
-                        number_of_questions=intent.number_of_questions,
-                        difficulty=(
-                            intent.difficulty.value
-                            if intent.difficulty
-                            else None
-                        ),
-                        question_formats=[
-                            question_format.value
-                            for question_format in intent.question_formats
-                        ],
-                        mode=intent.mode.value if intent.mode else None,
-                    )
-                except ValueError as exc:
-                    yield _sse({"type": "error", "message": str(exc)})
-                    yield _sse({"type": "done"})
-                    return
-                except Exception:
-                    logger.exception("Context-based quiz pipeline failed")
-                    yield _sse(
-                        {
-                            "type": "error",
-                            "message": "Unable to generate the quiz. Please try again.",
-                        }
-                    )
-                    yield _sse({"type": "done"})
-                    return
-
-                try:
-                    quiz_payload = await _persist_generated_quiz(quiz)
-                except Exception:
-                    logger.exception("Generated quiz persistence failed")
-                    yield _sse(
-                        {
-                            "type": "error",
-                            "message": "Unable to store the generated quiz.",
-                        }
-                    )
-                    yield _sse({"type": "done"})
-                    return
-                yield _sse({"type": "quiz", "data": quiz_payload})
+            if intent.quiz_scope not in {
+                QuizScope.CONTEXT_BASED,
+                QuizScope.TOPIC_BASED,
+            }:
                 yield _sse(
                     {
                         "type": "token",
                         "content": (
-                            "Quiz generated. Check the browser console for the "
-                            "quiz_question object."
+                            "Quiz intent detected. This quiz scope is not "
+                            "implemented yet."
                         ),
                     }
                 )
                 yield _sse({"type": "done"})
                 return
 
-            if intent.quiz_scope == QuizScope.TOPIC_BASED:
-                quiz_doc_ids = [
-                    doc_id for doc_id in (intent.doc_ids or document_ids)
-                    if doc_id in document_names
-                ] or document_ids
+            try:
+                source_message_id = await _ensure_quiz_source_message(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    question=question,
+                    conversation=conversation,
+                    request_message_id=body.message_id,
+                    config=body.quiz_config,
+                )
+            except (RuntimeError, ValueError) as exc:
+                yield _sse({"type": "error", "message": str(exc)})
+                yield _sse({"type": "done"})
+                return
 
-                yield _sse({"type": "status", "message": "Generating topic quiz"})
-                try:
+            quiz_config = _resolve_quiz_config(intent, body.quiz_config)
+            if quiz_config.missing_fields:
+                yield _sse(
+                    {
+                        "type": "quiz_configuration_required",
+                        "source_message_id": source_message_id,
+                        "missing_fields": quiz_config.missing_fields,
+                        "intent": intent_payload,
+                    }
+                )
+                yield _sse({"type": "done"})
+                return
+
+            try:
+                existing_quiz = await crud.get_generated_quiz_by_source_message(
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    source_message_id=source_message_id,
+                )
+                if existing_quiz is not None:
+                    quiz_payload = GeneratedQuizInDB.model_validate(
+                        existing_quiz
+                    ).model_dump(mode="json", by_alias=False)
+                    await _ensure_quiz_response_message(quiz_payload)
+                    yield _sse(
+                        {"type": "quiz", "data": _quiz_sse_reference(quiz_payload)}
+                    )
+                    yield _sse({"type": "done"})
+                    return
+            except Exception:
+                logger.exception("Existing generated quiz recovery failed")
+                yield _sse(
+                    {
+                        "type": "error",
+                        "message": "Unable to load the generated quiz.",
+                    }
+                )
+                yield _sse({"type": "done"})
+                return
+
+            quiz_doc_ids = [
+                doc_id
+                for doc_id in (intent.doc_ids or document_ids)
+                if doc_id in document_names
+            ] or document_ids
+            prior_conversation = _prior_quiz_conversation(
+                conversation,
+                source_message_id,
+            )
+            status_message = (
+                "Resolving quiz context"
+                if intent.quiz_scope == QuizScope.CONTEXT_BASED
+                else "Generating topic quiz"
+            )
+            yield _sse({"type": "status", "message": status_message})
+
+            try:
+                if intent.quiz_scope == QuizScope.CONTEXT_BASED:
+                    quiz = await generate_context_based_quiz(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        doc_ids=quiz_doc_ids,
+                        document_names=document_names,
+                        question=question,
+                        conversation=prior_conversation,
+                        memory_summary=memory.get("summary", ""),
+                        number_of_questions=quiz_config.number_of_questions,
+                        difficulty=(
+                            intent.difficulty.value if intent.difficulty else None
+                        ),
+                        question_formats=quiz_config.question_formats,
+                        mode=quiz_config.mode,
+                    )
+                else:
                     quiz = await generate_topic_based_quiz(
                         user_id=user_id,
                         chat_id=chat_id,
@@ -496,66 +720,50 @@ async def stream_chat(
                         target=intent.target or "",
                         document_names=document_names,
                         query=question,
-                        number_of_questions=intent.number_of_questions,
+                        number_of_questions=quiz_config.number_of_questions,
                         difficulty=(
-                            intent.difficulty.value
-                            if intent.difficulty
-                            else None
+                            intent.difficulty.value if intent.difficulty else None
                         ),
-                        question_formats=[
-                            question_format.value
-                            for question_format in intent.question_formats
-                        ],
-                        mode=intent.mode.value if intent.mode else None,
+                        question_formats=quiz_config.question_formats,
+                        mode=quiz_config.mode,
                     )
-                except ValueError as exc:
-                    yield _sse({"type": "error", "message": str(exc)})
-                    yield _sse({"type": "done"})
-                    return
-                except Exception:
-                    logger.exception("Topic-based quiz pipeline failed")
-                    yield _sse(
-                        {
-                            "type": "error",
-                            "message": "Unable to generate the quiz. Please try again.",
-                        }
-                    )
-                    yield _sse({"type": "done"})
-                    return
-
-                try:
-                    quiz_payload = await _persist_generated_quiz(quiz)
-                except Exception:
-                    logger.exception("Generated quiz persistence failed")
-                    yield _sse(
-                        {
-                            "type": "error",
-                            "message": "Unable to store the generated quiz.",
-                        }
-                    )
-                    yield _sse({"type": "done"})
-                    return
-                yield _sse({"type": "quiz", "data": quiz_payload})
+            except ValueError as exc:
+                yield _sse({"type": "error", "message": str(exc)})
+                yield _sse({"type": "done"})
+                return
+            except Exception:
+                logger.exception("Quiz generation pipeline failed")
                 yield _sse(
                     {
-                        "type": "token",
-                        "content": (
-                            "Quiz generated. Check the browser console for the "
-                            "quiz_question object."
-                        ),
+                        "type": "error",
+                        "message": "Unable to generate the quiz. Please try again.",
+                    }
+                )
+                yield _sse({"type": "done"})
+                return
+
+            linked_quiz = quiz.model_copy(
+                update={
+                    "source_message_id": source_message_id,
+                    "response_message_id": str(uuid4()),
+                }
+            )
+            try:
+                quiz_payload = await _persist_generated_quiz(linked_quiz)
+                await _ensure_quiz_response_message(quiz_payload)
+            except Exception:
+                logger.exception("Generated quiz persistence failed")
+                yield _sse(
+                    {
+                        "type": "error",
+                        "message": "Unable to store the generated quiz.",
                     }
                 )
                 yield _sse({"type": "done"})
                 return
 
             yield _sse(
-                {
-                    "type": "token",
-                    "content": (
-                        "Quiz intent detected. This quiz scope is not "
-                        "implemented yet."
-                    ),
-                }
+                {"type": "quiz", "data": _quiz_sse_reference(quiz_payload)}
             )
             yield _sse({"type": "done"})
             return
@@ -568,6 +776,7 @@ async def stream_chat(
             summary_request = ChatRequest(
                 user_id=user_id,
                 chat_id=chat_id,
+                message_id=body.message_id,
                 question=question,
                 document_ids=summary_doc_ids,
                 document_names=document_names,
@@ -634,6 +843,7 @@ async def stream_chat(
         request = ChatRequest(
             user_id=user_id,
             chat_id=chat_id,
+            message_id=body.message_id,
             question=question,
             document_ids=document_ids,
             document_names=document_names,

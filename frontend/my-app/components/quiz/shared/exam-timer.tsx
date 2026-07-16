@@ -37,6 +37,8 @@ export function ExamTimer({ durationMs, running, onExpire }: ExamTimerProps) {
 
   return (
     <div
+      role="timer"
+      aria-label={`${format(remainingMs)} remaining`}
       className={cn(
         "inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 font-mono text-sm font-semibold tabular-nums transition-colors",
         danger

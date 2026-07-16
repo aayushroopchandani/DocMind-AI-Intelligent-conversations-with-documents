@@ -1,5 +1,6 @@
 from .attempt_quiz import (
     BlankResponse,
+    EvaluatedQuizAttemptResponse,
     MainTopicPerformance,
     MatchResponse,
     QuizAnswerEvaluation,
@@ -28,6 +29,7 @@ from .generated_quiz import (
     MultipleCorrectMCQQuestion,
     MultipleCorrectScoring,
     OptionAnswer,
+    PlayableGeneratedQuiz,
     QuizCitation,
     QuizQuestionTopic,
     SingleCorrectMCQQuestion,
@@ -37,6 +39,7 @@ from .generated_quiz import (
 __all__ = [
     "BlankResponse",
     "CorrectMatch",
+    "EvaluatedQuizAttemptResponse",
     "FillInTheBlankAnswer",
     "FillInTheBlankQuestion",
     "GeneratedQuizBase",
@@ -51,6 +54,7 @@ __all__ = [
     "MultipleCorrectMCQQuestion",
     "MultipleCorrectScoring",
     "OptionAnswer",
+    "PlayableGeneratedQuiz",
     "QuizAnswerEvaluation",
     "QuizAnswerSubmission",
     "QuizAttemptAnswer",

@@ -1,18 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { PracticeQuiz } from "@/components/quiz/practice/practice-quiz";
-import { SAMPLE_PRACTICE_QUIZ } from "@/lib/quiz/sample-quiz";
+import { GeneratedQuizLoader } from "@/components/quiz/generated-quiz-loader";
 
 export const metadata: Metadata = {
   title: "Practice Quiz — DocMind",
 };
 
-/**
- * Standalone preview route for practice mode. Renders against a static sample
- * quiz so the UI can be developed and reviewed before backend wiring.
- */
-export default function PracticeQuizPage() {
+export default async function PracticeQuizPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ quizId?: string | string[] }>;
+}) {
+  const { quizId } = await searchParams;
+  const persistedQuizId = Array.isArray(quizId) ? quizId[0] : quizId;
+
   return (
     <main className="relative min-h-screen overflow-hidden bg-background">
       {/* Faint aurora wash — matches the chat workspace accents. */}
@@ -39,7 +41,7 @@ export default function PracticeQuizPage() {
       </header>
 
       <div className="relative z-10">
-        <PracticeQuiz quiz={SAMPLE_PRACTICE_QUIZ} />
+        <GeneratedQuizLoader quizId={persistedQuizId} mode="practice" />
       </div>
     </main>
   );

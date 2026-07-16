@@ -4,7 +4,6 @@ import { OptionRow, type OptionState } from "@/components/quiz/shared/option-row
 interface Props {
   question: MultipleCorrectMCQQuestion;
   selected: OptionKey[];
-  submitted: boolean;
   onToggle: (option: OptionKey) => void;
 }
 
@@ -13,19 +12,10 @@ const KEYS: OptionKey[] = ["A", "B", "C", "D"];
 export function MultipleCorrectMCQ({
   question,
   selected,
-  submitted,
   onToggle,
 }: Props) {
-  const correctSet = new Set(question.correct_answers.map((a) => a.option));
-
   function stateFor(key: OptionKey): OptionState {
-    const isSelected = selected.includes(key);
-    if (!submitted) return isSelected ? "selected" : "idle";
-    const isCorrect = correctSet.has(key);
-    if (isCorrect && isSelected) return "correct";
-    if (isCorrect && !isSelected) return "missed";
-    if (!isCorrect && isSelected) return "incorrect";
-    return "idle";
+    return selected.includes(key) ? "selected" : "idle";
   }
 
   return (
@@ -41,7 +31,7 @@ export function MultipleCorrectMCQ({
           optionKey={key}
           text={question.options[key]}
           state={stateFor(key)}
-          disabled={submitted}
+          disabled={false}
           onClick={() => onToggle(key)}
         />
       ))}

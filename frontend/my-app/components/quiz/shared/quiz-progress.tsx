@@ -4,8 +4,8 @@ interface QuizProgressProps {
   /** 1-based index of the question currently on screen. */
   current: number;
   total: number;
-  /** Correct answers so far — drives the live score pill. */
-  score: number;
+  /** Optional correct-answer count. Omitted until backend evaluation exists. */
+  score?: number;
   /** How many questions have been answered (for the segmented track). */
   answered: number;
 }
@@ -29,8 +29,8 @@ export function QuizProgress({
           Question{" "}
           <span className="text-foreground">{current}</span> / {total}
         </span>
-        <span className="rounded-full border border-[color:var(--quiz-correct)]/30 bg-[color:var(--quiz-correct)]/10 px-2 py-0.5 font-semibold text-quiz-correct">
-          {score} correct
+        <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5 font-semibold text-muted-foreground">
+          {score === undefined ? `${answered} answered` : `${score} correct`}
         </span>
       </div>
 

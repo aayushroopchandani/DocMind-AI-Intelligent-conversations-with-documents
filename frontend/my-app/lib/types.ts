@@ -40,6 +40,14 @@ export interface StructuredAnswer {
 /** Lifecycle of an assistant message while its answer streams in. */
 export type MessageStatus = "streaming" | "complete" | "error" | "cancelled";
 
+/** Durable reference rendered for an assistant message that created a quiz. */
+export interface ChatQuizReference {
+  quizId: string;
+  mode: QuizMode;
+  sourceMessageId?: string | null;
+  numberOfQuestions?: number;
+}
+
 /** A message rendered in the chat transcript. */
 export interface ChatMessage {
   id: string;
@@ -51,6 +59,8 @@ export interface ChatMessage {
   status?: MessageStatus;
   /** Pipeline progress text shown before the first token arrives. */
   statusText?: string;
+  /** Present when this assistant message links to a generated quiz. */
+  quiz?: ChatQuizReference;
   /** Client timestamp (ms). Used only for ordering/animation, never persisted. */
   createdAt: number;
 }
@@ -105,34 +115,13 @@ export type MentionStatus = "mentioned" | "not_mentioned";
 
 export type QuizMode = "practice" | "rapid_fire" | "exam_mode";
 
-export interface BackendQuizCitation {
-  document_id: string;
-  document_name: string;
-  page_number?: number | null;
-  chunk_id?: string | null;
-  excerpt?: string | null;
-}
-
-export type BackendGeneratedQuizQuestion = {
+/** Navigation metadata emitted after the quiz has been stored. */
+export interface BackendGeneratedQuizReference {
   id: string;
-  type: QuizQuestionFormat;
-  short_explanation?: string;
-  citations?: BackendQuizCitation[];
-  [key: string]: unknown;
-};
-
-export interface BackendGeneratedQuiz {
-  user_id: string;
-  chat_id: string;
-  doc_ids: string[];
-  quiz_scope: QuizScope;
-  target?: string | null;
   mode?: QuizMode | null;
   number_of_questions: number;
-  difficulty: QuizDifficulty;
-  question_formats: QuizQuestionFormat[];
-  status: "draft" | "generating" | "generated" | "failed";
-  questions: BackendGeneratedQuizQuestion[];
+  source_message_id?: string | null;
+  response_message_id?: string | null;
 }
 
 export interface BackendIntentData {
@@ -150,13 +139,34 @@ export interface BackendIntentData {
   confidence: number;
 }
 
+export type MissingQuizConfigurationField =
+  | "mode"
+  | "number_of_questions"
+  | "question_formats";
+
+export interface BackendQuizConfigurationRequired {
+  source_message_id: string;
+  missing_fields: MissingQuizConfigurationField[];
+  intent: BackendIntentData;
+}
+
+/** Optional values supplied after the user completes the quiz setup screen. */
+export interface QuizGenerationConfig {
+  sourceMessageId: string;
+  mode?: QuizMode;
+  numberOfQuestions?: number;
+  questionFormats?: QuizQuestionFormat[];
+}
+
 export type StreamEvent =
   | { type: "status"; message: string }
   | ({ type: "intent" } & BackendIntentData)
   | { type: "token"; content: string }
   | { type: "citations"; citations: BackendCitation[] }
   | { type: "final"; data: BackendFinalData }
-  | { type: "quiz"; data: BackendGeneratedQuiz }
+  | ({ type: "quiz_configuration_required" } &
+      BackendQuizConfigurationRequired)
+  | { type: "quiz"; data: BackendGeneratedQuizReference }
   | { type: "error"; message: string }
   | { type: "done" };
 
@@ -209,10 +219,18 @@ export interface PdfDocumentRecord {
 }
 
 export interface BackendConversationMessage {
+  id?: string;
   role: ChatRole;
   content: string;
   created_at?: string;
-  meta?: Partial<BackendFinalData> & { cancelled?: boolean };
+  meta?: Partial<BackendFinalData> & {
+    cancelled?: boolean;
+    kind?: "quiz";
+    quiz_id?: string;
+    quiz_mode?: QuizMode;
+    source_message_id?: string;
+    number_of_questions?: number;
+  };
 }
 
 export interface BackendChatMemory {

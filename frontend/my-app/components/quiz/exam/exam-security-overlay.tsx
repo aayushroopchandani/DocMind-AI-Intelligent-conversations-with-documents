@@ -25,13 +25,21 @@ export function ExamSecurityOverlay({
   const remaining = Math.max(0, maxViolations - violations);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/85 backdrop-blur-md">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="exam-security-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/85 backdrop-blur-md"
+    >
       <div className="mx-4 max-w-md rounded-2xl border border-[color:var(--quiz-incorrect)]/40 bg-card p-8 text-center">
         <div className="mx-auto flex size-14 items-center justify-center rounded-full bg-[color:var(--quiz-incorrect)]/12">
           <ShieldAlert className="size-7 text-quiz-incorrect" />
         </div>
-        <h2 className="mt-4 text-lg font-semibold text-foreground">
-          Exam paused
+        <h2
+          id="exam-security-title"
+          className="mt-4 text-lg font-semibold text-foreground"
+        >
+          Exam interrupted
         </h2>
         <p className="mt-2 text-sm text-muted-foreground">
           {violationType
@@ -52,7 +60,11 @@ export function ExamSecurityOverlay({
           </span>
         </div>
 
-        <Button onClick={onResume} className="mt-6 h-10 w-full font-semibold">
+        <Button
+          autoFocus
+          onClick={onResume}
+          className="mt-6 h-10 w-full font-semibold"
+        >
           Return to exam
         </Button>
       </div>

@@ -483,6 +483,7 @@ def evaluate_quiz(
         quiz_id=quiz_id,
         user_id=quiz.user_id,
         chat_id=quiz.chat_id,
+        submission_id=submission.submission_id,
         status="evaluated",
         started_at=evaluation_time - timedelta(seconds=total_duration),
         submitted_at=evaluation_time,

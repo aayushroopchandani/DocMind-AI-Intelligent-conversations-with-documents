@@ -1,14 +1,24 @@
-import { CheckCircle2, Lightbulb, XCircle } from "lucide-react";
-import type { GradedResult, QuizAnswer, QuizQuestion } from "@/lib/quiz/types";
+import {
+  CheckCircle2,
+  CircleDashed,
+  CircleDotDashed,
+  Lightbulb,
+  XCircle,
+} from "lucide-react";
+import type {
+  QuizAnswer,
+  QuizAnswerEvaluation,
+  ReviewQuizQuestion,
+} from "@/lib/quiz/types";
 import { describeAnswer, describeCorrect } from "@/lib/quiz/describe";
 import { cn } from "@/lib/utils";
 import { CitationChip } from "./citation-chip";
 
 interface QuestionReviewProps {
   index: number;
-  question: QuizQuestion;
+  question: ReviewQuizQuestion;
   answer: QuizAnswer;
-  result: GradedResult;
+  evaluation: QuizAnswerEvaluation;
 }
 
 /**
@@ -19,25 +29,42 @@ export function QuestionReview({
   index,
   question,
   answer,
-  result,
+  evaluation,
 }: QuestionReviewProps) {
   const prompt =
     question.type === "true_false" ? question.statement : question.question;
-  const correct = result.correct;
+  const status = evaluation.status;
+  const correct = status === "correct";
+  const Icon =
+    status === "correct"
+      ? CheckCircle2
+      : status === "incorrect"
+        ? XCircle
+        : status === "partially_correct"
+          ? CircleDotDashed
+          : CircleDashed;
 
   return (
     <div
       className={cn(
         "rounded-xl border p-4",
-        correct ? "quiz-correct-surface" : "quiz-incorrect-surface",
+        status === "correct" && "quiz-correct-surface",
+        status === "incorrect" && "quiz-incorrect-surface",
+        status === "partially_correct" &&
+          "border-[color:var(--accent-amber)]/35 bg-[color:var(--accent-amber)]/[0.07]",
+        status === "skipped" && "border-border bg-muted/30",
       )}
     >
       <div className="flex items-start gap-2.5">
-        {correct ? (
-          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-quiz-correct" />
-        ) : (
-          <XCircle className="mt-0.5 size-4 shrink-0 text-quiz-incorrect" />
-        )}
+        <Icon
+          className={cn(
+            "mt-0.5 size-4 shrink-0",
+            status === "correct" && "text-quiz-correct",
+            status === "incorrect" && "text-quiz-incorrect",
+            status === "partially_correct" && "text-[color:var(--accent-amber)]",
+            status === "skipped" && "text-muted-foreground",
+          )}
+        />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-foreground">
             <span className="mr-1.5 text-xs font-semibold text-muted-foreground">
@@ -54,7 +81,11 @@ export function QuestionReview({
               <dd
                 className={cn(
                   "min-w-0 font-medium",
-                  correct ? "text-quiz-correct" : "text-quiz-incorrect",
+                  status === "correct" && "text-quiz-correct",
+                  status === "incorrect" && "text-quiz-incorrect",
+                  status === "partially_correct" &&
+                    "text-[color:var(--accent-amber)]",
+                  status === "skipped" && "text-muted-foreground",
                 )}
               >
                 {describeAnswer(question, answer)}
@@ -65,6 +96,14 @@ export function QuestionReview({
                 <dt className="w-24 shrink-0 text-muted-foreground">Correct</dt>
                 <dd className="min-w-0 font-medium text-quiz-correct">
                   {describeCorrect(question)}
+                </dd>
+              </div>
+            ) : null}
+            {status === "partially_correct" ? (
+              <div className="flex gap-2 text-muted-foreground">
+                <dt className="w-24 shrink-0">Credit</dt>
+                <dd>
+                  {evaluation.awarded_marks}/{evaluation.maximum_marks} marks
                 </dd>
               </div>
             ) : null}

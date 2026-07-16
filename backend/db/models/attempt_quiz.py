@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Literal, Optional
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from .generated_quiz import (
+    GeneratedQuizQuestion,
     OptionKey,
     QuizQuestionFormat,
     QuizQuestionTopic,
@@ -68,6 +70,11 @@ class QuizAnswerSubmission(BaseModel):
 
 
 class QuizAttemptSubmission(BaseModel):
+    submission_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        min_length=1,
+        max_length=128,
+    )
     answers: list[QuizAnswerSubmission] = Field(
         default_factory=list,
         max_length=20,
@@ -135,6 +142,7 @@ class QuizAttemptBase(BaseModel):
     quiz_id: str
     user_id: str
     chat_id: str
+    submission_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     attempt_number: int = Field(default=1, ge=1)
     status: QuizAttemptStatus = "in_progress"
     started_at: datetime = Field(default_factory=utc_now)
@@ -156,3 +164,9 @@ class QuizAttemptInDB(QuizAttemptBase):
     updated_at: datetime = Field(default_factory=utc_now)
 
     model_config = {"populate_by_name": True}
+
+
+class EvaluatedQuizAttemptResponse(QuizAttemptInDB):
+    """Persisted attempt plus transient solved questions for post-submit review."""
+
+    review_questions: list[GeneratedQuizQuestion] = Field(default_factory=list)

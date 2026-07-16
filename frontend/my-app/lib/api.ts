@@ -2,13 +2,16 @@ import type {
   BackendCitation,
   BackendConversationMessage,
   BackendFinalData,
-  BackendGeneratedQuiz,
+  BackendGeneratedQuizReference,
   BackendIntentData,
+  BackendQuizConfigurationRequired,
   ChatApiResponse,
   ChatDocumentsApiResponse,
   ChatMessage,
   Citation,
   PdfDocumentRecord,
+  QuizGenerationConfig,
+  QuizMode,
   StreamEvent,
   StructuredAnswer,
 } from "@/lib/types";
@@ -126,7 +129,7 @@ export function mapPersistedConversation(
 
     if (message.role === "user") {
       return {
-        id: `saved-${index}-${createdAt}`,
+        id: message.id ?? `saved-${index}-${createdAt}`,
         role: "user",
         content: message.content,
         createdAt,
@@ -147,17 +150,32 @@ export function mapPersistedConversation(
             follow_up_questions: meta.follow_up_questions ?? [],
           })
         : undefined;
+    const quizMode = meta?.quiz_mode;
+    const quiz =
+      meta?.kind === "quiz" && meta.quiz_id && isQuizMode(quizMode)
+        ? {
+            quizId: meta.quiz_id,
+            mode: quizMode,
+            sourceMessageId: meta.source_message_id,
+            numberOfQuestions: meta.number_of_questions,
+          }
+        : undefined;
 
     return {
-      id: `saved-${index}-${createdAt}`,
+      id: message.id ?? `saved-${index}-${createdAt}`,
       role: "assistant",
       content: message.content,
       createdAt,
       status: meta?.cancelled ? "cancelled" : "complete",
       citations,
       structured,
+      quiz,
     };
   });
+}
+
+function isQuizMode(value: unknown): value is QuizMode {
+  return value === "practice" || value === "rapid_fire" || value === "exam_mode";
 }
 
 export interface StreamChatCallbacks {
@@ -166,8 +184,18 @@ export interface StreamChatCallbacks {
   onToken: (text: string) => void;
   onCitations: (citations: Citation[]) => void;
   onFinal: (structured: StructuredAnswer, citations: Citation[]) => void;
-  onQuiz?: (quiz: BackendGeneratedQuiz) => void;
+  onQuizConfigurationRequired?: (
+    configuration: BackendQuizConfigurationRequired,
+  ) => void;
+  onQuiz?: (quiz: BackendGeneratedQuizReference) => void;
   onError: (message: string) => void;
+}
+
+export interface StreamChatOptions {
+  /** Stable id used by both the optimistic bubble and MongoDB conversation. */
+  messageId: string;
+  quizConfig?: QuizGenerationConfig;
+  signal?: AbortSignal;
 }
 
 /**
@@ -182,13 +210,26 @@ export async function streamChat(
   question: string,
   documentIds: string[] | undefined,
   callbacks: StreamChatCallbacks,
-  signal?: AbortSignal,
+  options: StreamChatOptions,
 ): Promise<void> {
+  const quizConfig = options.quizConfig;
   const res = await fetch(`/api/chats/${chatId}/stream`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ question, document_ids: documentIds ?? null }),
-    signal,
+    body: JSON.stringify({
+      question,
+      document_ids: documentIds ?? null,
+      message_id: options.messageId,
+      quiz_config: quizConfig
+        ? {
+            source_message_id: quizConfig.sourceMessageId,
+            mode: quizConfig.mode,
+            number_of_questions: quizConfig.numberOfQuestions,
+            question_formats: quizConfig.questionFormats,
+          }
+        : undefined,
+    }),
+    signal: options.signal,
   });
   if (!res.ok || !res.body) {
     throw new Error(await parseError(res));
@@ -232,6 +273,13 @@ export async function streamChat(
           mapStructured(event.data),
           (event.data.citations ?? []).map(mapCitation),
         );
+        break;
+      case "quiz_configuration_required":
+        callbacks.onQuizConfigurationRequired?.({
+          source_message_id: event.source_message_id,
+          missing_fields: event.missing_fields,
+          intent: event.intent,
+        });
         break;
       case "quiz":
         callbacks.onQuiz?.(event.data);

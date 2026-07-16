@@ -1,4 +1,4 @@
-import { Flame, Gauge, Timer, Zap } from "lucide-react";
+import { ListChecks, Send, Timer, Zap } from "lucide-react";
 import type { Quiz } from "@/lib/quiz/types";
 import { Button } from "@/components/ui/button";
 import SpotlightCard from "@/components/SpotlightCard";
@@ -29,8 +29,8 @@ export function RapidFireIntro({
       </h1>
       <p className="mt-2 max-w-lg text-sm leading-relaxed text-muted-foreground">
         {quiz.number_of_questions} questions, {secondsPerQuestion} seconds each.
-        Answer fast, keep your streak alive, and stack up bonus points. No time
-        to overthink.
+        Lock in each answer before the timer expires. Your complete attempt is
+        evaluated by the backend after the final question.
       </p>
 
       <ul className="mt-6 space-y-2.5">
@@ -40,13 +40,13 @@ export function RapidFireIntro({
           </b>{" "}
           — the clock auto-advances when it hits zero.
         </Rule>
-        <Rule icon={Gauge} tint="var(--accent-amber)">
-          <b className="font-semibold text-foreground">Speed bonus</b> — the
-          faster you lock in, the more points you earn.
+        <Rule icon={ListChecks} tint="var(--accent-amber)">
+          <b className="font-semibold text-foreground">One pass</b> — every
+          locked answer moves immediately to the next question.
         </Rule>
-        <Rule icon={Flame} tint="var(--quiz-incorrect)">
-          <b className="font-semibold text-foreground">Streak multiplier</b> —
-          consecutive correct answers multiply your score.
+        <Rule icon={Send} tint="var(--quiz-incorrect)">
+          <b className="font-semibold text-foreground">Final evaluation</b> —
+          correctness and partial credit appear only after submission.
         </Rule>
       </ul>
 

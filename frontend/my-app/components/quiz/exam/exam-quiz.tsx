@@ -1,15 +1,21 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
   Flag,
+  LoaderCircle,
+  RotateCcw,
   Send,
   ShieldCheck,
 } from "lucide-react";
-import type { GradedResult, Quiz, QuizAnswer } from "@/lib/quiz/types";
-import { emptyAnswer, gradeAll, isAnswerComplete } from "@/lib/quiz/grading";
+import type { Quiz, QuizAnswer, QuizAttempt } from "@/lib/quiz/types";
+import { emptyAnswer, isAnswerComplete } from "@/lib/quiz/grading";
+import {
+  createQuizSubmissionId,
+  submitQuizAttempt,
+} from "@/lib/quiz/api";
 import { useProctoring, type ViolationType } from "@/lib/quiz/use-proctoring";
 import { Button } from "@/components/ui/button";
 import { ExamTimer } from "@/components/quiz/shared/exam-timer";
@@ -19,7 +25,7 @@ import { ExamIntro } from "./exam-intro";
 import { ExamReview } from "./exam-review";
 import { ExamSecurityOverlay } from "./exam-security-overlay";
 
-type Phase = "intro" | "exam" | "review";
+type Phase = "intro" | "exam" | "submitting" | "submit_error" | "review";
 
 const SECONDS_PER_QUESTION = 60;
 const MAX_VIOLATIONS = 5;
@@ -47,36 +53,71 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
   const [lastViolation, setLastViolation] = useState<ViolationType | null>(null);
   const [blocked, setBlocked] = useState(false);
 
-  const [results, setResults] = useState<GradedResult[]>([]);
+  const [attempt, setAttempt] = useState<QuizAttempt | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [autoSubmitted, setAutoSubmitted] = useState(false);
 
   const submittedRef = useRef(false);
   const violationsRef = useRef(0);
   const startedAtRef = useRef(0);
+  const submissionIdRef = useRef(createQuizSubmissionId());
+  const questionStartedAtRef = useRef(0);
+  const timesRef = useRef<number[]>(questions.map(() => 0));
 
   const current = questions[index];
 
+  const recordQuestionTime = useCallback(() => {
+    if (!questionStartedAtRef.current) return;
+    timesRef.current[index] += Math.max(
+      0,
+      Math.round((performance.now() - questionStartedAtRef.current) / 1000),
+    );
+    questionStartedAtRef.current = performance.now();
+  }, [index]);
+
+  useEffect(() => {
+    if (phase === "exam") questionStartedAtRef.current = performance.now();
+  }, [index, phase]);
+
   const submit = useCallback(
-    (auto: boolean) => {
+    async (auto: boolean) => {
       if (submittedRef.current) return;
       submittedRef.current = true;
       setAutoSubmitted(auto);
-      setResults(gradeAll(questions, answers));
+      setSubmitError(null);
       setBlocked(false);
-      setPhase("review");
+      setPhase("submitting");
+      if (phase === "exam") recordQuestionTime();
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+
+      try {
+        const evaluated = await submitQuizAttempt(
+          quiz,
+          answers,
+          submissionIdRef.current,
+          timesRef.current,
+        );
+        setAttempt(evaluated);
+        setPhase("review");
+      } catch (cause) {
+        setSubmitError(
+          cause instanceof Error ? cause.message : "Unable to evaluate exam",
+        );
+        setPhase("submit_error");
+      }
     },
-    [questions, answers],
+    [quiz, answers, phase, recordQuestionTime],
   );
 
   const handleViolation = useCallback(
     (type: ViolationType) => {
+      if (submittedRef.current) return;
       if (performance.now() - startedAtRef.current < VIOLATION_GRACE_MS) return;
       const next = violationsRef.current + 1;
       violationsRef.current = next;
       setViolations(next);
       setLastViolation(type);
-      if (next >= MAX_VIOLATIONS) submit(true);
+      if (next >= MAX_VIOLATIONS) void submit(true);
       else setBlocked(true);
     },
     [submit],
@@ -91,6 +132,7 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
     // Full-screen is best-effort: some environments (sandboxed iframes) leave
     // the request pending, so we never block the exam start on it resolving.
     startedAtRef.current = performance.now();
+    questionStartedAtRef.current = performance.now();
     void enterFullscreen();
     setPhase("exam");
   }
@@ -120,9 +162,13 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
   function retake() {
     submittedRef.current = false;
     violationsRef.current = 0;
+    submissionIdRef.current = createQuizSubmissionId();
+    questionStartedAtRef.current = 0;
+    timesRef.current = questions.map(() => 0);
     setAnswers(questions.map(emptyAnswer));
     setFlagged(new Set());
-    setResults([]);
+    setAttempt(null);
+    setSubmitError(null);
     setViolations(0);
     setLastViolation(null);
     setAutoSubmitted(false);
@@ -143,17 +189,59 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
     );
   }
 
-  if (phase === "review") {
+  if (phase === "review" && attempt) {
     return (
       <Shell>
         <ExamReview
-          quiz={quiz}
           answers={answers}
-          results={results}
+          attempt={attempt}
           violations={violations}
           autoSubmitted={autoSubmitted}
           onRetake={retake}
         />
+      </Shell>
+    );
+  }
+
+  if (phase === "submitting") {
+    return (
+      <Shell>
+        <div className="animate-quiz-in rounded-2xl border border-border bg-card p-10 text-center">
+          <LoaderCircle className="mx-auto size-7 animate-spin text-[color:var(--accent-cyan)]" />
+          <h2 className="mt-3 text-lg font-semibold text-foreground">
+            Evaluating your exam
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Your submitted answers are being checked by the backend.
+          </p>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (phase === "submit_error") {
+    return (
+      <Shell>
+        <div className="animate-quiz-in rounded-2xl border border-border bg-card p-8 text-center">
+          <h2 className="text-lg font-semibold text-foreground">
+            Evaluation failed
+          </h2>
+          <p className="mt-2 text-sm text-destructive">{submitError}</p>
+          <div className="mt-5 flex justify-center gap-2">
+            <Button variant="outline" onClick={retake}>
+              <RotateCcw className="size-4" data-icon="inline-start" />
+              Retake
+            </Button>
+            <Button
+              onClick={() => {
+                submittedRef.current = false;
+                void submit(autoSubmitted);
+              }}
+            >
+              Try again
+            </Button>
+          </div>
+        </div>
       </Shell>
     );
   }
@@ -176,7 +264,7 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
         <ExamTimer
           durationMs={durationMs}
           running={phase === "exam"}
-          onExpire={() => submit(true)}
+          onExpire={() => void submit(true)}
         />
       </div>
 
@@ -204,7 +292,6 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
         <QuestionRenderer
           question={current}
           answer={answers[index]}
-          submitted={false}
           onChange={updateAnswer}
         />
       </div>
@@ -215,7 +302,10 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
           variant="outline"
           className="h-9"
           disabled={index === 0}
-          onClick={() => setIndex((i) => Math.max(0, i - 1))}
+          onClick={() => {
+            recordQuestionTime();
+            setIndex((i) => Math.max(0, i - 1));
+          }}
         >
           <ChevronLeft className="size-4" data-icon="inline-start" />
           Prev
@@ -233,9 +323,10 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
           <Button
             variant="outline"
             className="h-9"
-            onClick={() =>
-              setIndex((i) => Math.min(questions.length - 1, i + 1))
-            }
+            onClick={() => {
+              recordQuestionTime();
+              setIndex((i) => Math.min(questions.length - 1, i + 1));
+            }}
           >
             Next
             <ChevronRight className="size-4" data-icon="inline-end" />
@@ -258,7 +349,11 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
               <button
                 key={q.id}
                 type="button"
-                onClick={() => setIndex(i)}
+                onClick={() => {
+                  if (i === index) return;
+                  recordQuestionTime();
+                  setIndex(i);
+                }}
                 className={cn(
                   "relative size-9 rounded-lg border text-xs font-semibold transition-colors",
                   i === index
@@ -280,9 +375,17 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
 
       {/* Submit confirmation */}
       {confirming ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="submit-exam-title"
+          className="fixed inset-0 z-40 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
+        >
           <div className="max-w-sm rounded-2xl border border-border bg-card p-6 text-center">
-            <h2 className="text-lg font-semibold text-foreground">
+            <h2
+              id="submit-exam-title"
+              className="text-lg font-semibold text-foreground"
+            >
               Submit exam?
             </h2>
             <p className="mt-2 text-sm text-muted-foreground">
@@ -291,6 +394,7 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
             </p>
             <div className="mt-5 flex gap-2">
               <Button
+                autoFocus
                 variant="outline"
                 className="h-9 flex-1"
                 onClick={() => setConfirming(false)}
@@ -301,7 +405,7 @@ export function ExamQuiz({ quiz }: ExamQuizProps) {
                 className="h-9 flex-1 font-semibold"
                 onClick={() => {
                   setConfirming(false);
-                  submit(false);
+                  void submit(false);
                 }}
               >
                 Submit

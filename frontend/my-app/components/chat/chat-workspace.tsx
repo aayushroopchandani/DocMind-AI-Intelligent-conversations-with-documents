@@ -3,8 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { AlertCircle, FileText, Loader2, MessagesSquare } from "lucide-react";
+import {
+  AlertCircle,
+  FileText,
+  Loader2,
+  MessagesSquare,
+  Sparkles,
+} from "lucide-react";
 import type {
+  BackendGeneratedQuizReference,
   ChatApiResponse,
   ChatMessage,
   Citation,
@@ -22,6 +29,10 @@ import {
   uploadPdfs,
 } from "@/lib/api";
 import { validatePdfFiles } from "@/lib/pdf";
+import {
+  quizHref,
+  savePendingQuizGeneration,
+} from "@/lib/quiz-session";
 import { ChatHeader } from "@/components/chat/chat-header";
 import { ChatHistorySidebar } from "@/components/chat/chat-history-sidebar";
 import { PdfUploader } from "@/components/chat/pdf-uploader";
@@ -156,6 +167,7 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
   const [chatsError, setChatsError] = useState<string | null>(null);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [loadingChatId, setLoadingChatId] = useState<string | null>(null);
+  const [quizTransition, setQuizTransition] = useState<string | null>(null);
 
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [pdfWidth, setPdfWidth] = useState(PDF_DEFAULT_WIDTH);
@@ -165,6 +177,7 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
   const chatCreationRef = useRef<Promise<string> | null>(null);
   // Abort controller for the in-flight answer stream (stop button / unmount).
   const abortRef = useRef<AbortController | null>(null);
+  const quizNavigationRef = useRef<number | null>(null);
   // Mirrors for async callbacks without stale closures.
   const docsRef = useRef<PdfDoc[]>([]);
   const selectionRef = useRef(0);
@@ -207,6 +220,9 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
     return () => {
       revokeBlobUrls(docsRef.current);
       abortRef.current?.abort();
+      if (quizNavigationRef.current !== null) {
+        window.clearTimeout(quizNavigationRef.current);
+      }
     };
   }, []);
 
@@ -541,6 +557,24 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
     abortRef.current?.abort();
   }, []);
 
+  const navigateToQuiz = useCallback(
+    (quiz: BackendGeneratedQuizReference) => {
+      if (!quiz.mode) return false;
+
+      const href = quizHref(quiz.id, quiz.mode);
+      router.prefetch(href);
+      setQuizTransition(href);
+      if (quizNavigationRef.current !== null) {
+        window.clearTimeout(quizNavigationRef.current);
+      }
+      quizNavigationRef.current = window.setTimeout(() => {
+        router.push(href);
+      }, 360);
+      return true;
+    },
+    [router],
+  );
+
   const runSend = useCallback(
     async (text: string) => {
       const question = text.trim();
@@ -553,10 +587,16 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
 
       // 1) User message appears immediately; 2) one empty assistant message
       // that every streamed token appends into.
+      const userMessageId = createId();
       const assistantId = createId();
       setMessages((prev) => [
         ...prev,
-        { id: createId(), role: "user", content: question, createdAt: Date.now() },
+        {
+          id: userMessageId,
+          role: "user",
+          content: question,
+          createdAt: Date.now(),
+        },
         {
           id: assistantId,
           role: "assistant",
@@ -571,6 +611,7 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
 
       const controller = new AbortController();
       abortRef.current = controller;
+      let handedOffToQuiz = false;
 
       try {
         await streamChat(
@@ -582,23 +623,6 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
               patchMessage(assistantId, (m) => ({ ...m, statusText: message })),
             onIntent: (intent) => {
               if (intent.intent === "quiz") {
-                console.log("Quiz intent detected", {
-                  intent: intent.intent,
-                  doc_ids: intent.doc_ids,
-                  target: intent.target,
-                  quiz_scope: intent.quiz_scope,
-                  question_formats: intent.question_formats,
-                  question_formats_mention_status:
-                    intent.question_formats_mention_status,
-                  difficulty: intent.difficulty,
-                  number_of_questions: intent.number_of_questions,
-                  number_of_questions_mention_status:
-                    intent.number_of_questions_mention_status,
-                  mode: intent.mode,
-                  mode_mention_status: intent.mode_mention_status,
-                  confidence: intent.confidence,
-                });
-
                 patchMessage(assistantId, (m) => ({
                   ...m,
                   statusText: "Preparing quiz",
@@ -635,8 +659,55 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
                 structured,
                 citations: citations.length > 0 ? citations : m.citations,
               })),
-            onQuiz: (quizQuestion) => {
-              console.log("Generated quiz_question object", quizQuestion);
+            onQuizConfigurationRequired: (configuration) => {
+              const saved = savePendingQuizGeneration({
+                chatId: chatIdRef.current!,
+                question,
+                documentIds:
+                  configuration.intent.doc_ids.length > 0
+                    ? configuration.intent.doc_ids
+                    : readyDocs.map((doc) => doc.documentId!),
+                messageId: userMessageId,
+                sourceMessageId: configuration.source_message_id,
+                missingFields: configuration.missing_fields,
+                intent: configuration.intent,
+                createdAt: Date.now(),
+              });
+
+              if (!saved) {
+                patchMessage(assistantId, (message) => ({
+                  ...message,
+                  status: "error",
+                  content:
+                    "Quiz setup could not be opened because browser session storage is unavailable.",
+                }));
+                return;
+              }
+
+              handedOffToQuiz = true;
+              setMessages((messages) =>
+                messages.filter((message) => message.id !== assistantId),
+              );
+              router.push("/quiz");
+            },
+            onQuiz: (quiz) => {
+              patchMessage(assistantId, (message) => ({
+                ...message,
+                id: quiz.response_message_id ?? message.id,
+                content: "Your quiz is ready.",
+                status: "complete",
+                statusText: undefined,
+                quiz: quiz.mode
+                  ? {
+                      quizId: quiz.id,
+                      mode: quiz.mode,
+                      sourceMessageId: quiz.source_message_id,
+                      numberOfQuestions: quiz.number_of_questions,
+                    }
+                  : undefined,
+              }));
+
+              if (navigateToQuiz(quiz)) handedOffToQuiz = true;
             },
             onError: (message) =>
               patchMessage(assistantId, (m) => ({
@@ -645,13 +716,15 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
                 content: m.content || message,
               })),
           },
-          controller.signal,
+          { messageId: userMessageId, signal: controller.signal },
         );
 
-        patchMessage(assistantId, (m) => ({
-          ...m,
-          status: m.status === "error" ? "error" : "complete",
-        }));
+        if (!handedOffToQuiz) {
+          patchMessage(assistantId, (m) => ({
+            ...m,
+            status: m.status === "error" ? "error" : "complete",
+          }));
+        }
       } catch (err) {
         const aborted =
           controller.signal.aborted ||
@@ -680,7 +753,14 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
         void loadChats();
       }
     },
-    [isLoadingConversation, isResponding, loadChats, patchMessage],
+    [
+      isLoadingConversation,
+      isResponding,
+      loadChats,
+      navigateToQuiz,
+      patchMessage,
+      router,
+    ],
   );
 
   const hasDocs = docs.length > 0;
@@ -793,6 +873,28 @@ export function ChatWorkspace({ initialChatId }: { initialChatId?: string }) {
 
   return (
     <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 flex-col overflow-hidden">
+      {quizTransition ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-background/80 backdrop-blur-sm"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="animate-quiz-in flex items-center gap-3 rounded-2xl border border-[color:var(--accent-violet)]/35 bg-card px-5 py-4 shadow-xl">
+            <span className="flex size-9 items-center justify-center rounded-xl bg-[color:var(--accent-violet)]/10 text-[color:var(--accent-violet)]">
+              <Sparkles className="size-4" />
+            </span>
+            <div>
+              <p className="text-sm font-semibold text-foreground">
+                Switching to quiz mode
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Your questions are ready.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <ChatHeader documentCount={docs.length} maxFiles={MAX_FILES} />
 
       {/* Mobile panel switcher */}

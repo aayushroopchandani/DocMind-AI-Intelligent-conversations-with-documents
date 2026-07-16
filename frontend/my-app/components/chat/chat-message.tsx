@@ -1,10 +1,19 @@
 "use client";
 
 import { memo } from "react";
-import { Sparkles, User, CircleAlert } from "lucide-react";
+import Link from "next/link";
+import {
+  ArrowRight,
+  CircleAlert,
+  GraduationCap,
+  Sparkles,
+  User,
+  Zap,
+} from "lucide-react";
 import type { ChatMessage as ChatMessageType, Citation } from "@/lib/types";
 import { CitationGroup } from "@/components/chat/citation-card";
 import { StreamingMarkdown } from "@/components/chat/streaming-markdown";
+import { quizHref } from "@/lib/quiz-session";
 import { cn } from "@/lib/utils";
 
 interface ChatMessageProps {
@@ -55,26 +64,30 @@ export const ChatMessage = memo(function ChatMessage({
       </div>
 
       <div className={cn("flex min-w-0 max-w-[85%] flex-col gap-2", isUser && "items-end")}>
-        <div
-          className={cn(
-            "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
-            isUser
-              ? "rounded-br-sm bg-primary text-primary-foreground"
-              : "rounded-bl-sm border border-border bg-card text-foreground",
-            !isUser && isStreaming && "streaming-border",
-          )}
-        >
-          {isUser ? (
-            message.content
-          ) : showStatus ? (
-            <span className="status-shimmer text-sm">{message.statusText}</span>
-          ) : (
-            <StreamingMarkdown
-              content={message.content}
-              isStreaming={isStreaming}
-            />
-          )}
-        </div>
+        {message.quiz && !isUser ? (
+          <QuizReadyCard quiz={message.quiz} />
+        ) : (
+          <div
+            className={cn(
+              "rounded-2xl px-4 py-2.5 text-sm leading-relaxed",
+              isUser
+                ? "rounded-br-sm bg-primary text-primary-foreground"
+                : "rounded-bl-sm border border-border bg-card text-foreground",
+              !isUser && isStreaming && "streaming-border",
+            )}
+          >
+            {isUser ? (
+              message.content
+            ) : showStatus ? (
+              <span className="status-shimmer text-sm">{message.statusText}</span>
+            ) : (
+              <StreamingMarkdown
+                content={message.content}
+                isStreaming={isStreaming}
+              />
+            )}
+          </div>
+        )}
 
         {message.status === "error" ? (
           <p className="flex items-center gap-1.5 text-xs text-destructive">
@@ -124,6 +137,41 @@ export const ChatMessage = memo(function ChatMessage({
     </div>
   );
 });
+
+const MODE_DETAILS = {
+  practice: { label: "Practice quiz", icon: Sparkles },
+  rapid_fire: { label: "Rapid-fire quiz", icon: Zap },
+  exam_mode: { label: "Exam quiz", icon: GraduationCap },
+} as const;
+
+function QuizReadyCard({ quiz }: { quiz: NonNullable<ChatMessageType["quiz"]> }) {
+  const details = MODE_DETAILS[quiz.mode];
+  const ModeIcon = details.icon;
+
+  return (
+    <Link
+      href={quizHref(quiz.quizId, quiz.mode)}
+      className="animate-quiz-in group block min-w-64 rounded-2xl rounded-bl-sm border border-[color:var(--accent-violet)]/35 bg-card p-4 text-foreground shadow-sm transition-colors hover:border-[color:var(--accent-violet)]/65 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-violet)]"
+      aria-label={`Open ${details.label}`}
+    >
+      <div className="flex items-start gap-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-[color:var(--accent-violet)]/30 bg-[color:var(--accent-violet)]/10 text-[color:var(--accent-violet)]">
+          <ModeIcon className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-semibold">Your quiz is ready</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">
+            {details.label}
+            {quiz.numberOfQuestions
+              ? ` · ${quiz.numberOfQuestions} questions`
+              : ""}
+          </span>
+        </span>
+        <ArrowRight className="mt-2.5 size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground" />
+      </div>
+    </Link>
+  );
+}
 
 /** Animated three-dot indicator shown while the assistant is "thinking". */
 export function TypingIndicator() {

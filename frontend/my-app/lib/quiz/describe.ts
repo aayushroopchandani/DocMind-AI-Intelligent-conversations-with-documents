@@ -4,11 +4,11 @@
  * picked versus what was right.
  */
 
-import type { QuizAnswer, QuizQuestion } from "./types";
+import type { QuizAnswer, QuizQuestion, ReviewQuizQuestion } from "./types";
 
 const NOT_ANSWERED = "Not answered";
 
-export function describeCorrect(question: QuizQuestion): string {
+export function describeCorrect(question: ReviewQuizQuestion): string {
   switch (question.type) {
     case "single_correct_mcq": {
       const key = question.correct_answer.option;
