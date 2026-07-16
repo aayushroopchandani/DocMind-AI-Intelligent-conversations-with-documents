@@ -547,17 +547,6 @@ Contributions are welcome.
 
 Please do not commit secrets (`.env` files). Use the env tables above as the contract.
 
-### Publishing the architecture map (GitHub Pages)
-
-After pushing `docs/`, enable Pages once:
-
-1. Repo **Settings → Pages**
-2. **Source:** Deploy from a branch
-3. **Branch:** `main` (or your default) · **Folder:** `/docs`
-4. Save — the map will be at  
-   https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/
-
----
 
 ## License
 
