@@ -45,12 +45,11 @@ def get_table_summary_llm() -> _AsyncSummarizer:
 
 
 def _representative_rows(
-    rows: Sequence[dict[str, Any]], *, max_rows: int = 30
+    rows: Sequence[dict[str, Any]], *, max_rows: int = 3
 ) -> list[dict[str, Any]]:
     if len(rows) <= max_rows:
         return list(rows)
-    head_size = max_rows * 2 // 3
-    return list(rows[:head_size]) + list(rows[-(max_rows - head_size) :])
+    return [rows[0], rows[len(rows) // 2], rows[-1]]
 
 
 def _table_prompt(table: StructuredTable) -> str:

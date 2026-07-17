@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 
 from scripts.data_analysis_agent.table_extractor import extract_tables_from_pdf
-from scripts.data_analysis_agent.table_summarizer import summarize_tables
+from scripts.data_analysis_agent.table_summarizer import (
+    _representative_rows,
+    summarize_tables,
+)
 from scripts.data_analysis_agent.table_vector_store import table_discovery_payload
 
 
@@ -89,6 +92,13 @@ class _ConcurrentFakeSummarizer:
 
 
 class ParallelTableSummaryTests(unittest.IsolatedAsyncioTestCase):
+    def test_only_first_middle_and_last_rows_are_sent_for_large_tables(self) -> None:
+        rows = [{"value": index} for index in range(10)]
+        self.assertEqual(
+            _representative_rows(rows),
+            [{"value": 0}, {"value": 5}, {"value": 9}],
+        )
+
     async def test_table_summaries_are_generated_in_parallel(self) -> None:
         tables = extract_tables_from_pdf(
             SAMPLE_PDF,
