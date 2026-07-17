@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from pymongo import ReturnDocument
+from pymongo import ReturnDocument, UpdateOne
 from pymongo.errors import DuplicateKeyError
 
 from config.settings import settings
@@ -227,6 +227,118 @@ async def get_document_nodes(
     nodes_data.setdefault("ingestion_status", "not_ready")
     document["nodes"] = nodes_data
     return document
+
+
+# --------------------------------------------------------------------------- #
+# Structured PDF tables
+# --------------------------------------------------------------------------- #
+async def replace_document_tables(
+    *,
+    user_id: str,
+    document_id: str,
+    tables: list[dict[str, Any]],
+) -> int:
+    """Idempotently replace all normalized tables for one document."""
+    db = get_db()
+    now = _utc_now()
+    table_ids = [str(table["table_id"]) for table in tables]
+    if tables:
+        operations = []
+        for table in tables:
+            data = dict(table)
+            data.pop("id", None)
+            data.pop("_id", None)
+            created_at = data.pop("created_at", now)
+            data["user_id"] = user_id
+            data["document_id"] = document_id
+            data["updated_at"] = now
+            operations.append(
+                UpdateOne(
+                    {"user_id": user_id, "table_id": data["table_id"]},
+                    {
+                        "$set": data,
+                        "$setOnInsert": {"created_at": created_at},
+                    },
+                    upsert=True,
+                )
+            )
+        await db.structured_tables.bulk_write(operations, ordered=False)
+
+    stale_filter: dict[str, Any] = {
+        "user_id": user_id,
+        "document_id": document_id,
+    }
+    if table_ids:
+        stale_filter["table_id"] = {"$nin": table_ids}
+    await db.structured_tables.delete_many(stale_filter)
+    return len(tables)
+
+
+async def list_document_tables(
+    *,
+    user_id: str,
+    document_id: str,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[list[dict[str, Any]], int]:
+    db = get_db()
+    query = {"user_id": user_id, "document_id": document_id}
+    total = await db.structured_tables.count_documents(query)
+    documents = await (
+        db.structured_tables.find(query)
+        .sort([("page_start", 1), ("table_id", 1)])
+        .skip(offset)
+        .limit(limit)
+        .to_list(length=limit)
+    )
+    return [
+        _serialize(document) for document in documents if document is not None
+    ], total  # type: ignore[list-item]
+
+
+async def get_structured_table(
+    *, user_id: str, table_id: str
+) -> Optional[dict[str, Any]]:
+    db = get_db()
+    document = await db.structured_tables.find_one(
+        {"user_id": user_id, "table_id": table_id}
+    )
+    return _serialize(document)
+
+
+async def delete_document_tables(*, user_id: str, document_id: str) -> int:
+    db = get_db()
+    result = await db.structured_tables.delete_many(
+        {"user_id": user_id, "document_id": document_id}
+    )
+    return result.deleted_count
+
+
+async def set_table_ingestion_status(
+    *,
+    user_id: str,
+    document_id: str,
+    status: str,
+    table_count: int | None = None,
+    error: str | None = None,
+) -> bool:
+    db = get_db()
+    update: dict[str, Any] = {
+        "$set": {
+            "table_ingestion_status": status,
+            "updated_at": _utc_now(),
+        },
+        "$unset": {"table_ingestion_error": ""},
+    }
+    if table_count is not None:
+        update["$set"]["table_count"] = table_count
+    if error:
+        update["$set"]["table_ingestion_error"] = error[:1000]
+        update["$unset"].pop("table_ingestion_error", None)
+    result = await db.documents.update_one(
+        {"user_id": user_id, "document_id": document_id}, update
+    )
+    return result.matched_count == 1
 
 
 async def claim_summary_index_build(
@@ -791,6 +903,9 @@ async def delete_orphan_document(*, document_db_id: str, user_id: str) -> bool:
     )
     if result.deleted_count == 1 and document.get("document_id"):
         await db.summary_cache.delete_many(
+            {"user_id": user_id, "document_id": document["document_id"]}
+        )
+        await db.structured_tables.delete_many(
             {"user_id": user_id, "document_id": document["document_id"]}
         )
     return result.deleted_count == 1

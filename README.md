@@ -548,6 +548,9 @@ npm install
 | `RETRIEVAL_MAX_PER_DOC` | Max chunks per PDF | No |
 | `RETRIEVAL_MAX_CONTEXT_TOKENS` | Context token budget | No |
 | `SUMMARY_*` | Summarization budget / parallelism knobs | No |
+| `DATA_ANALYSIS_TABLE_SUMMARY_MODEL` | Small table-summary model (default `google/gemini-2.5-flash-lite`) | No |
+| `DATA_ANALYSIS_TABLE_SUMMARY_CONCURRENCY` | Parallel table-summary calls (default `8`) | No |
+| `DATA_ANALYSIS_TABLE_SUMMARY_ATTEMPTS` | Per-table structured-output attempts (default `3`) | No |
 
 \* Provide either `QDRANT_PATH` (default embedded) **or** remote URL/host settings.
 
@@ -589,6 +592,23 @@ Open [http://localhost:3000](http://localhost:3000) → sign in → create a cha
 
 API docs (when backend is up): [http://localhost:8000/docs](http://localhost:8000/docs)
 
+### Ingest the bundled data-analysis sample
+
+With MongoDB, Cloudinary, OpenAI embeddings, OpenRouter, and Qdrant configured
+in `backend/.env`:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m scripts.data_analysis_agent.run_ingestion
+```
+
+The runner uploads the sample PDF to Cloudinary, records its SHA-256 document
+in MongoDB, writes 2400/300 text chunks to `QDRANT_COLLECTION_NAME`, stores
+normalized tables in MongoDB's `structured_tables` collection, and writes only
+their 1536-dimensional discovery summaries to Qdrant's `structured_tables`
+collection. Pass a different PDF path or `--user-id` when needed.
+
 ---
 
 ## API Overview
@@ -610,6 +630,8 @@ All FastAPI routes are intended to be called by the **Next.js BFF**, not the bro
 | `POST` | `/chats/{chat_id}/stream` | SSE: intent → RAG / summary / quiz |
 | `GET` | `/documents/{document_id}/nodes` | Outline nodes + summary-index status |
 | `GET` | `/documents/{document_id}/nodes/status` | Node ingestion readiness |
+| `GET` | `/tables?document_id={sha256}` | Paginated normalized tables for a document |
+| `GET` | `/tables/{table_id}` | Fetch one normalized table with source positions |
 
 ### SSE event types (`/chats/{chat_id}/stream`)
 

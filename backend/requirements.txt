@@ -18,7 +18,7 @@ langchain-qdrant
 langchain-community
 langchain-text-splitters
 qdrant-client
-pymupdf
+pymupdf>=1.23.0
 requests
 numpy
 scikit-learn

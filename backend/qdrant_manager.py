@@ -731,6 +731,53 @@ def delete_document_vectors(
     )
 
 
+def get_document_vector_ids(
+    collection_name: str,
+    *,
+    user_id: str,
+    document_id: str,
+    client: QdrantClient | None = None,
+) -> list[models.ExtendedPointId]:
+    """Return point IDs for a document without loading payloads or vectors."""
+    qdrant = client or get_client()
+    if not qdrant.collection_exists(collection_name=collection_name):
+        return []
+
+    point_ids: list[models.ExtendedPointId] = []
+    offset: models.ExtendedPointId | None = None
+    while True:
+        points, offset = qdrant.scroll(
+            collection_name=collection_name,
+            scroll_filter=_document_filter(user_id=user_id, document_id=document_id),
+            limit=256,
+            offset=offset,
+            with_payload=False,
+            with_vectors=False,
+        )
+        point_ids.extend(point.id for point in points)
+        if offset is None:
+            break
+    return point_ids
+
+
+def delete_vector_ids(
+    collection_name: str,
+    *,
+    point_ids: Iterable[models.ExtendedPointId],
+    client: QdrantClient | None = None,
+) -> None:
+    """Delete an explicit, already-resolved set of Qdrant point IDs."""
+    ids = list(point_ids)
+    if not ids:
+        return
+    qdrant = client or get_client()
+    qdrant.delete(
+        collection_name=collection_name,
+        points_selector=models.PointIdsList(points=ids),
+        wait=True,
+    )
+
+
 async def delete_document_vectors_async(
     collection_name: str,
     *,
@@ -776,3 +823,12 @@ def clear_runtime_caches() -> None:
 
     with _vector_store_cache_lock:
         _vector_store_cache.clear()
+
+
+def close_sync_client() -> None:
+    """Close and forget the cached synchronous client (mainly for CLI jobs)."""
+    clear_runtime_caches()
+    if get_client.cache_info().currsize:
+        client = get_client()
+        client.close()
+        get_client.cache_clear()

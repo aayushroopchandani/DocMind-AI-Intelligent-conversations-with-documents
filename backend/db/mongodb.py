@@ -70,6 +70,15 @@ async def ensure_indexes() -> None:
     await db.documents.create_index("chat_ids")
     await db.documents.create_index("ingestion_status")
     await db.documents.create_index("summary_index_status")
+    await db.documents.create_index("table_ingestion_status")
+    await db.structured_tables.create_index(
+        [("user_id", 1), ("table_id", 1)], unique=True
+    )
+    await db.structured_tables.create_index(
+        [("user_id", 1), ("document_id", 1), ("page_start", 1)]
+    )
+    await db.structured_tables.create_index("node_id")
+    await db.structured_tables.create_index("chat_id")
     await db.summary_cache.create_index(
         [
             ("user_id", 1),

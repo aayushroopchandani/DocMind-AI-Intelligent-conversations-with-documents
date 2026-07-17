@@ -52,6 +52,7 @@ from scripts.intent_detection import (
     detect_intent,
 )
 from scripts.ingest import delete_pdf_embeddings, ingest_pdf
+from scripts.data_analysis_agent.table_vector_store import delete_table_vectors
 from utils.pydantic_schemas import (
     ChatRequest,
     DocMindResponse,
@@ -910,7 +911,14 @@ async def delete_chat_pdf(
                 document_id=detached_document["document_id"],
             )
         except Exception:  # pragma: no cover - best-effort external cleanup
-            logger.exception("Qdrant cleanup failed for document %s", document_db_id)
+            logger.exception("Chunk-vector cleanup failed for document %s", document_db_id)
+        try:
+            delete_table_vectors(
+                user_id=user_id,
+                document_id=detached_document["document_id"],
+            )
+        except Exception:  # pragma: no cover - best-effort external cleanup
+            logger.exception("Table-vector cleanup failed for document %s", document_db_id)
         await crud.delete_orphan_document(
             document_db_id=document_db_id,
             user_id=user_id,

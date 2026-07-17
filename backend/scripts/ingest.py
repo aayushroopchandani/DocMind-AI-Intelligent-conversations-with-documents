@@ -8,6 +8,7 @@ import tempfile
 import requests
 import sys
 import os
+from uuid import NAMESPACE_URL, uuid5
 
 
 # Add parent directory of scripts to sys.path to allow importing backend modules
@@ -19,6 +20,10 @@ if parent_dir not in sys.path:
 import qdrant_manager
 
 load_dotenv()
+
+DEFAULT_CHUNK_SIZE = 800
+DEFAULT_CHUNK_OVERLAP = 100
+DEFAULT_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 
 
 def _chunk_collection_name() -> str:
@@ -49,7 +54,110 @@ def _add_chunk_order_metadata(chunks: list) -> None:
         node_chunk_counts[node_key] = chunk_index + 1
 
 
-def ingest_pdf(data: IngestData):
+def _stable_chunk_ids(chunks: list, *, user_id: str, document_id: str) -> list[str]:
+    return [
+        str(
+            uuid5(
+                NAMESPACE_URL,
+                "|".join(
+                    (
+                        "docmind-chunk",
+                        user_id,
+                        document_id,
+                        str(chunk.metadata.get("document_chunk_index", index)),
+                        str(chunk.metadata.get("page_number", "")),
+                        str(chunk.metadata.get("start_index", "")),
+                    )
+                ),
+            )
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+
+
+def ingest_pdf_path(
+    pdf_path: str,
+    data: IngestData,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    separators: list[str] | None = None,
+    replace_existing: bool = False,
+):
+    """Ingest a PDF that is already available on the local filesystem."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+    if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be between zero and chunk_size")
+
+    loader = PyMuPDFLoader(pdf_path)
+    documents = loader.load()
+    nodes = build_tree_from_pdf(pdf_path)
+
+    for document in documents:
+        page = document.metadata.get("page", 0) + 1  # 0-based to 1-based
+        node_id = find_node_id(page, nodes)
+        # Outlined PDFs often have cover/front-matter pages before the first
+        # TOC entry. Keep those chunks indexable instead of leaving them outside
+        # every per-node representative set.
+        if node_id is None and nodes:
+            node_id = nodes[0]["node_id"]
+        document.metadata.update(
+            {
+                "source": data.filename,
+                "doc_id": data.document_id,
+                "user_id": data.user_id,
+                "page_number": page,
+                "node_id": node_id,
+            }
+        )
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=separators or DEFAULT_SEPARATORS,
+        add_start_index=True,
+    )
+    chunks = splitter.split_documents(documents)
+    _add_chunk_order_metadata(chunks)
+
+    print(f"Total chunks created: {len(chunks)}")
+    print("Initializing Qdrant vector store and uploading chunks...")
+    vector_store = qdrant_manager.get_chunk_vector_store(
+        embedding=get_chunk_embedding(),
+    )
+    chunk_ids = _stable_chunk_ids(
+        chunks, user_id=data.user_id, document_id=data.document_id
+    )
+    old_point_ids = (
+        qdrant_manager.get_document_vector_ids(
+            collection_name=_chunk_collection_name(),
+            user_id=data.user_id,
+            document_id=data.document_id,
+        )
+        if replace_existing
+        else []
+    )
+    # LangChain embeds before upserting. Existing points therefore remain
+    # available if the embedding call fails during a replacement ingestion.
+    vector_store.add_documents(chunks, ids=chunk_ids)
+    if old_point_ids:
+        current_ids = set(chunk_ids)
+        qdrant_manager.delete_vector_ids(
+            collection_name=_chunk_collection_name(),
+            point_ids=[point_id for point_id in old_point_ids if str(point_id) not in current_ids],
+        )
+    print("Successfully stored chunks in Qdrant!")
+    return nodes
+
+
+def ingest_pdf(
+    data: IngestData,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    separators: list[str] | None = None,
+):
     """
     Load a PDF, chunk it, create embeddings, and store the vectors in Qdrant.
     """
@@ -78,50 +186,15 @@ def ingest_pdf(data: IngestData):
 
     print(f"Ingesting PDF: {data.filename} and generating embeddings...")
     try:
-        loader = PyMuPDFLoader(temp_path)
-        documents = loader.load()
-        nodes = build_tree_from_pdf(temp_path)
-
+        return ingest_pdf_path(
+            temp_path,
+            data,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=separators,
+        )
     finally:
-        os.remove(temp_path)    
-
-    
-    for document in documents:
-        page = document.metadata.get("page", 0) + 1 # 0-based index to 1-based index
-        node_id = find_node_id(page, nodes)
-        # Outlined PDFs often have cover/front-matter pages before the first
-        # TOC entry. Keep those chunks indexable instead of leaving them outside
-        # every per-node representative set.
-        if node_id is None and nodes:
-            node_id = nodes[0]["node_id"]
-        document.metadata.update({
-            "source": data.filename,
-            "doc_id": data.document_id,
-            "user_id": data.user_id,
-            "page_number": page,
-            "node_id": node_id,
-        })
-
-    # text splitting(chunking)
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100,
-        separators=["\n\n", "\n", ". ", " ", ""],
-        add_start_index=True,
-    )
-    chunks = splitter.split_documents(documents)
-    _add_chunk_order_metadata(chunks)
-
-    print(f"Total chunks created: {len(chunks)}")
-
-    # Store chunks in Qdrant using qdrant_manager
-    print("Initializing Qdrant vector store and uploading chunks...")
-    vector_store = qdrant_manager.get_chunk_vector_store(
-        embedding=get_chunk_embedding(),
-    )
-    vector_store.add_documents(chunks)
-    print("Successfully stored chunks in Qdrant!")
-    return nodes
+        os.remove(temp_path)
 
 
 def delete_pdf_embeddings(*, user_id: str, document_id: str) -> None:

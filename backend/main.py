@@ -4,6 +4,7 @@ from apis.users import router as users_router
 from apis.chats import router as chats_router
 from apis.documents import router as documents_router
 from apis.quiz_attempts import router as quiz_attempts_router
+from apis.tables import router as tables_router
 from db.mongodb import init_mongodb, close_mongodb
 from services.cloudinary_setup import init_cloudinary
 
@@ -25,6 +26,7 @@ app.include_router(users_router)
 app.include_router(chats_router)
 app.include_router(documents_router)
 app.include_router(quiz_attempts_router)
+app.include_router(tables_router)
 
 
 @app.on_event("startup")
