@@ -28,7 +28,120 @@ Upload up to **four PDFs per chat**, ask questions across them, get **citation-b
 > Deep-dive docs: [`docs/architecture/`](docs/architecture/)
 
 ---
+```mermaid
+flowchart TD
+    U[Next.js Workspace] --> API[FastAPI Analysis API]
+    API --> Q[Job Queue]
+    Q --> G[LangGraph Orchestrator]
 
+    subgraph Context
+        CS[Conversation Scope]
+        DS[Selected Documents]
+        NS[Node Metadata]
+        DC[Dataset Catalogue]
+    end
+
+    CS --> G
+    DS --> G
+    NS --> G
+    DC --> G
+
+    subgraph Planning
+        IQ[Understand Query]
+        SR[Resolve Data Scope]
+        DP[Dataset Discovery]
+        MP[Metric Resolution]
+        AP[Analysis Planner]
+    end
+
+    G --> IQ
+    IQ --> SR
+    SR --> DP
+    DP --> MP
+    MP --> AP
+
+    subgraph Execution
+        PR[Dataset Profiler]
+        CL[Cleaning Engine]
+        TF[Transformation Engine]
+        ST[Statistics Engine]
+        AD[Anomaly Engine]
+        TS[Time-Series Engine]
+    end
+
+    AP --> PR
+    PR --> CL
+    CL --> TF
+    TF --> ST
+    TF --> AD
+    TF --> TS
+
+    subgraph Validation
+        SV[Schema Validator]
+        RV[Result Validator]
+        UV[Unit Validator]
+        CV[Citation Validator]
+    end
+
+    ST --> SV
+    AD --> SV
+    TS --> SV
+    SV --> RV
+    RV --> UV
+    UV --> CV
+
+    subgraph Presentation
+        IP[Insight Generator]
+        VP[Visualization Planner]
+        DB[Dashboard Builder]
+        RC[Response Composer]
+    end
+
+    CV --> IP
+    CV --> VP
+    VP --> DB
+    IP --> RC
+    DB --> RC
+
+    RC --> API
+    API --> U
+
+    TF <--> OBJ[(Parquet / Object Storage)]
+    G <--> PG[(PostgreSQL)]
+    G <--> REDIS[(Redis)]
+    DP <--> QD[(Qdrant)]
+```
+
+
+
+```mermaid
+flowchart TD
+    S([START]) --> INTENT[Classify Analysis Intent]
+    INTENT --> SCOPE[Resolve Scope]
+    SCOPE --> DISCOVER[Discover Datasets]
+    DISCOVER --> PROFILE[Profile Datasets]
+
+    PROFILE --> CHECK{Enough valid data?}
+    CHECK -- No --> HITL[Request Clarification]
+    HITL --> DISCOVER
+
+    CHECK -- Yes --> PLAN[Create Structured Plan]
+    PLAN --> VALIDATE_PLAN[Validate Plan]
+
+    VALIDATE_PLAN --> EXEC[Execute Analysis Subgraph]
+    EXEC --> RESULT_CHECK{Results valid?}
+
+    RESULT_CHECK -- No --> REPAIR[Repair Plan]
+    REPAIR --> EXEC
+
+    RESULT_CHECK -- Yes --> VIS[Visualization Subgraph]
+    RESULT_CHECK -- Yes --> INSIGHT[Insight Subgraph]
+
+    VIS --> COMPOSE[Compose Response]
+    INSIGHT --> COMPOSE
+    COMPOSE --> E([END])
+```
+    
 ## Features
 
 ### AI Features
