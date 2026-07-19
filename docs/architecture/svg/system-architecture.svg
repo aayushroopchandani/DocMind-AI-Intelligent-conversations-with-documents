@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 760" role="img" aria-labelledby="title desc">
   <title id="title">DocMind High-Level System Architecture</title>
-  <desc id="desc">User to Next.js to FastAPI to AI services to OpenAI Qdrant MongoDB Cloudinary</desc>
+  <desc id="desc">Research and data analysis platform with RAG, tables, charts, and dashboards</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#070b14"/>
@@ -19,62 +19,67 @@
       <path d="M0,0 L6,3 L0,6 Z" fill="#38bdf8"/>
     </marker>
   </defs>
-  <rect width="960" height="720" fill="url(#bg)"/>
-  <text x="480" y="42" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="22" font-weight="700">DocMind  System Architecture</text>
+  <rect width="960" height="760" fill="url(#bg)"/>
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="20" font-weight="700">DocMind — Research &amp; Document Intelligence</text>
 
-  <!-- User -->
-  <rect x="380" y="70" width="200" height="48" rx="14" fill="#0f172a" stroke="url(#accent)" stroke-width="2" filter="url(#glow)"/>
-  <text x="480" y="100" text-anchor="middle" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">User</text>
-  <line x1="480" y1="118" x2="480" y2="150" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="380" y="60" width="200" height="44" rx="14" fill="#0f172a" stroke="url(#accent)" stroke-width="2" filter="url(#glow)"/>
+  <text x="480" y="88" text-anchor="middle" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">User / Analyst</text>
+  <line x1="480" y1="104" x2="480" y2="130" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
 
-  <!-- Next.js -->
-  <rect x="340" y="150" width="280" height="52" rx="14" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5"/>
-  <text x="480" y="182" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">Next.js Frontend + BFF</text>
-  <line x1="480" y1="202" x2="480" y2="234" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="340" y="130" width="280" height="48" rx="14" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="480" y="160" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="14" font-weight="600">Next.js Workspace + BFF</text>
+  <line x1="480" y1="178" x2="480" y2="204" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>
 
-  <!-- FastAPI -->
-  <rect x="340" y="234" width="280" height="52" rx="14" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
-  <text x="480" y="266" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">FastAPI Backend</text>
-  <line x1="480" y1="286" x2="480" y2="318" stroke="#34d399" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="340" y="204" width="280" height="48" rx="14" fill="#0f172a" stroke="#34d399" stroke-width="1.5"/>
+  <text x="480" y="234" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="14" font-weight="600">FastAPI Backend</text>
+  <line x1="480" y1="252" x2="480" y2="278" stroke="#34d399" stroke-width="2" marker-end="url(#arrow)"/>
 
-  <!-- AI Services box -->
-  <rect x="120" y="318" width="720" height="220" rx="18" fill="#0b1220" stroke="#334155" stroke-width="1.5"/>
-  <text x="140" y="348" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="600">AI SERVICES</text>
+  <rect x="100" y="278" width="760" height="280" rx="18" fill="#0b1220" stroke="#334155" stroke-width="1.5"/>
+  <text x="120" y="308" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="12" font-weight="600">AI SERVICES</text>
 
-  <rect x="150" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
-  <text x="225" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Chat / RAG</text>
-  <rect x="320" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
-  <text x="395" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Retrieval</text>
-  <rect x="490" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
-  <text x="565" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Embeddings</text>
-  <rect x="660" y="368" width="150" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
-  <text x="735" y="395" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Intent Router</text>
+  <rect x="130" y="328" width="160" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="210" y="355" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Chat / RAG</text>
+  <rect x="310" y="328" width="160" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="390" y="355" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Retrieval</text>
+  <rect x="490" y="328" width="160" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="570" y="355" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Embeddings</text>
+  <rect x="670" y="328" width="160" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
+  <text x="750" y="355" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Intent Router</text>
 
-  <rect x="150" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#a78bfa"/>
-  <text x="225" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Summarization</text>
-  <rect x="320" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#a78bfa"/>
-  <text x="395" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Quiz Agent</text>
-  <rect x="490" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#34d399"/>
-  <text x="565" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Memory</text>
-  <rect x="660" y="432" width="150" height="44" rx="10" fill="#111827" stroke="#34d399"/>
-  <text x="735" y="459" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Streaming</text>
+  <rect x="130" y="392" width="160" height="44" rx="10" fill="#111827" stroke="#a78bfa"/>
+  <text x="210" y="419" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Summarization</text>
+  <rect x="310" y="392" width="160" height="44" rx="10" fill="#111827" stroke="#a78bfa"/>
+  <text x="390" y="419" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Quiz Agent</text>
+  <rect x="490" y="392" width="160" height="44" rx="10" fill="#111827" stroke="#34d399"/>
+  <text x="570" y="419" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Memory</text>
+  <rect x="670" y="392" width="160" height="44" rx="10" fill="#111827" stroke="#34d399"/>
+  <text x="750" y="419" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Streaming</text>
 
-  <line x1="480" y1="538" x2="480" y2="575" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="200" y="468" width="260" height="56" rx="12" fill="#111827" stroke="#fbbf24" stroke-width="2" filter="url(#glow)"/>
+  <text x="330" y="492" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">RESEARCH &amp; DATA ANALYSIS</text>
+  <text x="330" y="510" text-anchor="middle" fill="#e2e8f0" font-size="11" font-family="Inter,Segoe UI,sans-serif">Tables · Insights · Charts · Dashboards</text>
 
-  <!-- Externals -->
-  <rect x="100" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#fbbf24"/>
-  <text x="185" y="605" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">OPENROUTER</text>
-  <text x="185" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Gemini LLMs</text>
+  <rect x="500" y="468" width="260" height="56" rx="12" fill="#111827" stroke="#f472b6" stroke-width="1.5"/>
+  <text x="630" y="492" text-anchor="middle" fill="#f472b6" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">STRUCTURED TABLES</text>
+  <text x="630" y="510" text-anchor="middle" fill="#e2e8f0" font-size="11" font-family="Inter,Segoe UI,sans-serif">Extract · Validate · Index</text>
 
-  <rect x="300" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#f43f5e"/>
-  <text x="385" y="605" text-anchor="middle" fill="#f43f5e" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">QDRANT</text>
-  <text x="385" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Vectors</text>
+  <line x1="480" y1="558" x2="480" y2="595" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)"/>
 
-  <rect x="500" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#22c55e"/>
-  <text x="585" y="605" text-anchor="middle" fill="#22c55e" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">MONGODB</text>
-  <text x="585" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">App State</text>
+  <rect x="100" y="595" width="170" height="70" rx="14" fill="#0f172a" stroke="#fbbf24"/>
+  <text x="185" y="625" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">OPENROUTER</text>
+  <text x="185" y="645" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Gemini LLMs</text>
 
-  <rect x="700" y="575" width="170" height="70" rx="14" fill="#0f172a" stroke="#38bdf8"/>
-  <text x="785" y="605" text-anchor="middle" fill="#38bdf8" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">CLOUDINARY</text>
-  <text x="785" y="625" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">PDF Storage</text>
+  <rect x="300" y="595" width="170" height="70" rx="14" fill="#0f172a" stroke="#f43f5e"/>
+  <text x="385" y="625" text-anchor="middle" fill="#f43f5e" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">QDRANT</text>
+  <text x="385" y="645" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Chunks · Nodes · Tables</text>
+
+  <rect x="500" y="595" width="170" height="70" rx="14" fill="#0f172a" stroke="#22c55e"/>
+  <text x="585" y="625" text-anchor="middle" fill="#22c55e" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">MONGODB</text>
+  <text x="585" y="645" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">State · Structured Data</text>
+
+  <rect x="700" y="595" width="170" height="70" rx="14" fill="#0f172a" stroke="#38bdf8"/>
+  <text x="785" y="625" text-anchor="middle" fill="#38bdf8" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">CLOUDINARY</text>
+  <text x="785" y="645" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">PDF Storage</text>
+
+  <text x="480" y="710" text-anchor="middle" fill="#94a3b8" font-size="12" font-family="Inter,Segoe UI,sans-serif">Output: grounded answers · research insights · graphs · auto dashboards</text>
 </svg>

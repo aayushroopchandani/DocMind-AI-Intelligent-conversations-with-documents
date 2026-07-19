@@ -1,6 +1,6 @@
 # DocMind AI
 
-**An enterprise-grade multi-document AI workspace that combines Retrieval-Augmented Generation (RAG), intent-driven AI pipelines, document intelligence, and interactive learning into a unified conversational interface.**
+**An enterprise-grade document intelligence platform that unifies Retrieval-Augmented Generation (RAG), a research & data-analysis agent, structured table extraction, chart/dashboard generation, and interactive learning into one workspace.**
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -22,12 +22,22 @@
 
 ---
 
-Upload up to **four PDFs per chat**, ask questions across them, get **citation-backed streaming answers**, generate **outline-aware summaries**, and create **practice / rapid-fire / exam quizzes** — all from a single conversational workspace.
+DocMind is built for **research and decision-making over documents** — not just Q&A.
+
+Upload PDFs (reports, filings, research papers), then:
+
+- **Ask grounded questions** with citation-backed streaming answers  
+- **Extract and index structured tables** for quantitative analysis  
+- **Run research & data-analysis workflows** that profile datasets, compute insights, and generate **graphs, charts, and dashboards**  
+- **Summarize** outline-aware sections and **quiz** yourself across practice / rapid-fire / exam modes  
 
 > **Interactive architecture:** [Open the animated system map →](https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/)  
 > Deep-dive docs: [`docs/architecture/`](docs/architecture/)
 
 ---
+
+### Research & Data Analysis Agent — system view
+
 ```mermaid
 flowchart TD
     U[Next.js Workspace] --> API[FastAPI Analysis API]
@@ -112,7 +122,7 @@ flowchart TD
     DP <--> QD[(Qdrant)]
 ```
 
-
+### Research & Data Analysis Agent — execution flow
 
 ```mermaid
 flowchart TD
@@ -141,10 +151,24 @@ flowchart TD
     INSIGHT --> COMPOSE
     COMPOSE --> E([END])
 ```
+
+---
     
 ## Features
 
-### AI Features
+### Research & Data Analysis
+
+| Capability | Description |
+| --- | --- |
+| **Structured table extraction** | Pull tables from PDFs (PyMuPDF) into normalized `structured_tables` with typed columns, units, and page provenance |
+| **Docling fallback recovery** | Coverage detection + isolated Docling worker recovers missed / complex tables |
+| **Table validation** | Schema, quality, and consistency checks before indexing |
+| **Table semantic index** | LLM summaries + keywords embedded into Qdrant for dataset discovery |
+| **Research & analysis agent** | LangGraph-oriented workflows: scope → discover → profile → plan → execute → visualize |
+| **Charts & dashboards** | Visualization planner + dashboard builder turn quantitative findings into graphs and auto-composed views |
+| **Grounded insights** | Analysis results stay tied to source pages / table fragments for citation |
+
+### Conversational RAG
 
 | Capability | Description |
 | --- | --- |
@@ -168,7 +192,7 @@ flowchart TD
 - PyMuPDF parsing + RecursiveCharacterTextSplitter chunking
 - PDF outline / TOC → hierarchical **node tree**
 - Chunk metadata: `user_id`, `doc_id`, `node_id`, page, chunk order
-- Dual Qdrant collections: **chunks** + **nodes**
+- Dual Qdrant collections: **chunks** + **nodes** (+ table summaries)
 - Background summary-index build (clustering + MMR representatives)
 - Incremental document attach / detach from chats
 - Content-hash (`SHA-256`) document identity to avoid duplicate storage
@@ -204,13 +228,13 @@ flowchart TD
 | UI | Tailwind CSS 4, shadcn/ui, GSAP, react-pdf | Design system, motion, in-browser PDF viewing |
 | Auth | Clerk | Session management, protected `/chat` routes |
 | Backend API | FastAPI, Uvicorn, Pydantic | REST + SSE endpoints |
-| Orchestration | LangChain | Retrievers, LLM wrappers, structured output |
-| LLMs | OpenRouter → Gemini 2.5 Flash / Flash-Lite | Answer generation, utilities, intent, quizzes, summaries |
-| Embeddings | OpenAI `text-embedding-3-small` | Chunk (1536-d) and node (512-d) vectors |
-| Vector DB | Qdrant (embedded path or remote) | Semantic retrieval + node search |
-| Document DB | MongoDB (Motor async) | Users, chats, documents, quizzes, memory |
+| Orchestration | LangChain + LangGraph (analysis agent) | Retrievers, LLM wrappers, multi-step research/analysis graphs |
+| LLMs | OpenRouter → Gemini 2.5 Flash / Flash-Lite | Answers, utilities, intent, quizzes, summaries, table metadata |
+| Embeddings | OpenAI `text-embedding-3-small` | Chunk (1536-d), node (512-d), and table-summary vectors |
+| Vector DB | Qdrant (embedded path or remote) | Semantic retrieval, node search, table discovery |
+| Document DB | MongoDB (Motor async) | Users, chats, documents, quizzes, memory, structured tables |
 | Object storage | Cloudinary | Private PDF hosting |
-| PDF parsing | PyMuPDF (`PyMuPDFLoader`) | Text extraction + outline tree |
+| PDF parsing | PyMuPDF + Docling (fallback) | Text, outline tree, table extraction / recovery |
 | ML helpers | NumPy, scikit-learn | Clustering / MMR for summary representatives |
 
 ---
@@ -239,15 +263,20 @@ flowchart TB
   User([User]) --> Next[Next.js Frontend + BFF]
   Next --> FastAPI[FastAPI Backend]
   FastAPI --> Router{Intent Router}
-  Router --> Chat[Chat / RAG Service]
-  Router --> Sum[Summarization Pipeline]
+  Router --> Chat[Chat / RAG]
+  Router --> Sum[Summarization]
   Router --> Quiz[Quiz Pipelines]
+  Router --> Analysis[Research & Data Analysis Agent]
   Chat --> AI[AI Services]
   Sum --> AI
   Quiz --> AI
+  Analysis --> Tables[Structured Tables]
+  Analysis --> Charts[Charts · Dashboards · Insights]
   AI --> OR[OpenRouter / Gemini]
   AI --> Qdrant[(Qdrant)]
   AI --> Mongo[(MongoDB)]
+  Tables --> Qdrant
+  Tables --> Mongo
   FastAPI --> Cloudinary[(Cloudinary)]
 ```
 
@@ -460,6 +489,7 @@ DocMind-AI-Intelligent-conversations-with-documents/
 │   │   ├── ingest.py                  # PDF → chunks → Qdrant
 │   │   ├── chat_with_pdf.py           # RAG ask_question pipeline
 │   │   ├── intent_detection/          # Intent router
+│   │   ├── data_analysis_agent/       # Tables · research · charts pipeline
 │   │   └── intention_pipelines/
 │   │       ├── summarization_pipeline/
 │   │       └── quiz_pipeline/
@@ -673,23 +703,22 @@ All FastAPI routes are intended to be called by the **Next.js BFF**, not the bro
 
 ## Future Improvements
 
-Actively being designed / built:
+Actively being built on top of the shipped table-ingestion layer (`scripts/data_analysis_agent/`):
 
-- **Research & Data Analysis Agent (LangGraph)** — multi-step research workflows over uploaded documents and external context
-- **Auto-generated charts & dashboards** — turn quantitative findings into interactive visualizations without manual setup
+- **LangGraph research & data-analysis orchestration** — multi-step plan → execute → repair loops
+- **Auto-generated charts & dashboards** — visualization planner + dashboard composer
+- Deeper statistics / anomaly / time-series analysis engines
 - Structure-based and whole-document quiz scopes (schemas already defined)
-- Deeper evaluation harness for retrieval + summarization quality
+- Evaluation harness for retrieval + summarization + analysis faithfulness
 
 Roadmap candidates:
 
-- Multi-modal retrieval (figures, tables, scanned pages)
 - Excel / CSV analysis agent
 - SQL / warehouse agent
 - Voice conversations
 - Knowledge-graph / GraphRAG overlays
 - MCP tool surface for external agents
 - Model routing by task cost/latency
-- Offline evaluation pipeline (faithfulness, citation precision)
 
 ---
 
@@ -713,7 +742,7 @@ This project is available under the **MIT License** — free to use, modify, and
 ---
 
 <p align="center">
-  Built for researchers, students, and teams who need <strong>grounded answers</strong> from their documents — not hallucinations.
+  Built for researchers, analysts, and teams who need <strong>grounded answers, structured data, and visual insights</strong> from their documents.
   <br />
   <a href="https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/">Open Interactive Architecture →</a>
 </p>
