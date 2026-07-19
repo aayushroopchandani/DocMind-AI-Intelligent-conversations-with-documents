@@ -16,11 +16,17 @@ from scripts.data_analysis_agent.docling_fallback import (
     merge_unique_tables,
 )
 from scripts.data_analysis_agent.table_coverage_detector import (
+    DetectorThresholds,
     TableCoverageReport,
     analyze_pdf_table_coverage,
+    group_flagged_pages,
 )
 from scripts.data_analysis_agent.table_extractor import extract_tables_from_pdf
 from scripts.data_analysis_agent.table_summarizer import summarize_tables
+from scripts.data_analysis_agent.table_validator import (
+    TableValidationResult,
+    validate_tables,
+)
 from scripts.data_analysis_agent.table_vector_store import (
     delete_table_vectors,
     delete_table_vectors_by_ids,
@@ -82,6 +88,26 @@ def _docling_fallback_enabled() -> bool:
     }
 
 
+def _log_table_validation(stage: str, result: TableValidationResult) -> None:
+    logger.info(
+        "%s table validation: %d accepted, %d quarantined, %d rejected",
+        stage,
+        len(result.accepted),
+        len(result.quarantined),
+        len(result.rejected),
+    )
+    for assessment in result.assessments:
+        if assessment.status != "accepted":
+            logger.debug(
+                "%s table %s %s at score %.4f: %s",
+                stage,
+                assessment.table_id,
+                assessment.status,
+                assessment.score,
+                ", ".join(assessment.reasons),
+            )
+
+
 async def run_docling_table_fallback(
     pdf_path: str | Path,
     *,
@@ -90,8 +116,9 @@ async def run_docling_table_fallback(
     chat_id: str | None,
     nodes: Sequence[dict[str, Any]] | None,
     primary_tables: Sequence[StructuredTable],
+    retry_pages: Sequence[int] = (),
 ) -> TableFallbackResult:
-    """Detect missed tables and enrich only doubtful pages without risking base ingestion."""
+    """Detect missed tables and enrich doubtful pages without risking base ingestion."""
     path = Path(pdf_path).expanduser().resolve()
     report: TableCoverageReport | None = None
     try:
@@ -100,7 +127,25 @@ async def run_docling_table_fallback(
             document_id=document_id,
             status="detecting",
         )
-        report = await asyncio.to_thread(analyze_pdf_table_coverage, path)
+        detector_thresholds = DetectorThresholds.from_env()
+        report = await asyncio.to_thread(
+            analyze_pdf_table_coverage,
+            path,
+            thresholds=detector_thresholds,
+        )
+        flagged_pages = sorted({*report.flagged_pages, *retry_pages})
+        if flagged_pages != report.flagged_pages:
+            report = report.model_copy(
+                update={
+                    "flagged_pages": flagged_pages,
+                    "page_ranges": group_flagged_pages(
+                        flagged_pages,
+                        total_pages=report.total_pages,
+                        padding=detector_thresholds.page_padding,
+                        max_pages_per_job=detector_thresholds.max_pages_per_job,
+                    ),
+                }
+            )
         page_ranges = [page_range.model_dump() for page_range in report.page_ranges]
         if not report.flagged_pages:
             await crud.set_table_fallback_status(
@@ -132,8 +177,10 @@ async def run_docling_table_fallback(
             chat_id=chat_id,
             nodes=nodes,
         )
+        docling_validation = validate_tables(docling_tables)
+        _log_table_validation("Docling", docling_validation)
         combined, additions, duplicate_count = merge_unique_tables(
-            primary_tables, docling_tables
+            primary_tables, docling_validation.accepted
         )
         if additions:
             await summarize_tables(additions)
@@ -300,7 +347,7 @@ async def ingest_data_analysis_pdf(
             chunk_overlap=DATA_ANALYSIS_CHUNK_OVERLAP,
             replace_existing=not claimed,
         )
-        tables = await asyncio.to_thread(
+        extracted_tables = await asyncio.to_thread(
             extract_tables_from_pdf,
             path,
             document_id=document_id,
@@ -308,7 +355,9 @@ async def ingest_data_analysis_pdf(
             chat_id=chat_id,
             nodes=nodes,
         )
-        tables = await summarize_tables(tables)
+        primary_validation = validate_tables(extracted_tables)
+        _log_table_validation("PyMuPDF", primary_validation)
+        tables = await summarize_tables(primary_validation.accepted)
 
         if tables:
             await asyncio.to_thread(index_table_summaries, tables)
@@ -376,6 +425,7 @@ async def ingest_data_analysis_pdf(
                 chat_id=chat_id,
                 nodes=nodes,
                 primary_tables=tables,
+                retry_pages=primary_validation.quarantined_pages,
             )
             if wait_for_docling:
                 fallback_result = await fallback_task

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from scripts.data_analysis_agent.docling_fallback import merge_unique_tables
+from scripts.data_analysis_agent.pipeline import run_docling_table_fallback
 from scripts.data_analysis_agent.table_coverage_detector import (
+    PageRange,
+    TableCoverageReport,
     analyze_pdf_table_coverage,
     group_flagged_pages,
 )
@@ -98,6 +102,53 @@ class TableDeduplicationTests(unittest.TestCase):
         self.assertEqual(combined, [fallback])
         self.assertEqual(additions, [fallback])
         self.assertEqual(duplicate_count, 1)
+
+
+class QuarantinedPageFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_quarantined_pymupdf_pages_are_added_to_docling_ranges(self) -> None:
+        report = TableCoverageReport(
+            total_pages=100,
+            flagged_pages=[45],
+            page_ranges=[
+                PageRange(page_start=44, page_end=46, flagged_pages=[45])
+            ],
+        )
+        extract_docling = AsyncMock(return_value=[])
+        persist_status = AsyncMock()
+        with (
+            patch(
+                "scripts.data_analysis_agent.pipeline.analyze_pdf_table_coverage",
+                return_value=report,
+            ),
+            patch(
+                "scripts.data_analysis_agent.pipeline.extract_tables_with_docling",
+                extract_docling,
+            ),
+            patch(
+                "scripts.data_analysis_agent.pipeline.crud.set_table_fallback_status",
+                persist_status,
+            ),
+        ):
+            result = await run_docling_table_fallback(
+                "unused.pdf",
+                document_id="d" * 64,
+                user_id="test-user",
+                chat_id=None,
+                nodes=None,
+                primary_tables=[],
+                retry_pages=[78],
+            )
+
+        page_ranges = extract_docling.await_args.kwargs["page_ranges"]
+        self.assertEqual(result.flagged_pages, [45, 78])
+        self.assertEqual(
+            [
+                (item.page_start, item.page_end, item.flagged_pages)
+                for item in page_ranges
+            ],
+            [(44, 46, [45]), (77, 79, [78])],
+        )
+        self.assertGreaterEqual(persist_status.await_count, 2)
 
 
 if __name__ == "__main__":
