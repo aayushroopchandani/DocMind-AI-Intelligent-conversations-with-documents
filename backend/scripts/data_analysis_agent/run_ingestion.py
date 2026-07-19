@@ -28,6 +28,12 @@ def _arguments() -> argparse.Namespace:
         default=None,
         help="Optional existing MongoDB chat id to attach the document to",
     )
+    parser.add_argument(
+        "--wait-for-docling",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Wait for the optional fallback (the API normally runs it in background)",
+    )
     return parser.parse_args()
 
 
@@ -41,6 +47,7 @@ async def _run() -> None:
             args.pdf,
             user_id=args.user_id,
             chat_id=args.chat_id,
+            wait_for_docling=args.wait_for_docling,
         )
         print(result.model_dump_json(indent=2))
     finally:

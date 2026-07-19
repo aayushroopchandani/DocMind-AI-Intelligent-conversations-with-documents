@@ -12,6 +12,15 @@ def utc_now() -> datetime:
 
 SummaryIndexStatus = Literal["pending", "processing", "ready", "failed"]
 TableIngestionStatus = Literal["pending", "processing", "ready", "failed"]
+TableFallbackStatus = Literal[
+    "pending",
+    "detecting",
+    "processing",
+    "ready",
+    "not_needed",
+    "disabled",
+    "failed",
+]
 
 
 class NodeSummaryIndex(BaseModel):
@@ -61,6 +70,13 @@ class PdfDocument(BaseModel):
     summary_index_version: str = "v1"
     table_ingestion_status: TableIngestionStatus = "pending"
     table_count: int = 0
+    table_fallback_status: TableFallbackStatus = "pending"
+    table_fallback_flagged_pages: list[int] = Field(default_factory=list)
+    table_fallback_page_ranges: list[dict[str, int | list[int]]] = Field(
+        default_factory=list
+    )
+    table_fallback_recovered_count: int = 0
+    table_fallback_error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

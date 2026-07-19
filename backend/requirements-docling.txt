@@ -1,0 +1,4 @@
+# Optional, model-heavy fallback. Install in a dedicated interpreter so the
+# FastAPI environment never imports Docling/PyTorch.
+docling>=2.113.0,<3.0
+pandas>=2.2,<4.0

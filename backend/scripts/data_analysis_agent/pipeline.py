@@ -3,16 +3,29 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from pathlib import Path
+from typing import Any, Sequence
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from db import crud
+from db.models.structured_table import StructuredTable
+from scripts.data_analysis_agent.docling_fallback import (
+    extract_tables_with_docling,
+    merge_unique_tables,
+)
+from scripts.data_analysis_agent.table_coverage_detector import (
+    TableCoverageReport,
+    analyze_pdf_table_coverage,
+)
 from scripts.data_analysis_agent.table_extractor import extract_tables_from_pdf
 from scripts.data_analysis_agent.table_summarizer import summarize_tables
 from scripts.data_analysis_agent.table_vector_store import (
     delete_table_vectors,
+    delete_table_vectors_by_ids,
     index_table_summaries,
+    upsert_table_summaries,
 )
 from scripts.ingest import delete_pdf_embeddings, ingest_pdf_path
 from scripts.intention_pipelines.summarization_pipeline.summary_index import (
@@ -27,6 +40,17 @@ DATA_ANALYSIS_CHUNK_SIZE = 2400
 DATA_ANALYSIS_CHUNK_OVERLAP = 300
 
 logger = logging.getLogger(__name__)
+_background_docling_tasks: set[asyncio.Task["TableFallbackResult"]] = set()
+
+
+class TableFallbackResult(BaseModel):
+    status: str
+    flagged_pages: list[int] = Field(default_factory=list)
+    page_ranges: list[dict[str, Any]] = Field(default_factory=list)
+    recovered_table_count: int = 0
+    duplicate_table_count: int = 0
+    final_table_count: int = 0
+    error: str | None = None
 
 
 class DataAnalysisIngestionResult(BaseModel):
@@ -37,6 +61,8 @@ class DataAnalysisIngestionResult(BaseModel):
     chunk_size: int = DATA_ANALYSIS_CHUNK_SIZE
     chunk_overlap: int = DATA_ANALYSIS_CHUNK_OVERLAP
     structured_table_collection: str = "structured_tables"
+    table_fallback_status: str = "scheduled"
+    table_fallback_recovered_count: int = 0
 
 
 def sha256_file(path: str | Path) -> str:
@@ -47,11 +73,169 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _docling_fallback_enabled() -> bool:
+    return os.getenv("DATA_ANALYSIS_DOCLING_ENABLED", "true").casefold() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+async def run_docling_table_fallback(
+    pdf_path: str | Path,
+    *,
+    document_id: str,
+    user_id: str,
+    chat_id: str | None,
+    nodes: Sequence[dict[str, Any]] | None,
+    primary_tables: Sequence[StructuredTable],
+) -> TableFallbackResult:
+    """Detect missed tables and enrich only doubtful pages without risking base ingestion."""
+    path = Path(pdf_path).expanduser().resolve()
+    report: TableCoverageReport | None = None
+    try:
+        await crud.set_table_fallback_status(
+            user_id=user_id,
+            document_id=document_id,
+            status="detecting",
+        )
+        report = await asyncio.to_thread(analyze_pdf_table_coverage, path)
+        page_ranges = [page_range.model_dump() for page_range in report.page_ranges]
+        if not report.flagged_pages:
+            await crud.set_table_fallback_status(
+                user_id=user_id,
+                document_id=document_id,
+                status="not_needed",
+                flagged_pages=[],
+                page_ranges=[],
+                recovered_count=0,
+                table_count=len(primary_tables),
+            )
+            return TableFallbackResult(
+                status="not_needed",
+                final_table_count=len(primary_tables),
+            )
+
+        await crud.set_table_fallback_status(
+            user_id=user_id,
+            document_id=document_id,
+            status="processing",
+            flagged_pages=report.flagged_pages,
+            page_ranges=page_ranges,
+        )
+        docling_tables = await extract_tables_with_docling(
+            path,
+            page_ranges=report.page_ranges,
+            document_id=document_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            nodes=nodes,
+        )
+        combined, additions, duplicate_count = merge_unique_tables(
+            primary_tables, docling_tables
+        )
+        if additions:
+            await summarize_tables(additions)
+            removed_ids = sorted(
+                {table.table_id for table in primary_tables}
+                - {table.table_id for table in combined}
+            )
+            await asyncio.to_thread(upsert_table_summaries, additions)
+            if removed_ids:
+                await asyncio.to_thread(
+                    delete_table_vectors_by_ids,
+                    user_id=user_id,
+                    table_ids=removed_ids,
+                )
+            await crud.replace_document_tables(
+                user_id=user_id,
+                document_id=document_id,
+                tables=[table.model_dump() for table in combined],
+            )
+
+        await crud.set_table_fallback_status(
+            user_id=user_id,
+            document_id=document_id,
+            status="ready",
+            flagged_pages=report.flagged_pages,
+            page_ranges=page_ranges,
+            recovered_count=len(additions),
+            table_count=len(combined),
+        )
+        return TableFallbackResult(
+            status="ready",
+            flagged_pages=report.flagged_pages,
+            page_ranges=page_ranges,
+            recovered_table_count=len(additions),
+            duplicate_table_count=duplicate_count,
+            final_table_count=len(combined),
+        )
+    except Exception as exc:
+        logger.exception("Docling table fallback failed for %s", document_id)
+        try:
+            await crud.set_table_fallback_status(
+                user_id=user_id,
+                document_id=document_id,
+                status="failed",
+                flagged_pages=report.flagged_pages if report else None,
+                page_ranges=(
+                    [page_range.model_dump() for page_range in report.page_ranges]
+                    if report
+                    else None
+                ),
+                recovered_count=0,
+                table_count=len(primary_tables),
+                error=str(exc),
+            )
+        except Exception:
+            logger.exception("Could not persist Docling failure for %s", document_id)
+        return TableFallbackResult(
+            status="failed",
+            flagged_pages=report.flagged_pages if report else [],
+            page_ranges=(
+                [page_range.model_dump() for page_range in report.page_ranges]
+                if report
+                else []
+            ),
+            final_table_count=len(primary_tables),
+            error=str(exc),
+        )
+
+
+def schedule_docling_table_fallback(**kwargs: Any) -> asyncio.Task[TableFallbackResult]:
+    task = asyncio.create_task(run_docling_table_fallback(**kwargs))
+    _background_docling_tasks.add(task)
+
+    def _finish(done_task: asyncio.Task[TableFallbackResult]) -> None:
+        _background_docling_tasks.discard(done_task)
+        if done_task.cancelled():
+            return
+        result = done_task.result()
+        logger.info(
+            "Docling fallback %s: %s recovered table(s)",
+            result.status,
+            result.recovered_table_count,
+        )
+
+    task.add_done_callback(_finish)
+    return task
+
+
+async def cancel_docling_table_fallbacks() -> None:
+    tasks = list(_background_docling_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def ingest_data_analysis_pdf(
     pdf_path: str | Path,
     *,
     user_id: str,
     chat_id: str | None = None,
+    wait_for_docling: bool = False,
 ) -> DataAnalysisIngestionResult:
     """Run Cloudinary, text RAG, structured-table, MongoDB, and Qdrant ingestion."""
     path = Path(pdf_path).expanduser().resolve()
@@ -162,6 +346,9 @@ async def ingest_data_analysis_pdf(
                     "summary_index_version": SUMMARY_INDEX_VERSION,
                     "table_ingestion_status": "ready",
                     "table_count": len(tables),
+                    "table_fallback_status": (
+                        "pending" if _docling_fallback_enabled() else "disabled"
+                    ),
                 },
             )
         else:
@@ -180,11 +367,42 @@ async def ingest_data_analysis_pdf(
             )
         document_db_id = (ready_document or pending_document)["id"]
 
+        fallback_result: TableFallbackResult | None = None
+        if _docling_fallback_enabled():
+            fallback_task = schedule_docling_table_fallback(
+                pdf_path=path,
+                document_id=document_id,
+                user_id=user_id,
+                chat_id=chat_id,
+                nodes=nodes,
+                primary_tables=tables,
+            )
+            if wait_for_docling:
+                fallback_result = await fallback_task
+        else:
+            await crud.set_table_fallback_status(
+                user_id=user_id,
+                document_id=document_id,
+                status="disabled",
+                recovered_count=0,
+                table_count=len(tables),
+            )
+
         return DataAnalysisIngestionResult(
             document_id=document_id,
             document_db_id=document_db_id,
             filename=filename,
-            table_count=len(tables),
+            table_count=(
+                fallback_result.final_table_count if fallback_result else len(tables)
+            ),
+            table_fallback_status=(
+                fallback_result.status
+                if fallback_result
+                else "scheduled" if _docling_fallback_enabled() else "disabled"
+            ),
+            table_fallback_recovered_count=(
+                fallback_result.recovered_table_count if fallback_result else 0
+            ),
         )
     except Exception as exc:
         if claimed:

@@ -71,6 +71,7 @@ async def ensure_indexes() -> None:
     await db.documents.create_index("ingestion_status")
     await db.documents.create_index("summary_index_status")
     await db.documents.create_index("table_ingestion_status")
+    await db.documents.create_index("table_fallback_status")
     await db.structured_tables.create_index(
         [("user_id", 1), ("table_id", 1)], unique=True
     )

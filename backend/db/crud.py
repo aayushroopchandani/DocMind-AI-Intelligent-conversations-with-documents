@@ -341,6 +341,43 @@ async def set_table_ingestion_status(
     return result.matched_count == 1
 
 
+async def set_table_fallback_status(
+    *,
+    user_id: str,
+    document_id: str,
+    status: str,
+    flagged_pages: list[int] | None = None,
+    page_ranges: list[dict[str, Any]] | None = None,
+    recovered_count: int | None = None,
+    table_count: int | None = None,
+    error: str | None = None,
+) -> bool:
+    """Persist progress for the non-blocking Docling enrichment stage."""
+    update: dict[str, Any] = {
+        "$set": {
+            "table_fallback_status": status,
+            "updated_at": _utc_now(),
+        },
+        "$unset": {"table_fallback_error": ""},
+    }
+    optional_fields = {
+        "table_fallback_flagged_pages": flagged_pages,
+        "table_fallback_page_ranges": page_ranges,
+        "table_fallback_recovered_count": recovered_count,
+        "table_count": table_count,
+    }
+    for field_name, value in optional_fields.items():
+        if value is not None:
+            update["$set"][field_name] = value
+    if error:
+        update["$set"]["table_fallback_error"] = error[:1000]
+        update["$unset"].pop("table_fallback_error", None)
+    result = await get_db().documents.update_one(
+        {"user_id": user_id, "document_id": document_id}, update
+    )
+    return result.matched_count == 1
+
+
 async def claim_summary_index_build(
     *, user_id: str, document_id: str, version: str
 ) -> bool:

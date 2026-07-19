@@ -37,6 +37,7 @@ class StructuredTable(BaseModel):
     page_start: int = Field(..., ge=1)
     page_end: int = Field(..., ge=1)
     title: str = Field(..., min_length=1)
+    extraction_method: Literal["pymupdf", "docling"] = "pymupdf"
     columns: list[TableColumn] = Field(..., min_length=1)
     rows: list[dict[str, Any]] = Field(default_factory=list)
     source_fragments: list[TableSourceFragment] = Field(..., min_length=1)

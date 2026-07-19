@@ -551,6 +551,13 @@ npm install
 | `DATA_ANALYSIS_TABLE_SUMMARY_MODEL` | Small table-summary model (default `google/gemini-2.5-flash-lite`) | No |
 | `DATA_ANALYSIS_TABLE_SUMMARY_CONCURRENCY` | Parallel table-summary calls (default `8`) | No |
 | `DATA_ANALYSIS_TABLE_SUMMARY_ATTEMPTS` | Per-table structured-output attempts (default `3`) | No |
+| `DATA_ANALYSIS_DOCLING_ENABLED` | Run conditional missed-table fallback (default `true`) | No |
+| `DATA_ANALYSIS_DOCLING_PYTHON` | Dedicated Python executable containing Docling | When enabled |
+| `DATA_ANALYSIS_DOCLING_TABLE_MODE` | `accurate` (default) or `fast` | No |
+| `DATA_ANALYSIS_DOCLING_THREADS` | CPU threads used by the isolated worker (default `4`) | No |
+| `DATA_ANALYSIS_DOCLING_DEVICE` | Worker inference device (default `cpu`) | No |
+| `DATA_ANALYSIS_DOCLING_PAGE_PADDING` | Context pages around flagged runs (default `1`) | No |
+| `DATA_ANALYSIS_DOCLING_MAX_PAGES_PER_JOB` | Maximum pages in one fallback range (default `12`) | No |
 
 \* Provide either `QDRANT_PATH` (default embedded) **or** remote URL/host settings.
 
@@ -603,11 +610,27 @@ source .venv/bin/activate
 python -m scripts.data_analysis_agent.run_ingestion
 ```
 
+Install the optional Docling fallback in a separate environment to keep its
+PyTorch/model dependencies out of the FastAPI process:
+
+```bash
+cd backend
+python3.11 -m venv .docling-venv
+.docling-venv/bin/pip install -r requirements-docling.txt
+export DATA_ANALYSIS_DOCLING_PYTHON="$PWD/.docling-venv/bin/python"
+```
+
 The runner uploads the sample PDF to Cloudinary, records its SHA-256 document
 in MongoDB, writes 2400/300 text chunks to `QDRANT_COLLECTION_NAME`, stores
 normalized tables in MongoDB's `structured_tables` collection, and writes only
 their 1536-dimensional discovery summaries to Qdrant's `structured_tables`
 collection. Pass a different PDF path or `--user-id` when needed.
+After that primary ingestion is ready, a coordinate-based coverage detector
+runs in the background. Only doubtful page ranges are sent to the one-at-a-time
+Docling subprocess; OCR, image classification/description, chart extraction,
+code/formula enrichment, image generation, plugins, and remote services are
+disabled. Recovered unique tables use the same MongoDB, summary, embedding, and
+Qdrant paths as PyMuPDF tables.
 
 ---
 

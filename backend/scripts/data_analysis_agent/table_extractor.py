@@ -38,10 +38,16 @@ _UNIT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bGBP\b", re.I), "GBP"),
     (re.compile(r"%|\bpercent(?:age)?\b", re.I), "%"),
 )
+_TITLE_CUE_RE = re.compile(
+    r"\b(?:balance\s+sheets?|statements?|table|comparison|schedule|financials?)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
-class _Fragment:
+class TableFragment:
+    """Extractor-neutral table matrix plus its PDF provenance."""
+
     page: int
     page_width: float
     page_height: float
@@ -49,6 +55,8 @@ class _Fragment:
     header: list[str]
     rows: list[list[str]]
     sources: list[TableSourceFragment] = field(default_factory=list)
+    title_hint: str = ""
+    extraction_method: str = "pymupdf"
 
 
 def _clean(value: Any) -> str:
@@ -159,15 +167,15 @@ def _visual_rows(page: fitz.Page, table: Any, start_row: int = 1) -> list[list[s
     return output
 
 
-def _extract_page_fragments(page: fitz.Page, page_number: int) -> list[_Fragment]:
-    fragments: list[_Fragment] = []
+def _extract_page_fragments(page: fitz.Page, page_number: int) -> list[TableFragment]:
+    fragments: list[TableFragment] = []
     for table in page.find_tables().tables:
         matrix = _rectangular(table.extract())
         if len(matrix) < 2 or len(matrix[0]) < 2:
             continue
         bbox = tuple(float(value) for value in table.bbox)
         fragments.append(
-            _Fragment(
+            TableFragment(
                 page=page_number,
                 page_width=float(page.rect.width),
                 page_height=float(page.rect.height),
@@ -189,9 +197,11 @@ def _is_period_label(value: str) -> bool:
     return bool(_PERIOD_RE.fullmatch(_clean(without_unit)))
 
 
-def _join_horizontal_continuations(fragments: list[_Fragment]) -> list[_Fragment]:
+def _join_horizontal_continuations(
+    fragments: list[TableFragment],
+) -> list[TableFragment]:
     """Join visually wrapped wide tables, such as 2019–20 above 2021–23."""
-    joined: list[_Fragment] = []
+    joined: list[TableFragment] = []
     index = 0
     while index < len(fragments):
         current = fragments[index]
@@ -252,15 +262,18 @@ def _header_similarity(left: Sequence[str], right: Sequence[str]) -> float:
     return sum(scores) / len(scores)
 
 
-def _merge_multi_page_fragments(fragments: list[_Fragment]) -> list[_Fragment]:
-    merged: list[_Fragment] = []
+def _merge_multi_page_fragments(
+    fragments: list[TableFragment],
+) -> list[TableFragment]:
+    merged: list[TableFragment] = []
     for fragment in fragments:
         if not merged:
             merged.append(fragment)
             continue
 
         previous = merged[-1]
-        touches_page_bottom = previous.bbox[3] >= previous.page_height * 0.86
+        bottom_threshold = 0.82 if previous.extraction_method == "docling" else 0.86
+        touches_page_bottom = previous.bbox[3] >= previous.page_height * bottom_threshold
         starts_near_page_top = fragment.bbox[1] <= fragment.page_height * 0.16
         same_width = abs(
             (previous.bbox[2] - previous.bbox[0])
@@ -295,14 +308,28 @@ def _nearby_title(page: fitz.Page, bbox: Sequence[float]) -> str:
             candidates.append((distance, cleaned))
     if not candidates:
         return ""
-    return min(candidates, key=lambda item: item[0])[1][:180]
+    title_candidates = [candidate for candidate in candidates if _TITLE_CUE_RE.search(candidate[1])]
+    _, title = min(title_candidates or candidates, key=lambda item: item[0])
+    cue = _TITLE_CUE_RE.search(title)
+    if cue and "PDF SOLUTIONS" in title.upper():
+        title = title[cue.start() :]
+    return title[:180]
 
 
-def _title_for_fragment(fragment: _Fragment, page: fitz.Page) -> str:
+def _title_for_fragment(fragment: TableFragment, page: fitz.Page) -> str:
+    if _clean(fragment.title_hint):
+        return _clean(fragment.title_hint)[:180]
     first_header = _clean(fragment.header[0]) if fragment.header else ""
     nearby = _nearby_title(page, fragment.bbox)
     generic = _canonical(first_header) in {
-        "category", "date", "description", "feature", "item", "name", "metric"
+        "category",
+        "column 1",
+        "date",
+        "description",
+        "feature",
+        "item",
+        "name",
+        "metric",
     }
     if nearby and (generic or not first_header):
         return nearby
@@ -401,7 +428,7 @@ def _node_for_page(nodes: Sequence[dict[str, Any]] | None, page: int) -> str | N
     return str(matching[0].get("node_id")) if matching[0].get("node_id") else None
 
 
-def _table_id(document_id: str, fragment: _Fragment, title: str) -> str:
+def _table_id(document_id: str, fragment: TableFragment, title: str) -> str:
     positions = ";".join(
         f"{source.page}:{','.join(f'{value:.2f}' for value in source.bounding_box)}"
         for source in fragment.sources
@@ -449,7 +476,7 @@ def build_deterministic_summary(table: StructuredTable) -> str:
 
 
 def _normalize_fragment(
-    fragment: _Fragment,
+    fragment: TableFragment,
     *,
     document_id: str,
     user_id: str,
@@ -503,12 +530,64 @@ def _normalize_fragment(
         page_start=fragment.sources[0].page,
         page_end=fragment.sources[-1].page,
         title=title,
+        extraction_method=fragment.extraction_method,
         columns=columns,
         rows=parsed_rows,
         source_fragments=fragment.sources,
     )
     table.deterministic_summary = build_deterministic_summary(table)
     return table
+
+
+def _normalize_fragments(
+    fragments: Sequence[TableFragment],
+    *,
+    document: fitz.Document,
+    document_id: str,
+    user_id: str,
+    chat_id: str | None,
+    nodes: Sequence[dict[str, Any]] | None,
+) -> list[StructuredTable]:
+    ordered = sorted(fragments, key=lambda item: (item.page, item.bbox[1], item.bbox[0]))
+    merged = _merge_multi_page_fragments(ordered)
+    tables = [
+        _normalize_fragment(
+            fragment,
+            document_id=document_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            nodes=nodes,
+            page=document[fragment.page - 1],
+        )
+        for fragment in merged
+    ]
+    return [table for table in tables if table is not None]
+
+
+def normalize_table_fragments(
+    pdf_path: str | Path,
+    fragments: Sequence[TableFragment],
+    *,
+    document_id: str,
+    user_id: str,
+    chat_id: str | None = None,
+    nodes: Sequence[dict[str, Any]] | None = None,
+) -> list[StructuredTable]:
+    """Normalize tables from any extractor through the shared storage schema."""
+    if not fragments:
+        return []
+    path = Path(pdf_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"PDF not found: {path}")
+    with fitz.open(path) as document:
+        return _normalize_fragments(
+            fragments,
+            document=document,
+            document_id=document_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            nodes=nodes,
+        )
 
 
 def extract_tables_from_pdf(
@@ -531,24 +610,16 @@ def extract_tables_from_pdf(
         raise FileNotFoundError(f"PDF not found: {path}")
 
     with fitz.open(path) as document:
-        fragments: list[_Fragment] = []
-        pages_by_number: dict[int, fitz.Page] = {}
+        fragments: list[TableFragment] = []
         for page_index, page in enumerate(document):
             page_number = page_index + 1
-            pages_by_number[page_number] = page
             page_fragments = _extract_page_fragments(page, page_number)
             fragments.extend(_join_horizontal_continuations(page_fragments))
-
-        merged = _merge_multi_page_fragments(fragments)
-        tables = [
-            _normalize_fragment(
-                fragment,
-                document_id=document_id,
-                user_id=user_id,
-                chat_id=chat_id,
-                nodes=nodes,
-                page=pages_by_number[fragment.page],
-            )
-            for fragment in merged
-        ]
-    return [table for table in tables if table is not None]
+        return _normalize_fragments(
+            fragments,
+            document=document,
+            document_id=document_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            nodes=nodes,
+        )
