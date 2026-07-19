@@ -52,7 +52,9 @@ from scripts.intent_detection import (
     detect_intent,
 )
 from scripts.ingest import delete_pdf_embeddings, ingest_pdf
-from scripts.data_analysis_agent.table_vector_store import delete_table_vectors
+from scripts.data_analysis_agent.extraction.utils.table_vector_store import (
+    delete_table_vectors,
+)
 from utils.pydantic_schemas import (
     ChatRequest,
     DocMindResponse,

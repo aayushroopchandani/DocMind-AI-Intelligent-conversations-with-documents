@@ -4,12 +4,16 @@ import asyncio
 import unittest
 from pathlib import Path
 
-from scripts.data_analysis_agent.table_extractor import extract_tables_from_pdf
-from scripts.data_analysis_agent.table_summarizer import (
+from scripts.data_analysis_agent.extraction.utils.table_extractor import (
+    extract_tables_from_pdf,
+)
+from scripts.data_analysis_agent.extraction.utils.table_summarizer import (
     _representative_rows,
     summarize_tables,
 )
-from scripts.data_analysis_agent.table_vector_store import table_discovery_payload
+from scripts.data_analysis_agent.extraction.utils.table_vector_store import (
+    table_discovery_payload,
+)
 
 
 SAMPLE_PDF = (

@@ -4,15 +4,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from scripts.data_analysis_agent.docling_fallback import merge_unique_tables
-from scripts.data_analysis_agent.pipeline import run_docling_table_fallback
-from scripts.data_analysis_agent.table_coverage_detector import (
+from scripts.data_analysis_agent.extraction.docling_fallback import merge_unique_tables
+from scripts.data_analysis_agent.extraction.pipeline import run_docling_table_fallback
+from scripts.data_analysis_agent.extraction.utils.table_coverage_detector import (
     PageRange,
     TableCoverageReport,
     analyze_pdf_table_coverage,
     group_flagged_pages,
 )
-from scripts.data_analysis_agent.table_extractor import extract_tables_from_pdf
+from scripts.data_analysis_agent.extraction.utils.table_extractor import (
+    extract_tables_from_pdf,
+)
 
 
 SAMPLE_DIR = (
@@ -117,15 +119,15 @@ class QuarantinedPageFallbackTests(unittest.IsolatedAsyncioTestCase):
         persist_status = AsyncMock()
         with (
             patch(
-                "scripts.data_analysis_agent.pipeline.analyze_pdf_table_coverage",
+                "scripts.data_analysis_agent.extraction.pipeline.analyze_pdf_table_coverage",
                 return_value=report,
             ),
             patch(
-                "scripts.data_analysis_agent.pipeline.extract_tables_with_docling",
+                "scripts.data_analysis_agent.extraction.pipeline.extract_tables_with_docling",
                 extract_docling,
             ),
             patch(
-                "scripts.data_analysis_agent.pipeline.crud.set_table_fallback_status",
+                "scripts.data_analysis_agent.extraction.pipeline.crud.set_table_fallback_status",
                 persist_status,
             ),
         ):

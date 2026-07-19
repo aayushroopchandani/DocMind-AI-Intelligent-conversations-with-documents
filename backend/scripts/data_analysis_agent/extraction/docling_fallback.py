@@ -13,8 +13,8 @@ from typing import Any, Sequence
 import fitz
 
 from db.models.structured_table import StructuredTable, TableSourceFragment
-from scripts.data_analysis_agent.table_coverage_detector import PageRange
-from scripts.data_analysis_agent.table_extractor import (
+from scripts.data_analysis_agent.extraction.utils.table_coverage_detector import PageRange
+from scripts.data_analysis_agent.extraction.utils.table_extractor import (
     TableFragment,
     normalize_table_fragments,
 )
@@ -110,7 +110,7 @@ async def _run_worker(
         process = await asyncio.create_subprocess_exec(
             interpreter,
             "-m",
-            "scripts.data_analysis_agent.docling_worker",
+            "scripts.data_analysis_agent.extraction.docling_worker",
             "--pdf",
             str(pdf_path),
             "--ranges",

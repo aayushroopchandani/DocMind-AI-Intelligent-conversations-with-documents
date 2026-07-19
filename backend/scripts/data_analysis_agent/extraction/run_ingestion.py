@@ -6,11 +6,15 @@ from pathlib import Path
 
 import qdrant_manager
 from db.mongodb import close_mongodb, init_mongodb
-from scripts.data_analysis_agent.pipeline import ingest_data_analysis_pdf
+from scripts.data_analysis_agent.extraction.pipeline import ingest_data_analysis_pdf
 from services.cloudinary_setup import init_cloudinary
 
 
-SAMPLE_PDF = Path(__file__).resolve().parent / "sample_pdfs" / "amazon-conservation-team_2023.pdf"
+SAMPLE_PDF = (
+    Path(__file__).resolve().parent.parent
+    / "sample_pdfs"
+    / "amazon-conservation-team_2023.pdf"
+)
 
 
 def _arguments() -> argparse.Namespace:

@@ -7,7 +7,9 @@ from apis.quiz_attempts import router as quiz_attempts_router
 from apis.tables import router as tables_router
 from db.mongodb import init_mongodb, close_mongodb
 from services.cloudinary_setup import init_cloudinary
-from scripts.data_analysis_agent.pipeline import cancel_docling_table_fallbacks
+from scripts.data_analysis_agent.extraction.pipeline import (
+    cancel_docling_table_fallbacks,
+)
 
 # The ONE FastAPI app for the whole project.
 # Routers (like ask_router) are registered here and their endpoints become part of this app.

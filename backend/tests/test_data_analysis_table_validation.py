@@ -8,7 +8,7 @@ from db.models.structured_table import (
     TableColumn,
     TableSourceFragment,
 )
-from scripts.data_analysis_agent.table_validator import (
+from scripts.data_analysis_agent.extraction.utils.table_validator import (
     assess_table_quality,
     validate_tables,
 )

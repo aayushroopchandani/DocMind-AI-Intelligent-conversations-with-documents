@@ -637,7 +637,7 @@ in `backend/.env`:
 ```bash
 cd backend
 source .venv/bin/activate
-python -m scripts.data_analysis_agent.run_ingestion
+python -m scripts.data_analysis_agent.extraction.run_ingestion
 ```
 
 Install the optional Docling fallback in a separate environment to keep its

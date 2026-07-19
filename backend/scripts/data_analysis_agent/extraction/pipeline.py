@@ -11,23 +11,27 @@ from pydantic import BaseModel, Field
 
 from db import crud
 from db.models.structured_table import StructuredTable
-from scripts.data_analysis_agent.docling_fallback import (
+from scripts.data_analysis_agent.extraction.docling_fallback import (
     extract_tables_with_docling,
     merge_unique_tables,
 )
-from scripts.data_analysis_agent.table_coverage_detector import (
+from scripts.data_analysis_agent.extraction.utils.table_coverage_detector import (
     DetectorThresholds,
     TableCoverageReport,
     analyze_pdf_table_coverage,
     group_flagged_pages,
 )
-from scripts.data_analysis_agent.table_extractor import extract_tables_from_pdf
-from scripts.data_analysis_agent.table_summarizer import summarize_tables
-from scripts.data_analysis_agent.table_validator import (
+from scripts.data_analysis_agent.extraction.utils.table_extractor import (
+    extract_tables_from_pdf,
+)
+from scripts.data_analysis_agent.extraction.utils.table_summarizer import (
+    summarize_tables,
+)
+from scripts.data_analysis_agent.extraction.utils.table_validator import (
     TableValidationResult,
     validate_tables,
 )
-from scripts.data_analysis_agent.table_vector_store import (
+from scripts.data_analysis_agent.extraction.utils.table_vector_store import (
     delete_table_vectors,
     delete_table_vectors_by_ids,
     index_table_summaries,

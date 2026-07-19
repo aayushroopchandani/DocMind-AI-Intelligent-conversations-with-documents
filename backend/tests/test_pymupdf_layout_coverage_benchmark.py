@@ -12,7 +12,7 @@ from typing import Any, Sequence
 import fitz
 
 from db.models.structured_table import TableSourceFragment
-from scripts.data_analysis_agent.table_coverage_detector import (
+from scripts.data_analysis_agent.extraction.utils.table_coverage_detector import (
     DetectorThresholds,
     _inside_any_table,
     _numeric_alignment,
@@ -21,11 +21,11 @@ from scripts.data_analysis_agent.table_coverage_detector import (
     _visual_rows,
     analyze_pdf_table_coverage,
 )
-from scripts.data_analysis_agent.table_extractor import (
+from scripts.data_analysis_agent.extraction.utils.table_extractor import (
     TableFragment,
     normalize_table_fragments,
 )
-from scripts.data_analysis_agent.table_validator import validate_tables
+from scripts.data_analysis_agent.extraction.utils.table_validator import validate_tables
 
 
 RIL_PDF = (
