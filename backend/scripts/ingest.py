@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from qdrant_client import models
 from utils.pydantic_schemas import IngestData
 from utils.embeddings import get_chunk_embedding
 from scripts.intention_pipelines.summarization_pipeline.utils.getting_outline_for_l1 import build_tree_from_pdf, find_node_id
@@ -18,6 +19,13 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 import qdrant_manager
+from scripts.data_analysis_agent.reterival.utils.sparse_index import (
+    SparseRecord,
+    delete_sparse_by_filter,
+    delete_sparse_ids,
+    text_sparse_collection_name,
+    upsert_sparse_records,
+)
 
 load_dotenv()
 
@@ -141,12 +149,32 @@ def ingest_pdf_path(
     # LangChain embeds before upserting. Existing points therefore remain
     # available if the embedding call fails during a replacement ingestion.
     vector_store.add_documents(chunks, ids=chunk_ids)
+    sparse_collection = text_sparse_collection_name(_chunk_collection_name())
+    upsert_sparse_records(
+        sparse_collection,
+        [
+            SparseRecord(
+                point_id=point_id,
+                text=chunk.page_content,
+                payload={
+                    "page_content": chunk.page_content,
+                    "metadata": dict(chunk.metadata),
+                },
+            )
+            for point_id, chunk in zip(chunk_ids, chunks, strict=True)
+        ],
+        payload_indexes=qdrant_manager.DEFAULT_PAYLOAD_INDEXES,
+    )
     if old_point_ids:
         current_ids = set(chunk_ids)
+        obsolete_ids = [
+            point_id for point_id in old_point_ids if str(point_id) not in current_ids
+        ]
         qdrant_manager.delete_vector_ids(
             collection_name=_chunk_collection_name(),
-            point_ids=[point_id for point_id in old_point_ids if str(point_id) not in current_ids],
+            point_ids=obsolete_ids,
         )
+        delete_sparse_ids(sparse_collection, obsolete_ids)
     print("Successfully stored chunks in Qdrant!")
     return nodes
 
@@ -203,4 +231,19 @@ def delete_pdf_embeddings(*, user_id: str, document_id: str) -> None:
         collection_name=_chunk_collection_name(),
         user_id=user_id,
         document_id=document_id,
+    )
+    delete_sparse_by_filter(
+        text_sparse_collection_name(_chunk_collection_name()),
+        models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.user_id",
+                    match=models.MatchValue(value=user_id),
+                ),
+                models.FieldCondition(
+                    key="metadata.doc_id",
+                    match=models.MatchValue(value=document_id),
+                ),
+            ]
+        ),
     )

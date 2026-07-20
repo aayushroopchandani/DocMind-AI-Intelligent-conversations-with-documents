@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from scripts.data_analysis_agent.reterival.query_generation import (
     GeneratedRetrievalQueries,
+    RetrievalScope,
 )
 from scripts.data_analysis_agent.reterival.query_generation_subgraph import (
     build_query_generation_subgraph,
@@ -26,6 +27,7 @@ class _FakeQueryGenerator:
         self.calls += 1
         self.input = input
         return GeneratedRetrievalQueries(
+            retrieval_scope=RetrievalScope.NORMAL,
             shared_queries=[
                 "net income across available years",
                 "annual profitability comparison",
@@ -59,6 +61,7 @@ class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(generator.calls, 1)
         self.assertEqual(result["document_ids"], ["doc-1", "doc-2"])
+        self.assertEqual(result["retrieval_scope"], "normal")
         self.assertEqual(len(result["shared_queries"]), 2)
         self.assertEqual(len(result["text_queries"]), 2)
         self.assertEqual(len(result["table_queries"]), 2)
@@ -72,6 +75,7 @@ class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
     def test_each_query_group_requires_two_to_three_unique_queries(self) -> None:
         with self.assertRaises(ValidationError):
             GeneratedRetrievalQueries(
+                retrieval_scope=RetrievalScope.NORMAL,
                 shared_queries=["same", "same"],
                 text_queries=["text one", "text two"],
                 table_queries=["table one", "table two"],

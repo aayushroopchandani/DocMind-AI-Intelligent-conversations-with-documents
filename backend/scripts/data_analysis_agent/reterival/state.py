@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Required, TypedDict
+from typing import Any, Literal, Required, TypedDict
 
 from langchain_core.runnables import RunnableConfig
 
@@ -12,9 +12,12 @@ class DataAnalysisRetrievalState(TypedDict, total=False):
     chat_id: Required[str]
     query: Required[str]
     document_ids: list[str]
+    retrieval_scope: Literal["normal", "broad"]
     shared_queries: list[str]
     text_queries: list[str]
     table_queries: list[str]
+    retrieved_text_chunks: list[dict[str, Any]]
+    retrieved_tables: list[dict[str, Any]]
 
 
 def _required_text(value: object, *, field: str) -> str:
@@ -51,6 +54,8 @@ def create_retrieval_state(
         shared_queries=[],
         text_queries=[],
         table_queries=[],
+        retrieved_text_chunks=[],
+        retrieved_tables=[],
     )
 
 

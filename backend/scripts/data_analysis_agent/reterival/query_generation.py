@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from enum import Enum
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -14,7 +15,17 @@ from .state import DataAnalysisRetrievalState
 
 QUERY_GENERATION_SYSTEM_PROMPT = """You generate concise semantic-search queries
 for a data-analysis agent that searches two indexes: narrative PDF text chunks and
-structured-table summaries. Return 2 or 3 queries in each requested list.
+structured-table summaries. Classify the request's retrieval scope and return 2 or 3
+queries in each requested list.
+
+Use retrieval_scope="normal" for a focused request about a specific metric, period,
+company, section, or table. A comparison between a small, explicitly bounded set of
+values can still be normal.
+
+Use retrieval_scope="broad" when the request spans all or many documents, companies,
+periods, categories, or metrics, or asks for a comprehensive cross-document analysis.
+Do not classify a request as broad merely because it uses words such as "compare" or
+"trend"; consider the actual breadth of the requested evidence.
 
 Shared queries must work well for both indexes. Text queries should target narrative
 explanations, trends, causes, and discussion. Table queries should target table names,
@@ -25,9 +36,20 @@ query standalone and meaningfully different, not a minor synonym rewrite. Do not
 the request, invent facts, or mention vector databases, retrieval, PDFs, or these rules."""
 
 
+class RetrievalScope(str, Enum):
+    NORMAL = "normal"
+    BROAD = "broad"
+
+
 class GeneratedRetrievalQueries(BaseModel):
     """Single-call structured output for both retrieval indexes."""
 
+    retrieval_scope: RetrievalScope = Field(
+        description=(
+            "normal for a focused, bounded request; broad for comprehensive requests "
+            "spanning all or many documents, entities, periods, categories, or metrics"
+        )
+    )
     shared_queries: list[str] = Field(min_length=2, max_length=3)
     text_queries: list[str] = Field(min_length=2, max_length=3)
     table_queries: list[str] = Field(min_length=2, max_length=3)
@@ -78,7 +100,7 @@ def build_query_generation_node(
 
     async def generate_queries(
         state: DataAnalysisRetrievalState,
-    ) -> dict[str, list[str]]:
+    ) -> dict[str, Any]:
         query = " ".join(str(state.get("query") or "").split()).strip()
         if not query:
             raise ValueError("retrieval state query must not be empty")
@@ -98,6 +120,6 @@ def build_query_generation_node(
             if isinstance(response, GeneratedRetrievalQueries)
             else GeneratedRetrievalQueries.model_validate(response)
         )
-        return parsed.model_dump()
+        return parsed.model_dump(mode="json")
 
     return generate_queries

@@ -8,10 +8,19 @@ from qdrant_client import models
 
 import qdrant_manager
 from db.models.structured_table import StructuredTable
+from scripts.data_analysis_agent.reterival.utils.collections import (
+    STRUCTURED_TABLES_COLLECTION,
+)
+from scripts.data_analysis_agent.reterival.utils.sparse_index import (
+    SparseRecord,
+    delete_sparse_by_filter,
+    delete_sparse_ids,
+    table_sparse_collection_name,
+    upsert_sparse_records,
+)
 from utils.embeddings import get_chunk_embedding
 
 
-STRUCTURED_TABLES_COLLECTION: Final = "structured_tables"
 TABLE_VECTOR_SIZE: Final = 1536
 TABLE_PAYLOAD_INDEXES: Final = (
     "content_type",
@@ -67,14 +76,17 @@ def _document_filter(*, user_id: str, document_id: str) -> models.Filter:
 
 def delete_table_vectors(*, user_id: str, document_id: str) -> None:
     client = qdrant_manager.get_client()
-    if not client.collection_exists(collection_name=STRUCTURED_TABLES_COLLECTION):
-        return
-    client.delete(
-        collection_name=STRUCTURED_TABLES_COLLECTION,
-        points_selector=models.FilterSelector(
-            filter=_document_filter(user_id=user_id, document_id=document_id)
-        ),
-        wait=True,
+    query_filter = _document_filter(user_id=user_id, document_id=document_id)
+    if client.collection_exists(collection_name=STRUCTURED_TABLES_COLLECTION):
+        client.delete(
+            collection_name=STRUCTURED_TABLES_COLLECTION,
+            points_selector=models.FilterSelector(filter=query_filter),
+            wait=True,
+        )
+    delete_sparse_by_filter(
+        table_sparse_collection_name(),
+        query_filter,
+        client=client,
     )
 
 
@@ -86,15 +98,36 @@ def delete_table_vectors_by_ids(*, user_id: str, table_ids: Sequence[str]) -> in
     if not table_ids:
         return 0
     client = qdrant_manager.get_client()
-    if not client.collection_exists(collection_name=STRUCTURED_TABLES_COLLECTION):
-        return 0
     point_ids = [_point_id(user_id=user_id, table_id=table_id) for table_id in table_ids]
+    if not client.collection_exists(collection_name=STRUCTURED_TABLES_COLLECTION):
+        delete_sparse_ids(
+            table_sparse_collection_name(),
+            point_ids,
+            client=client,
+        )
+        return len(point_ids)
     client.delete(
         collection_name=STRUCTURED_TABLES_COLLECTION,
         points_selector=models.PointIdsList(points=point_ids),
         wait=True,
     )
+    delete_sparse_ids(
+        table_sparse_collection_name(),
+        point_ids,
+        client=client,
+    )
     return len(point_ids)
+
+
+def _sparse_records(tables: Sequence[StructuredTable]) -> list[SparseRecord]:
+    return [
+        SparseRecord(
+            point_id=_point_id(user_id=table.user_id, table_id=table.table_id),
+            text=table.summary,
+            payload=table_discovery_payload(table),
+        )
+        for table in tables
+    ]
 
 
 def upsert_table_summaries(tables: Sequence[StructuredTable]) -> int:
@@ -130,6 +163,11 @@ def upsert_table_summaries(tables: Sequence[StructuredTable]) -> int:
         collection_name=STRUCTURED_TABLES_COLLECTION,
         points=points,
         wait=True,
+    )
+    upsert_sparse_records(
+        table_sparse_collection_name(),
+        _sparse_records(tables),
+        payload_indexes=TABLE_PAYLOAD_INDEXES,
     )
     return len(points)
 
@@ -168,6 +206,12 @@ def index_table_summaries(tables: Sequence[StructuredTable]) -> int:
         ),
         wait=True,
     )
+    sparse_collection = table_sparse_collection_name()
+    delete_sparse_by_filter(
+        sparse_collection,
+        _document_filter(user_id=user_id, document_id=document_id),
+        client=client,
+    )
     points = [
         models.PointStruct(
             id=_point_id(user_id=table.user_id, table_id=table.table_id),
@@ -180,5 +224,11 @@ def index_table_summaries(tables: Sequence[StructuredTable]) -> int:
         collection_name=STRUCTURED_TABLES_COLLECTION,
         points=points,
         wait=True,
+    )
+    upsert_sparse_records(
+        sparse_collection,
+        _sparse_records(tables),
+        payload_indexes=TABLE_PAYLOAD_INDEXES,
+        client=client,
     )
     return len(points)
