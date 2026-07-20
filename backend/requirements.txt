@@ -17,6 +17,7 @@ langchain-openai
 langchain-qdrant
 langchain-community
 langchain-text-splitters
+langgraph>=1.0,<2.0
 qdrant-client
 pymupdf>=1.23.0
 requests
