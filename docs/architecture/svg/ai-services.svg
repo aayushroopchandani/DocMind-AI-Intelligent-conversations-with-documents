@@ -13,7 +13,7 @@
   <text x="400" y="90" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="14">Intent Router</text>
 
   <g font-family="Inter,Segoe UI,sans-serif" font-size="12" fill="#e2e8f0" text-anchor="middle">
-    <rect x="40" y="140" width="160" height="52" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="120" y="171">Chat / RAG</text>
+    <rect x="40" y="140" width="160" height="52" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="120" y="171">Research Agent</text>
     <rect x="220" y="140" width="160" height="52" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="300" y="171">Retrieval</text>
     <rect x="400" y="140" width="160" height="52" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="480" y="171">Embeddings</text>
     <rect x="580" y="140" width="180" height="52" rx="12" fill="#0f172a" stroke="#38bdf8"/><text x="670" y="171">Prompt Builder</text>
@@ -25,7 +25,7 @@
   </g>
 
   <rect x="120" y="300" width="560" height="70" rx="14" fill="#0f172a" stroke="#fbbf24" stroke-width="2"/>
-  <text x="400" y="328" text-anchor="middle" fill="#fbbf24" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">Research &amp; Data Analysis Agent</text>
+  <text x="400" y="328" text-anchor="middle" fill="#fbbf24" font-family="Inter,Segoe UI,sans-serif" font-size="13" font-weight="700">Data Analysis Agent</text>
   <text x="400" y="350" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="12">Table extract · Validate · LangGraph plan/execute · Charts · Dashboards</text>
 
   <text x="400" y="410" text-anchor="middle" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="12" font-weight="600">EXTERNAL DEPENDENCIES</text>

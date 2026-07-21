@@ -24,7 +24,7 @@
   <line x1="520" y1="202" x2="600" y2="250" stroke="#a78bfa" stroke-width="2" marker-end="url(#a)"/>
 
   <rect x="40" y="250" width="160" height="70" rx="14" fill="#0f172a" stroke="#34d399"/>
-  <text x="120" y="280" text-anchor="middle" fill="#34d399" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">GENERAL QA</text>
+  <text x="120" y="280" text-anchor="middle" fill="#34d399" font-size="11" font-family="Inter,Segoe UI,sans-serif" font-weight="700">RESEARCH</text>
   <text x="120" y="300" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">RAG + Citations</text>
 
   <rect x="280" y="250" width="160" height="70" rx="14" fill="#0f172a" stroke="#38bdf8"/>

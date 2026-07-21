@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 760" role="img" aria-labelledby="title desc">
   <title id="title">DocMind High-Level System Architecture</title>
-  <desc id="desc">Research and data analysis platform with RAG, tables, charts, and dashboards</desc>
+  <desc id="desc">Research agent, data analysis agent, cross-document reasoning, and quantitative analysis</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#070b14"/>
@@ -20,7 +20,7 @@
     </marker>
   </defs>
   <rect width="960" height="760" fill="url(#bg)"/>
-  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="20" font-weight="700">DocMind — Research &amp; Document Intelligence</text>
+  <text x="480" y="40" text-anchor="middle" fill="#e2e8f0" font-family="Inter,Segoe UI,sans-serif" font-size="20" font-weight="700">DocMind — Research · Data Analysis · Cross-Doc</text>
 
   <rect x="380" y="60" width="200" height="44" rx="14" fill="#0f172a" stroke="url(#accent)" stroke-width="2" filter="url(#glow)"/>
   <text x="480" y="88" text-anchor="middle" fill="#f8fafc" font-family="Inter,Segoe UI,sans-serif" font-size="15" font-weight="600">User / Analyst</text>
@@ -38,7 +38,7 @@
   <text x="120" y="308" fill="#94a3b8" font-family="Inter,Segoe UI,sans-serif" font-size="12" font-weight="600">AI SERVICES</text>
 
   <rect x="130" y="328" width="160" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
-  <text x="210" y="355" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Chat / RAG</text>
+  <text x="210" y="355" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Research Agent</text>
   <rect x="310" y="328" width="160" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>
   <text x="390" y="355" text-anchor="middle" fill="#e2e8f0" font-size="12" font-family="Inter,Segoe UI,sans-serif">Retrieval</text>
   <rect x="490" y="328" width="160" height="44" rx="10" fill="#111827" stroke="#38bdf8"/>

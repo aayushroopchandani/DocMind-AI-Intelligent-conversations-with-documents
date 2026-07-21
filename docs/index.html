@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DocMind Architecture — Interactive Map</title>
-  <meta name="description" content="Interactive architecture visualization for DocMind AI — multi-document RAG, intent routing, summarization, and quiz pipelines." />
+  <meta name="description" content="Interactive architecture visualization for DocMind AI — research agent, data analysis agent, cross-document reasoning, and quantitative analysis." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -499,7 +499,7 @@
         <div class="logo" aria-hidden="true"></div>
         <div>
           <h1>DocMind Architecture</h1>
-          <p>Interactive AI &amp; systems map</p>
+          <p>Research · data analysis · cross-doc reasoning</p>
         </div>
       </div>
       <div class="toolbar">
@@ -520,8 +520,8 @@
           <!-- User -->
           <div class="node tier-user" id="n-user" style="left:560px; top:20px; animation-delay:0.05s"
                data-title="User" data-tag="Client"
-               data-desc="Researchers, students, and teams interacting with multi-PDF chats, summaries, and quizzes."
-               data-points="Asks grounded questions|Uploads up to 4 PDFs per chat|Reviews citations in the PDF viewer">
+               data-desc="Analysts and researchers working with multi-PDF research, cross-document reasoning, table-backed data analysis, summaries, and quizzes."
+               data-points="Runs research &amp; analysis over PDFs|Compares evidence across up to 4 docs|Reviews citations and table-backed insights">
             <div class="pulse-dot"></div>
             <div class="label">Entry</div>
             <div class="title">User</div>
@@ -541,8 +541,8 @@
           <!-- FastAPI -->
           <div class="node tier-be" id="n-api" style="left:520px; top:250px; min-width:240px; animation-delay:0.18s"
                data-title="FastAPI Backend" data-tag="API Gateway"
-               data-desc="Thin HTTP layer for users, chats, documents, and the streaming ask endpoint. Validates identity headers and ownership."
-               data-points="POST /chats/{id}/stream|PDF upload &amp; detach|Document node status|Internal secret guard">
+               data-desc="Thin HTTP layer for users, chats, documents, structured tables, and the streaming ask endpoint. Validates identity headers and ownership."
+               data-points="POST /chats/{id}/stream|PDF upload &amp; detach|Tables API|Document node status">
             <div class="label">Backend</div>
             <div class="title">FastAPI</div>
             <div class="sub">REST + Server-Sent Events</div>
@@ -551,8 +551,8 @@
           <!-- Router -->
           <div class="node tier-ai" id="n-router" style="left:540px; top:370px; min-width:200px; animation-delay:0.24s"
                data-title="Intent Router" data-tag="Orchestration"
-               data-desc="Classifies each message as general_qa, summarization, or quiz using heuristics + structured LLM output, then dispatches a specialized pipeline."
-               data-points="general_qa → RAG|summarization → outline L1|quiz → context / topic scopes">
+               data-desc="Routes each message to the research agent (RAG), summarization, quiz, or (as it lands) the data analysis agent."
+               data-points="general_qa → research / cross-doc RAG|summarization → outline L1|quiz → context / topic scopes">
             <div class="label">Control plane</div>
             <div class="title">Intent Router</div>
             <div class="sub">Heuristic + LLM classify</div>
@@ -566,16 +566,16 @@
             </div>
             <div class="group-body">
               <div class="node tier-ai" id="n-chat" style="left:30px; top:30px;"
-                   data-title="Chat Service" data-tag="RAG"
-                   data-desc="Streams grounded Markdown answers with inline [Cn] citations using Gemini 2.5 Flash via OpenRouter."
-                   data-points="ask_question() generator|Grounded system prompts|Citation-aware streaming">
-                <div class="label">Service</div>
-                <div class="title">Chat Service</div>
+                   data-title="Research Agent" data-tag="RAG · Cross-doc"
+                   data-desc="Streams grounded investigative answers with inline [Cn] citations; balances evidence across selected PDFs for cross-document reasoning."
+                   data-points="ask_question() generator|Cross-doc balance + compare|Citation-aware streaming">
+                <div class="label">Agent</div>
+                <div class="title">Research Agent</div>
               </div>
               <div class="node tier-ai" id="n-retrieval" style="left:220px; top:30px;"
-                   data-title="Retrieval Service" data-tag="RAG"
-                   data-desc="MultiQueryRetriever over Qdrant with user/doc filters, then dedupe + per-document balancing."
-                   data-points="Query rewrite|Multi-query expansion|Token / chunk budgets">
+                   data-title="Retrieval Service" data-tag="RAG · Cross-doc"
+                   data-desc="MultiQueryRetriever over Qdrant with user/doc filters, then dedupe + per-document balancing for fair cross-doc evidence."
+                   data-points="Query rewrite|Multi-query expansion|Per-doc balance + budgets">
                 <div class="label">Service</div>
                 <div class="title">Retrieval</div>
               </div>
@@ -624,12 +624,12 @@
                 <div class="title">Streaming</div>
               </div>
               <div class="node tier-ai" id="n-future" style="left:900px; top:140px; border-style:dashed;"
-                   data-title="Research Agent (Roadmap)" data-tag="Coming soon"
-                   data-desc="In progress: LangGraph research &amp; data-analysis agent that auto-builds charts and dashboards from document findings."
-                   data-points="LangGraph workflows|Data analysis tools|Auto charts &amp; dashboards">
-                <div class="label">Roadmap</div>
-                <div class="title">LangGraph Agent</div>
-                <div class="sub">Charts · Dashboards</div>
+                   data-title="Data Analysis Agent" data-tag="In progress"
+                   data-desc="LangGraph data-analysis agent over extracted tables: hybrid text+table retrieval (shipped), then plan → execute → charts &amp; dashboards (in progress)."
+                   data-points="Table extract + semantic index|Hybrid retrieval subgraphs|Plan · execute · visualize">
+                <div class="label">Agent</div>
+                <div class="title">Data Analysis</div>
+                <div class="sub">Tables · Charts · Insights</div>
               </div>
             </div>
           </div>
@@ -707,7 +707,7 @@
     <button class="btn close" id="panel-close" type="button">Close</button>
     <div class="tag" id="panel-tag">Service</div>
     <h2 id="panel-title">Select a node</h2>
-    <p id="panel-desc">Click any glowing node on the map to inspect its role in the DocMind AI pipeline.</p>
+    <p id="panel-desc">Click any glowing node to inspect research, data analysis, cross-doc reasoning, and supporting services.</p>
     <ul id="panel-points"></ul>
   </aside>
 

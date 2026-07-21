@@ -1,6 +1,8 @@
 # AI Services
 
-DocMind’s intelligence layer is a set of cooperating services behind a single streaming chat endpoint. This document explains **what each service does**, **inputs/outputs**, and **where it lives in the repo**.
+DocMind’s intelligence layer is a set of cooperating services behind a single streaming chat endpoint, plus table / analysis APIs. Together they power the **research agent**, **data analysis agent**, **cross-document reasoning**, and **quantitative data analysis**.
+
+This document explains **what each service does**, **inputs/outputs**, and **where it lives in the repo**.
 
 Nothing here invents capabilities — every section maps to code under `backend/scripts/`, `backend/utils/`, or `backend/apis/`.
 
@@ -12,20 +14,22 @@ Nothing here invents capabilities — every section maps to code under `backend/
                     ┌─────────────────────┐
                     │   Intent Detector   │
                     └──────────┬──────────┘
-           ┌───────────────────┼───────────────────┐
-           ▼                   ▼                   ▼
-   ┌───────────────┐  ┌────────────────┐  ┌────────────────┐
-   │  Chat / RAG   │  │ Summarization  │  │ Quiz Pipelines │
-   └───────┬───────┘  └───────┬────────┘  └───────┬────────┘
-           │                  │                   │
-           └────────────┬─────┴─────────┬─────────┘
-                        ▼               ▼
-              Embedding · Retrieval · Prompts · Memory · Streaming
+     ┌─────────────┬───────────┼───────────┬─────────────┐
+     ▼             ▼           ▼           ▼             ▼
+┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────────────────┐
+│ Research │ │Summarize │ │  Quiz  │ │ Data Analysis Agent│
+│ Agent/RAG│ │ (outline)│ │pipelines│ │ tables + hybrid   │
+└────┬─────┘ └────┬─────┘ └───┬────┘ └─────────┬──────────┘
+     │            │           │                │
+     └────────────┴─────┬─────┴────────────────┘
+                        ▼
+        Embedding · Retrieval · Prompts · Memory · Streaming
                         │
         ┌───────────────┼───────────────┐
         ▼               ▼               ▼
    OpenRouter      Qdrant           MongoDB
-   (Gemini)     (chunks/nodes)   (memory/quiz)
+   (Gemini)   (chunks/nodes/     (memory/quiz/
+               table summaries)   structured tables)
 ```
 
 ---
@@ -53,7 +57,7 @@ Nothing here invents capabilities — every section maps to code under `backend/
 
 | | |
 | --- | --- |
-| **Purpose** | Select the minimum useful grounded context for an answer |
+| **Purpose** | Select the minimum useful grounded context for research answers and **cross-document reasoning** |
 | **Retriever** | LangChain `MultiQueryRetriever` over Qdrant |
 | **Filters** | `metadata.user_id` + `metadata.doc_id ∈ selected docs` |
 | **Post-process** | Deduplicate → balance across docs → enforce final chunk / token budgets |
@@ -63,15 +67,17 @@ Nothing here invents capabilities — every section maps to code under `backend/
 
 ---
 
-## 3. Chat / Answer Service
+## 3. Research Agent (Chat / Answer Service)
 
 | | |
 | --- | --- |
-| **Purpose** | Stream a grounded Markdown answer with inline citations |
+| **Purpose** | Stream a grounded Markdown investigation with inline citations across one or more PDFs |
 | **Main LLM** | `google/gemini-2.5-flash` via OpenRouter (streaming) |
 | **Utility LLM** | `google/gemini-2.5-flash-lite` (rewrite, summary, metadata) |
 | **Entry point** | `ask_question()` async generator |
 | **Code** | `backend/scripts/chat_with_pdf.py` |
+
+**Cross-document behavior:** retrieval balances chunks across selected PDFs; prompts instruct the model to compare / surface conflicts when sources disagree.
 
 **Outputs (SSE)**
 
@@ -183,17 +189,23 @@ Cancellation-aware: if the client disconnects mid-summary, partial answers can s
 
 ---
 
-## 10. Tooling & Agents (Current vs Roadmap)
+## 10. Data Analysis Agent & Tooling
 
-**Today:** Intent routing acts as a lightweight agent supervisor. Pipelines are specialized code paths (not yet a general tool-calling agent runtime).
+**Shipped today**
 
-**In progress / planned:**
+- Structured **table extraction / validation / summarization / Qdrant indexing** (`scripts/data_analysis_agent/extraction/`)
+- Optional **Docling** missed-table recovery in an isolated worker
+- LangGraph **query-generation** and **hybrid text + table retrieval** subgraphs (`scripts/data_analysis_agent/reterival/`)
+- Intent routing as a lightweight supervisor for research / summarize / quiz
 
-- **Research & Data Analysis Agent** built with **LangGraph**
-- **Automatic charts & dashboards** generated from analytical findings
+**In progress / planned**
+
+- Full **data analysis agent** orchestration with **LangGraph** (plan → execute → repair → visualize)
+- Automatic **charts & dashboards** from analytical findings
 - Broader tool calling across Excel/SQL and external data sources
+- Stronger **cross-document** compare / timeline synthesis modes
 
-These are documented as future work in the root README so the public contract stays honest about shipped vs planned capabilities.
+These are documented honestly in the root README and [data-analysis-agent.md](./data-analysis-agent.md) so the public contract stays clear about shipped vs planned capabilities.
 
 ---
 
@@ -201,9 +213,10 @@ These are documented as future work in the root README so the public contract st
 
 | Role | Model | Provider path |
 | --- | --- | --- |
-| Streaming answers | Gemini 2.5 Flash | OpenRouter |
+| Streaming answers (research agent) | Gemini 2.5 Flash | OpenRouter |
 | Utilities (rewrite, intent helpers, lite tasks) | Gemini 2.5 Flash-Lite | OpenRouter |
 | Summarization (configurable) | `SUMMARY_MODEL` / `SUMMARY_UTILITY_MODEL` | OpenRouter |
+| Table discovery summaries | `DATA_ANALYSIS_TABLE_SUMMARY_MODEL` (default Flash-Lite) | OpenRouter |
 | Embeddings | `text-embedding-3-small` | OpenAI |
 
 ---
@@ -211,6 +224,7 @@ These are documented as future work in the root README so the public contract st
 ## Related
 
 - [architecture.md](./architecture.md)
+- [data-analysis-agent.md](./data-analysis-agent.md)
 - [rag-pipeline.md](./rag-pipeline.md)
 - [ingestion-pipeline.md](./ingestion-pipeline.md)
 - SVG: [svg/ai-services.svg](./svg/ai-services.svg)

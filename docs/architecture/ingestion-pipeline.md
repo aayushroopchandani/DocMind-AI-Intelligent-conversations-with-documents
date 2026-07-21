@@ -1,9 +1,11 @@
 # Ingestion Pipeline
 
-How a PDF becomes searchable, outline-aware, and ready for RAG / summarization / quizzes.
+How a PDF becomes searchable, outline-aware, and ready for the **research agent**, **cross-document reasoning**, summarization, and quizzes.
 
 Primary implementation: `backend/scripts/ingest.py` + summarization helpers under `intention_pipelines/summarization_pipeline/utils/`.
 HTTP trigger: `POST /chats/{chat_id}/pdfs` in `backend/apis/chats.py`.
+
+**Structured table ingestion** (data analysis layer) is a parallel path under `scripts/data_analysis_agent/extraction/` — see [data-analysis-agent.md](./data-analysis-agent.md).
 
 ---
 
@@ -14,6 +16,7 @@ HTTP trigger: `POST /chats/{chat_id}/pdfs` in `backend/apis/chats.py`.
 - Persist metadata + outline in **MongoDB**
 - Index semantic chunks (and nodes) in **Qdrant**
 - Prepare **summary indexes** (representative chunks) in the background
+- Enable multi-document workspaces for cross-doc research
 
 ---
 
@@ -149,3 +152,4 @@ Node-aware features (level-1 summarization) additionally consult node ingestion 
 - SVG: [svg/ingestion-pipeline.svg](./svg/ingestion-pipeline.svg)
 - Parent: [architecture.md](./architecture.md)
 - Sibling: [rag-pipeline.md](./rag-pipeline.md)
+- Table / analysis ingest: [data-analysis-agent.md](./data-analysis-agent.md)

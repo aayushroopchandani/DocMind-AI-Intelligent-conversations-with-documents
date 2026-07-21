@@ -1,9 +1,11 @@
 # RAG Pipeline
 
-End-to-end path for **general Q&A** over one or more PDFs in a chat.
+End-to-end path for the **research agent** — grounded Q&A and **cross-document reasoning** over one or more PDFs in a chat.
 
 Primary implementation: `backend/scripts/chat_with_pdf.py` → `ask_question()`.
 HTTP entry: `POST /chats/{chat_id}/stream` when intent is `general_qa`.
+
+For quantitative / table workflows see [data-analysis-agent.md](./data-analysis-agent.md).
 
 ---
 
@@ -11,6 +13,7 @@ HTTP entry: `POST /chats/{chat_id}/stream` when intent is `general_qa`.
 
 - Answer **only** from selected documents
 - Cite every important factual claim with `[Cn]`
+- **Reason across documents** — balance evidence, compare, and surface conflicts
 - Stay conversational across follow-ups
 - Stream tokens early for UX
 - Isolate retrieval to the authenticated user
@@ -169,3 +172,4 @@ User + assistant messages (with meta) are written to the chat. `update_chat_summ
 - SVG: [svg/rag-pipeline.svg](./svg/rag-pipeline.svg)
 - Parent: [architecture.md](./architecture.md)
 - Sibling: [ingestion-pipeline.md](./ingestion-pipeline.md)
+- Analysis / research pillars: [data-analysis-agent.md](./data-analysis-agent.md)

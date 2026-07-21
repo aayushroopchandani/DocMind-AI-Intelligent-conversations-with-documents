@@ -1,10 +1,11 @@
 # DocMind AI
 
-**An enterprise-grade document intelligence platform that unifies Retrieval-Augmented Generation (RAG), a research & data-analysis agent, structured table extraction, chart/dashboard generation, and interactive learning into one workspace.**
+**A document workspace for research agents, data-analysis agents, cross-document reasoning, and quantitative analysis — grounded in your PDFs, tables, and citations.**
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![LangChain](https://img.shields.io/badge/LangChain-RAG-1C3C3C?logo=langchain)](https://www.langchain.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-Agents-1C3C3C)](https://www.langchain.com/langgraph)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-DC244C)](https://qdrant.tech/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20%2F%20Local-47A248?logo=mongodb)](https://www.mongodb.com/)
 [![Clerk](https://img.shields.io/badge/Auth-Clerk-6C47FF?logo=clerk)](https://clerk.com/)
@@ -12,6 +13,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 
 <p align="center">
+  <a href="#what-docmind-does">What DocMind Does</a> ·
   <a href="#features">Features</a> ·
   <a href="#tech-stack">Tech Stack</a> ·
   <a href="#architecture">Architecture</a> ·
@@ -22,21 +24,25 @@
 
 ---
 
-DocMind is built for **research and decision-making over documents** — not just Q&A.
+## What DocMind Does
 
-Upload PDFs (reports, filings, research papers), then:
+DocMind is built for **analysts and researchers who need more than chat-with-PDF**. Upload reports, filings, and papers, then work across four tightly connected capabilities:
 
-- **Ask grounded questions** with citation-backed streaming answers  
-- **Extract and index structured tables** for quantitative analysis  
-- **Run research & data-analysis workflows** that profile datasets, compute insights, and generate **graphs, charts, and dashboards**  
-- **Summarize** outline-aware sections and **quiz** yourself across practice / rapid-fire / exam modes  
+| Pillar | What it means in DocMind |
+| --- | --- |
+| **Research agent** | Multi-step investigation over narrative text — rewrite, expand, retrieve, compare, and compose citation-backed findings |
+| **Data analysis agent** | LangGraph workflows over extracted tables — discover datasets, profile, plan, execute, validate, and surface quantitative insights |
+| **Cross-document reasoning** | Ask across up to 4 PDFs at once; balance evidence per doc; detect agreement, gaps, and conflicts with page-level citations |
+| **Data analysis** | Structured table extraction → typed columns / units → semantic table index → stats, anomalies, time series, charts & dashboards |
+
+Supporting surfaces (outline-aware **summarization**, **quizzes**, PDF viewer) sit on the same ingestion + retrieval stack so learning and review stay grounded in the same evidence.
 
 > **Interactive architecture:** [Open the animated system map →](https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/)  
-> Deep-dive docs: [`docs/architecture/`](docs/architecture/)
+> Deep-dive docs: [`docs/architecture/`](docs/architecture/) · agent deep-dive: [`docs/architecture/data-analysis-agent.md`](docs/architecture/data-analysis-agent.md)
 
 ---
 
-### Research & Data Analysis Agent — system view
+### Data Analysis Agent — system view
 
 ```mermaid
 flowchart TD
@@ -122,7 +128,7 @@ flowchart TD
     DP <--> QD[(Qdrant)]
 ```
 
-### Research & Data Analysis Agent — execution flow
+### Data Analysis Agent — execution flow
 
 ```mermaid
 flowchart TD
@@ -153,10 +159,21 @@ flowchart TD
 ```
 
 ---
-    
+
 ## Features
 
-### Research & Data Analysis
+### Research Agent
+
+| Capability | Description |
+| --- | --- |
+| **Grounded investigation** | Streaming, citation-backed answers from selected PDFs — not free-form hallucination |
+| **Query rewriting** | Follow-ups (“does it apply to interns?”) become standalone retrieval queries |
+| **Multi-query expansion** | LangChain `MultiQueryRetriever` improves recall across narrative sections |
+| **Outline-aware summarization** | TOC/node tree, hybrid node search, representative chunks, hierarchical map-reduce |
+| **Conversation memory** | Rolling chat summary + recent verbatim messages for multi-turn research |
+| **Structured enrichment** | Confidence, answer status, follow-ups, and per-document contributions |
+
+### Data Analysis Agent
 
 | Capability | Description |
 | --- | --- |
@@ -164,59 +181,49 @@ flowchart TD
 | **Docling fallback recovery** | Coverage detection + isolated Docling worker recovers missed / complex tables |
 | **Table validation** | Schema, quality, and consistency checks before indexing |
 | **Table semantic index** | LLM summaries + keywords embedded into Qdrant for dataset discovery |
-| **Research & analysis agent** | LangGraph-oriented workflows: scope → discover → profile → plan → execute → visualize |
-| **Charts & dashboards** | Visualization planner + dashboard builder turn quantitative findings into graphs and auto-composed views |
-| **Grounded insights** | Analysis results stay tied to source pages / table fragments for citation |
+| **Hybrid retrieval subgraph** | LangGraph query generation over **text chunks + table summaries** (`normal` vs `broad` scope) |
+| **Analysis orchestration** | Plan → profile → clean/transform → statistics / anomaly / time-series → validate → repair |
+| **Charts & dashboards** | Visualization planner + dashboard builder turn findings into graphs and auto-composed views |
+| **Grounded insights** | Quantitative results stay tied to source pages / table fragments for citation |
 
-### Conversational RAG
+### Cross-Document Reasoning
 
 | Capability | Description |
 | --- | --- |
-| **Multi-document RAG** | Ask questions across up to 4 PDFs in one chat with per-user, per-document Qdrant filters |
-| **Intent routing** | Detects `general_qa`, `summarization`, or `quiz` and dispatches specialized pipelines |
-| **Semantic search** | OpenAI `text-embedding-3-small` embeddings stored in Qdrant |
-| **Multi-query retrieval** | LangChain `MultiQueryRetriever` expands queries for better recall |
-| **Query rewriting** | Follow-ups (“does it apply to interns?”) become standalone retrieval queries |
-| **Citation-based answers** | Inline `[C1]` markers mapped to filename + page + excerpt |
-| **Streaming responses** | Server-Sent Events (`status` → `token` → `citations` → `final` → `done`) |
-| **Conversation memory** | Rolling chat summary + recent verbatim messages |
+| **Multi-document workspace** | Up to 4 PDFs in one chat with per-user, per-document Qdrant filters |
 | **Context balancing** | Deduplicate chunks, cap per-document contribution, enforce token budget |
-| **Structured enrichment** | Confidence, answer status, follow-ups, and per-document contributions |
-| **Outline-aware summarization** | TOC/node tree, hybrid node search, representative chunks, hierarchical map-reduce |
-| **Quiz generation** | Context-based and topic-based quizzes with multiple formats and modes |
+| **Compare & conflict** | Prompt contract asks the model to surface agreement, gaps, and conflicts across sources |
+| **Broad retrieval scope** | Analysis retrieval can classify requests as `broad` when evidence must span many docs / periods / metrics |
+| **Citation jump** | Inline `[C1]` markers → filename + page + excerpt → open the page in the viewer |
 
-### Document Intelligence
+### Data Analysis (quantitative layer)
 
-- PDF upload (PDF-only, max 4 per chat)
-- Cloudinary private storage with secure URLs
-- PyMuPDF parsing + RecursiveCharacterTextSplitter chunking
-- PDF outline / TOC → hierarchical **node tree**
-- Chunk metadata: `user_id`, `doc_id`, `node_id`, page, chunk order
-- Dual Qdrant collections: **chunks** + **nodes** (+ table summaries)
-- Background summary-index build (clustering + MMR representatives)
-- Incremental document attach / detach from chats
-- Content-hash (`SHA-256`) document identity to avoid duplicate storage
+| Capability | Description |
+| --- | --- |
+| **Dataset catalogue** | Normalized tables in MongoDB + discovery summaries in Qdrant |
+| **Profiling & cleaning** | Schema / quality checks before compute |
+| **Statistics · anomalies · time series** | Analysis engines behind the agent execution subgraph |
+| **Insight + visualization** | Insight generator, chart planner, dashboard composer |
+| **Sample ingestion** | Bundled annual-report PDFs + `run_ingestion` for end-to-end table pipelines |
 
-### Learning & Assessment
+### Intent routing & learning
 
-- **Practice mode** — guided quiz with explanations
-- **Rapid-fire mode** — timed question bursts
-- **Exam mode** — timed exam with browser proctoring (tab/window focus monitoring)
-- Question formats: single MCQ, multiple-correct MCQ, true/false, fill-in-the-blank, match-the-following
-- Difficulty levels: easy / medium / hard
-- Citation chips linking quiz items back to source pages
+| Capability | Description |
+| --- | --- |
+| **Intent routing** | Detects `general_qa`, `summarization`, or `quiz` and dispatches specialized pipelines |
+| **Semantic search** | OpenAI `text-embedding-3-small` embeddings in Qdrant |
+| **Streaming responses** | SSE: `status` → `token` → `citations` → `final` → `done` |
+| **Quiz modes** | Practice (guided), rapid-fire (timed bursts), exam (proctored focus monitoring) |
+| **Quiz formats** | Single MCQ, multi-correct, T/F, fill-blank, match — easy / medium / hard |
 
-### Platform
+### Document intelligence & platform
 
-- Clerk authentication (sign-in / sign-up)
-- User sync into MongoDB on login
-- Per-user chat history and workspaces
-- Split-screen PDF viewer + chat (desktop); tabbed Documents / Chat (mobile)
-- Citation click → jump to page in the viewer
-- Real-time SSE streaming UI with Markdown rendering
-- Dark-mode product UI
-- Next.js BFF proxy — browser never talks to FastAPI with secrets
-- Internal API secret between Next.js and FastAPI
+- PDF upload (PDF-only, max 4 per chat); Cloudinary private storage
+- PyMuPDF parsing + chunking; outline / TOC → hierarchical **node tree**
+- Dual Qdrant collections: **chunks** + **nodes** (+ **structured table** summaries)
+- Background summary-index build (clustering + MMR); SHA-256 document identity
+- Clerk auth, MongoDB workspaces, Next.js BFF (browser never holds backend secrets)
+- Split-screen PDF viewer + chat; citation click → page jump; dark-mode UI
 
 ---
 
@@ -228,10 +235,10 @@ flowchart TD
 | UI | Tailwind CSS 4, shadcn/ui, GSAP, react-pdf | Design system, motion, in-browser PDF viewing |
 | Auth | Clerk | Session management, protected `/chat` routes |
 | Backend API | FastAPI, Uvicorn, Pydantic | REST + SSE endpoints |
-| Orchestration | LangChain + LangGraph (analysis agent) | Retrievers, LLM wrappers, multi-step research/analysis graphs |
+| Orchestration | LangChain + LangGraph | Research RAG pipelines + data-analysis agent subgraphs |
 | LLMs | OpenRouter → Gemini 2.5 Flash / Flash-Lite | Answers, utilities, intent, quizzes, summaries, table metadata |
 | Embeddings | OpenAI `text-embedding-3-small` | Chunk (1536-d), node (512-d), and table-summary vectors |
-| Vector DB | Qdrant (embedded path or remote) | Semantic retrieval, node search, table discovery |
+| Vector DB | Qdrant (embedded path or remote) | Semantic retrieval, node search, table discovery, cross-doc filters |
 | Document DB | MongoDB (Motor async) | Users, chats, documents, quizzes, memory, structured tables |
 | Object storage | Cloudinary | Private PDF hosting |
 | PDF parsing | PyMuPDF + Docling (fallback) | Text, outline tree, table extraction / recovery |
@@ -247,7 +254,7 @@ flowchart TD
   </a>
 </p>
 
-Glowing nodes, animated flow lines, zoom/pan, and clickable service details live on the hosted map. Static diagrams for the README are below; written deep-dives are in [`docs/architecture/`](docs/architecture/).
+Glowing nodes, animated flow lines, zoom/pan, and clickable service details live on the hosted map. Static diagrams for the README are below; written deep-dives are in [`docs/architecture/`](docs/architecture/) (including the [data analysis / research agent guide](docs/architecture/data-analysis-agent.md)).
 
 ### System overview
 
@@ -263,15 +270,17 @@ flowchart TB
   User([User]) --> Next[Next.js Frontend + BFF]
   Next --> FastAPI[FastAPI Backend]
   FastAPI --> Router{Intent Router}
-  Router --> Chat[Chat / RAG]
+  Router --> Research[Research Agent / RAG]
   Router --> Sum[Summarization]
   Router --> Quiz[Quiz Pipelines]
-  Router --> Analysis[Research & Data Analysis Agent]
-  Chat --> AI[AI Services]
+  Router --> Analysis[Data Analysis Agent]
+  Research --> CrossDoc[Cross-Doc Reasoning]
+  Research --> AI[AI Services]
   Sum --> AI
   Quiz --> AI
   Analysis --> Tables[Structured Tables]
   Analysis --> Charts[Charts · Dashboards · Insights]
+  CrossDoc --> AI
   AI --> OR[OpenRouter / Gemini]
   AI --> Qdrant[(Qdrant)]
   AI --> Mongo[(MongoDB)]
@@ -350,16 +359,23 @@ flowchart TB
 ```mermaid
 flowchart TB
   U[User Message] --> D[Intent Detector]
-  D --> G[General QA / RAG]
+  D --> G[Research Agent / RAG]
   D --> S[Summarization]
   D --> Q[Quiz]
+  D --> A[Data Analysis Agent]
   Q --> CB[Context-based Quiz]
   Q --> TB[Topic-based Quiz]
   Q --> XB[Structure / Whole-doc<br/>planned]
+  A --> HY[Hybrid Text + Table Retrieval]
+  A --> EX[Plan · Execute · Visualize]
+  G --> XD[Cross-Doc Balance + Citations]
   G --> T[Stream Response]
   S --> T
   CB --> T
   TB --> T
+  HY --> T
+  EX --> T
+  XD --> T
 ```
 
 </details>
@@ -382,7 +398,7 @@ flowchart TB
 <details>
 <summary><strong>Retrieval Service</strong></summary>
 
-- **Purpose:** Fetch grounded context for Q&A.
+- **Purpose:** Fetch grounded context for research Q&A and cross-document reasoning.
 - **Flow:** Rewrite query → MultiQuery expansion → filtered Qdrant search → dedupe → per-doc balancing → token budget.
 - **Filters:** Always scoped to the authenticated `user_id` and selected `doc_id`s.
 - **Location:** `backend/scripts/chat_with_pdf.py`, `backend/utils/format_document.py`.
@@ -390,12 +406,24 @@ flowchart TB
 </details>
 
 <details>
-<summary><strong>Chat Service</strong></summary>
+<summary><strong>Research Agent (Chat / RAG)</strong></summary>
 
-- **Purpose:** Stream grounded answers with citations.
+- **Purpose:** Stream grounded investigative answers with citations across one or more PDFs.
 - **LLM:** Gemini 2.5 Flash via OpenRouter (streaming).
+- **Cross-doc:** Balance evidence per document; surface agreement / conflict when sources diverge.
 - **Events:** `status`, `token`, `citations`, `final`, `error`, `done`.
 - **Location:** `backend/scripts/chat_with_pdf.py` → `ask_question()`.
+
+</details>
+
+<details>
+<summary><strong>Data Analysis Agent</strong></summary>
+
+- **Purpose:** Quantitative workflows over extracted tables + hybrid narrative/table retrieval.
+- **Shipped today:** Table extraction, Docling fallback, validation, semantic table index, LangGraph retrieval subgraphs (`query_generation`, `hybrid_retrieval`).
+- **In progress:** Full plan → execute → repair → visualize orchestration (see system / execution diagrams above).
+- **Location:** `backend/scripts/data_analysis_agent/`.
+- **Deep dive:** [`docs/architecture/data-analysis-agent.md`](docs/architecture/data-analysis-agent.md).
 
 </details>
 
@@ -403,7 +431,7 @@ flowchart TB
 <summary><strong>Intent Detection</strong></summary>
 
 - **Purpose:** Route each message to the right pipeline.
-- **Intents:** `general_qa` | `summarization` | `quiz`.
+- **Intents:** `general_qa` | `summarization` | `quiz` (analysis agent routes expand as the agent lands in the stream API).
 - **Method:** Regex heuristics + LLM structured classification.
 - **Location:** `backend/scripts/intent_detection/`.
 
@@ -470,7 +498,7 @@ DocMind-AI-Intelligent-conversations-with-documents/
 │   └── architecture/                  # SVG diagrams embedded in README
 ├── docs/
 │   ├── index.html                     # GitHub Pages — interactive map
-│   └── architecture/                  # Deep-dive docs + architecture.html
+│   └── architecture/                  # Deep-dive docs + architecture.html + agent guide
 ├── backend/
 │   ├── main.py                        # FastAPI app + CORS + routers
 │   ├── requirements.txt
@@ -489,7 +517,7 @@ DocMind-AI-Intelligent-conversations-with-documents/
 │   │   ├── ingest.py                  # PDF → chunks → Qdrant
 │   │   ├── chat_with_pdf.py           # RAG ask_question pipeline
 │   │   ├── intent_detection/          # Intent router
-│   │   ├── data_analysis_agent/       # Tables · research · charts pipeline
+│   │   ├── data_analysis_agent/       # Tables · hybrid retrieval · analysis agent
 │   │   └── intention_pipelines/
 │   │       ├── summarization_pipeline/
 │   │       └── quiz_pipeline/
@@ -703,9 +731,11 @@ All FastAPI routes are intended to be called by the **Next.js BFF**, not the bro
 
 ## Future Improvements
 
-Actively being built on top of the shipped table-ingestion layer (`scripts/data_analysis_agent/`):
+Actively being built on top of the shipped table + retrieval layer (`scripts/data_analysis_agent/`):
 
-- **LangGraph research & data-analysis orchestration** — multi-step plan → execute → repair loops
+- **Full LangGraph data-analysis orchestration** — multi-step plan → execute → repair loops (system / execution diagrams above)
+- **Research-agent tool loops** — broader multi-hop investigation across narrative + tabular evidence
+- **Stronger cross-document reasoning** — explicit compare / conflict / timeline synthesis modes
 - **Auto-generated charts & dashboards** — visualization planner + dashboard composer
 - Deeper statistics / anomaly / time-series analysis engines
 - Structure-based and whole-document quiz scopes (schemas already defined)
@@ -742,7 +772,7 @@ This project is available under the **MIT License** — free to use, modify, and
 ---
 
 <p align="center">
-  Built for researchers, analysts, and teams who need <strong>grounded answers, structured data, and visual insights</strong> from their documents.
+  Built for researchers and analysts who need <strong>research agents, data-analysis agents, cross-document reasoning, and quantitative insights</strong> from their PDFs.
   <br />
   <a href="https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/">Open Interactive Architecture →</a>
 </p>
