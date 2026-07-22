@@ -80,6 +80,13 @@ async def ensure_indexes() -> None:
     )
     await db.structured_tables.create_index("node_id")
     await db.structured_tables.create_index("chat_id")
+    await db.dataset_profiles.create_index(
+        [("user_id", 1), ("cache_key", 1)], unique=True
+    )
+    await db.dataset_profiles.create_index(
+        [("user_id", 1), ("dataset_id", 1), ("profiler_version", 1)]
+    )
+    await db.dataset_profiles.create_index("updated_at")
     await db.summary_cache.create_index(
         [
             ("user_id", 1),

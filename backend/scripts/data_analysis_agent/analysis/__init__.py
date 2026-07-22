@@ -1,9 +1,11 @@
-"""Parent workflow for retrieving and hydrating data-analysis evidence."""
+"""Parent workflow for retrieving, hydrating, and profiling analysis evidence."""
 
 from .graph import build_data_analysis_graph, data_analysis_graph
 from .models import (
     AnalysisIssue,
     AnalysisRequest,
+    DatasetProfile,
+    DatasetProfiles,
     EvidencePackage,
     HydratedDatasetReference,
     RetrievalResult,
@@ -22,6 +24,8 @@ __all__ = [
     "AnalysisPhase",
     "AnalysisRequest",
     "DataAnalysisState",
+    "DatasetProfile",
+    "DatasetProfiles",
     "EvidencePackage",
     "HydratedDatasetReference",
     "RetrievalResult",

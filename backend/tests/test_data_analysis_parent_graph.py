@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from scripts.data_analysis_agent.analysis.graph import build_data_analysis_graph
-from scripts.data_analysis_agent.analysis.models import IssueCode
+from scripts.data_analysis_agent.analysis.models import IssueCode, profile_cache_key
 from scripts.data_analysis_agent.analysis.repositories import (
     EvidenceRepositoryError,
     HydrationSourceBatch,
@@ -156,6 +156,48 @@ class _FakeEvidenceRepository:
         )
 
 
+class _FakeDatasetRepository:
+    def __init__(self, tables: tuple[dict[str, Any], ...]) -> None:
+        self.tables = tables
+        self.calls: list[dict[str, Any]] = []
+
+    async def load_tables(self, **kwargs: Any) -> tuple[dict[str, Any], ...]:
+        self.calls.append(kwargs)
+        return self.tables
+
+
+class _FakeProfileCache:
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {}
+
+    async def load_many(
+        self, *, user_id: str, cache_keys: tuple[str, ...]
+    ) -> dict[str, Any]:
+        return {key: self.values[key] for key in cache_keys if key in self.values}
+
+    async def save_many(self, *, user_id: str, profiles: list[Any]) -> None:
+        for profile in profiles:
+            key = profile_cache_key(
+                dataset_id=profile.dataset_id,
+                source_version=profile.source_version,
+                profiler_version=profile.profiler_version,
+            )
+            self.values[key] = profile
+
+
+def _build_graph(
+    *,
+    retrieval_graph: Any,
+    evidence_repository: _FakeEvidenceRepository,
+) -> Any:
+    return build_data_analysis_graph(
+        retrieval_graph=retrieval_graph,
+        evidence_repository=evidence_repository,
+        dataset_repository=_FakeDatasetRepository(evidence_repository.tables),
+        profile_cache=_FakeProfileCache(),
+    )
+
+
 class ParentStateTests(unittest.TestCase):
     def test_initial_state_is_minimal_validated_and_run_scoped(self) -> None:
         run_id = str(uuid4())
@@ -200,7 +242,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
     async def test_graph_retrieves_and_hydrates_without_checkpointing_rows(self) -> None:
         retrieval = _FakeRetrievalGraph()
         repository = _FakeEvidenceRepository()
-        graph = build_data_analysis_graph(
+        graph = _build_graph(
             retrieval_graph=retrieval,
             evidence_repository=repository,
         )
@@ -213,7 +255,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
 
         result = await graph.ainvoke(state, config=analysis_thread_config(state))
 
-        self.assertEqual(result["phase"], AnalysisPhase.HYDRATED)
+        self.assertEqual(result["phase"], AnalysisPhase.PROFILED)
         self.assertEqual(result["evidence_package"].status, "complete")
         self.assertEqual(result["evidence_package"].hydrated_table_count, 1)
         dataset = result["evidence_package"].datasets[0]
@@ -229,9 +271,14 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.calls[0]["document_ids"], (DOCUMENT_ID,))
         self.assertNotIn("shared_queries", result)
         self.assertNotIn("retrieved_tables", result)
+        self.assertEqual(result["dataset_profiles"].profiled_count, 1)
+        self.assertNotIn(
+            "rows",
+            result["dataset_profiles"].profiles[0].model_dump(),
+        )
 
     async def test_dataset_identity_is_stable_for_unchanged_source_content(self) -> None:
-        graph = build_data_analysis_graph(
+        graph = _build_graph(
             retrieval_graph=_FakeRetrievalGraph(),
             evidence_repository=_FakeEvidenceRepository(),
         )
@@ -267,7 +314,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         repository = _FakeEvidenceRepository()
-        graph = build_data_analysis_graph(
+        graph = _build_graph(
             retrieval_graph=retrieval,
             evidence_repository=repository,
         )
@@ -296,7 +343,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_authoritative_metadata_replaces_stale_retrieval_metadata(self) -> None:
-        graph = build_data_analysis_graph(
+        graph = _build_graph(
             retrieval_graph=_FakeRetrievalGraph(
                 tables=[_retrieval_table(title="Old title")]
             ),
@@ -321,7 +368,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_hydrator_defensively_rejects_cross_tenant_source_records(self) -> None:
-        graph = build_data_analysis_graph(
+        graph = _build_graph(
             retrieval_graph=_FakeRetrievalGraph(),
             evidence_repository=_FakeEvidenceRepository(
                 tables=(_table(user_id="another-user"),)
@@ -349,7 +396,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_retrieval_failure_stops_before_hydration(self) -> None:
         repository = _FakeEvidenceRepository()
-        graph = build_data_analysis_graph(
+        graph = _build_graph(
             retrieval_graph=_FakeRetrievalGraph(fail=True),
             evidence_repository=repository,
         )
@@ -370,7 +417,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.calls, [])
 
     async def test_repository_failure_returns_failed_evidence_package(self) -> None:
-        graph = build_data_analysis_graph(
+        graph = _build_graph(
             retrieval_graph=_FakeRetrievalGraph(),
             evidence_repository=_FakeEvidenceRepository(fail=True),
         )
