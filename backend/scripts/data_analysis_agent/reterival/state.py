@@ -13,6 +13,9 @@ class DataAnalysisRetrievalState(TypedDict, total=False):
     query: Required[str]
     document_ids: list[str]
     retrieval_scope: Literal["normal", "broad"]
+    table_intent: Literal["required", "supporting", "none"]
+    query_generation_attempts: int
+    query_generation_fallback: bool
     shared_queries: list[str]
     text_queries: list[str]
     table_queries: list[str]
@@ -21,6 +24,7 @@ class DataAnalysisRetrievalState(TypedDict, total=False):
     entities: list[str]
     units: list[str]
     column_terms: list[str]
+    match_concepts: list[dict[str, Any]]
     retrieved_text_chunks: list[dict[str, Any]]
     retrieved_tables: list[dict[str, Any]]
     final_text_chunks: list[dict[str, Any]]
@@ -61,11 +65,15 @@ def create_retrieval_state(
         shared_queries=[],
         text_queries=[],
         table_queries=[],
+        table_intent="supporting",
+        query_generation_attempts=0,
+        query_generation_fallback=False,
         metrics=[],
         years=[],
         entities=[],
         units=[],
         column_terms=[],
+        match_concepts=[],
         retrieved_text_chunks=[],
         retrieved_tables=[],
         final_text_chunks=[],

@@ -10,8 +10,11 @@ from scripts.data_analysis_agent.reterival.hybrid_retrieval_subgraph import (
     build_hybrid_retrieval_subgraph,
 )
 from scripts.data_analysis_agent.reterival.query_generation import (
+    ConceptKind,
     GeneratedRetrievalQueries,
+    MatchConcept,
     RetrievalScope,
+    TableIntent,
 )
 from scripts.data_analysis_agent.reterival.state import create_retrieval_state
 from scripts.data_analysis_agent.reterival.table_retrieval import _table_filter
@@ -44,6 +47,13 @@ class _FakeQueryGenerator:
             shared_queries=["shared one", "shared two"],
             text_queries=["text one", "text two"],
             table_queries=["table one", "table two"],
+            table_intent=TableIntent.REQUIRED,
+            match_concepts=[
+                MatchConcept(
+                    canonical="revenue",
+                    kind=ConceptKind.METRIC,
+                )
+            ],
             metrics=["revenue"],
             years=["2024"],
             column_terms=["revenue"],

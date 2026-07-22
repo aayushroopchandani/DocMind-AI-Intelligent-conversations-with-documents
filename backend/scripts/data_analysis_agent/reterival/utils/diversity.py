@@ -35,7 +35,11 @@ def _jaccard(left: set[Any], right: set[Any]) -> float:
 
 
 def _relative_candidates(
-    candidates: Sequence[Candidate], *, minimum_ratio: float = 0.55
+    candidates: Sequence[Candidate],
+    *,
+    minimum_ratio: float = 0.55,
+    minimum_score: float = 0.0,
+    ensure_at_least: int = 0,
 ) -> list[Candidate]:
     ordered = sorted(
         candidates,
@@ -48,13 +52,19 @@ def _relative_candidates(
         return []
     best_score = float(ordered[0].get("relevance_score") or 0.0)
     if best_score <= 0:
-        return ordered
-    return [
+        return ordered[:ensure_at_least]
+    selected = [
         item
         for item in ordered
-        if float(item.get("relevance_score") or 0.0)
-        >= best_score * minimum_ratio
+        if (
+            float(item.get("relevance_score") or 0.0) >= minimum_score
+            and float(item.get("relevance_score") or 0.0)
+            >= best_score * minimum_ratio
+        )
     ]
+    if len(selected) < ensure_at_least:
+        return ordered[:ensure_at_least]
+    return selected
 
 
 def _round_robin_documents(
@@ -95,12 +105,19 @@ def select_text_chunks(
     broad: bool,
     duplicate_threshold: float = 0.82,
     max_per_page: int = 2,
+    minimum_score: float = 0.0,
+    minimum_ratio: float = 0.55,
 ) -> list[Candidate]:
     unique: list[Candidate] = []
     unique_shingles: list[tuple[str, set[tuple[str, ...]]]] = []
     seen_ids: set[str] = set()
     page_counts: dict[tuple[str, str], int] = defaultdict(int)
-    for candidate in _relative_candidates(candidates):
+    for candidate in _relative_candidates(
+        candidates,
+        minimum_score=minimum_score,
+        minimum_ratio=minimum_ratio,
+        ensure_at_least=1,
+    ):
         chunk_id = str(candidate.get("chunk_id") or "")
         if chunk_id and chunk_id in seen_ids:
             continue
@@ -173,10 +190,16 @@ def select_tables(
     *,
     limit: int,
     broad: bool,
+    minimum_score: float = 0.0,
+    minimum_ratio: float = 0.55,
 ) -> list[Candidate]:
     unique: list[Candidate] = []
     seen_ids: set[str] = set()
-    for candidate in _relative_candidates(candidates):
+    for candidate in _relative_candidates(
+        candidates,
+        minimum_score=minimum_score,
+        minimum_ratio=minimum_ratio,
+    ):
         table_id = str(
             candidate.get("table_id") or candidate.get("point_id") or ""
         )

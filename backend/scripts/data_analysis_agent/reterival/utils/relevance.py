@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import re
-import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .concepts import (
+    RetrievalConcept,
+    concept_coverage,
+    concept_specificities,
+    normalize_text,
+    parse_concepts,
+    phrase_match_strength,
+)
 
-_SPACE_RE = re.compile(r"\s+")
+
 _PERIOD_RE = re.compile(
     r"\b(?:fy\s*)?(?:19|20)\d{2}"
     r"(?:\s*[-–/]\s*(?:\d{2}|(?:19|20)\d{2}))?\b",
@@ -18,20 +25,6 @@ _UNIT_RE = re.compile(
     r"billions?|thousands?|percent(?:age)?)\b)",
     re.IGNORECASE,
 )
-
-
-def normalize_text(value: Any) -> str:
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    text = (
-        text.replace("_", " ")
-        .replace("₹", " inr ")
-        .replace("$", " usd ")
-        .replace("€", " eur ")
-        .replace("£", " gbp ")
-        .replace("%", " percent ")
-    )
-    text = re.sub(r"[^\w]+", " ", text, flags=re.UNICODE)
-    return _SPACE_RE.sub(" ", text).strip()
 
 
 def _clean_signals(values: Sequence[Any]) -> tuple[str, ...]:
@@ -69,35 +62,41 @@ def _explicit_units(query: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalSignals:
-    metrics: tuple[str, ...] = ()
+    concepts: tuple[RetrievalConcept, ...] = ()
     years: tuple[str, ...] = ()
-    entities: tuple[str, ...] = ()
     units: tuple[str, ...] = ()
-    column_terms: tuple[str, ...] = ()
 
     @classmethod
     def from_state(cls, state: Mapping[str, Any]) -> "RetrievalSignals":
         query = str(state.get("query") or "")
+        raw_concepts = [
+            value
+            for value in state.get("match_concepts", [])
+            if isinstance(value, Mapping)
+        ]
         return cls(
-            metrics=_clean_signals(state.get("metrics", [])),
+            concepts=parse_concepts(
+                raw_concepts,
+                fallback_terms=[
+                    *state.get("metrics", []),
+                    *state.get("entities", []),
+                ],
+            ),
             years=_clean_periods(
                 [*state.get("years", []), *_explicit_periods(query)]
             ),
-            entities=_clean_signals(state.get("entities", [])),
             units=_clean_signals(
                 [*state.get("units", []), *_explicit_units(query)]
             ),
-            column_terms=_clean_signals(state.get("column_terms", [])),
         )
 
 
-def _coverage(signals: Sequence[str], candidate_text: str) -> float:
+def _signal_coverage(signals: Sequence[str], candidate_text: str) -> float:
     if not signals:
         return 0.0
-    normalized = f" {normalize_text(candidate_text)} "
-    normalized_signals = [normalize_text(signal) for signal in signals]
-    matches = sum(f" {signal} " in normalized for signal in normalized_signals)
-    return matches / len(signals)
+    return sum(
+        phrase_match_strength(signal, candidate_text) for signal in signals
+    ) / len(signals)
 
 
 def _rrf_score(candidate: Mapping[str, Any], query_count: int) -> float:
@@ -106,20 +105,89 @@ def _rrf_score(candidate: Mapping[str, Any], query_count: int) -> float:
     return min(1.0, raw_score / theoretical_max)
 
 
-def _consensus(candidate: Mapping[str, Any], query_count: int) -> float:
+def _raw_consensus(candidate: Mapping[str, Any], query_count: int) -> float:
     modes = {
         str(mode).casefold()
         for mode in candidate.get("retrieval_modes", [])
         if str(mode).casefold() in {"dense", "sparse"}
     }
     matched_queries = {
-        normalize_text(query)
+        normalized
         for query in candidate.get("matched_queries", [])
-        if normalize_text(query)
+        if (normalized := normalize_text(query))
     }
     mode_score = len(modes) / 2
-    query_score = min(1.0, len(matched_queries) / min(3, max(1, query_count)))
-    return (mode_score + query_score) / 2
+    query_score = min(1.0, len(matched_queries) / max(1, query_count))
+    return (0.35 * mode_score) + (0.65 * query_score)
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringContext:
+    signals: RetrievalSignals
+    query_count: int
+    concept_specificities: tuple[float, ...]
+    consensus_scores: tuple[float, ...]
+
+    def consensus(self, candidate: Mapping[str, Any]) -> float:
+        candidate_count = len(self.consensus_scores)
+        if candidate_count <= 1:
+            return 0.0
+        raw_score = _raw_consensus(candidate, self.query_count)
+        lower_count = sum(
+            score < raw_score - 1e-9 for score in self.consensus_scores
+        )
+        tied_count = sum(
+            abs(score - raw_score) <= 1e-9 for score in self.consensus_scores
+        )
+        percentile = lower_count / (candidate_count - 1)
+        tie_penalty = (candidate_count - tied_count + 1) / candidate_count
+        return percentile * tie_penalty
+
+
+def build_scoring_context(
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    signals: RetrievalSignals,
+    query_count: int,
+    candidate_text: Callable[[Mapping[str, Any]], str],
+) -> ScoringContext:
+    candidate_texts = [candidate_text(candidate) for candidate in candidates]
+    consensus_scores = [
+        _raw_consensus(candidate, query_count) for candidate in candidates
+    ]
+    return ScoringContext(
+        signals=signals,
+        query_count=query_count,
+        concept_specificities=concept_specificities(
+            signals.concepts,
+            candidate_texts,
+        ),
+        consensus_scores=tuple(consensus_scores),
+    )
+
+
+def text_candidate_content(candidate: Mapping[str, Any]) -> str:
+    return str(candidate.get("text") or "")
+
+
+def table_candidate_content(candidate: Mapping[str, Any]) -> str:
+    return " ".join(
+        str(value or "")
+        for value in (
+            candidate.get("title"),
+            candidate.get("summary"),
+            *(candidate.get("columns") or []),
+            *(candidate.get("metrics") or []),
+            *(candidate.get("units") or []),
+            *(candidate.get("keywords") or []),
+        )
+    )
+
+
+def _table_schema_content(candidate: Mapping[str, Any]) -> str:
+    return " ".join(
+        str(value or "") for value in candidate.get("columns", [])
+    )
 
 
 def _with_score(
@@ -139,27 +207,26 @@ def _with_score(
 def score_text_candidate(
     candidate: Mapping[str, Any],
     *,
-    signals: RetrievalSignals,
-    query_count: int,
+    context: ScoringContext,
 ) -> dict[str, Any]:
-    text = str(candidate.get("text") or "")
+    text = text_candidate_content(candidate)
     features = {
-        "rrf": _rrf_score(candidate, query_count),
-        "metric_or_column": _coverage(
-            (*signals.metrics, *signals.column_terms), text
+        "rrf": _rrf_score(candidate, context.query_count),
+        "concept": concept_coverage(
+            context.signals.concepts,
+            text,
+            specificities=context.concept_specificities,
         ),
-        "year": _coverage(signals.years, text),
-        "entity": _coverage(signals.entities, text),
-        "unit": _coverage(signals.units, text),
-        "consensus": _consensus(candidate, query_count),
+        "year": _signal_coverage(context.signals.years, text),
+        "unit": _signal_coverage(context.signals.units, text),
+        "consensus": context.consensus(candidate),
     }
     score = (
         (0.45 * features["rrf"])
-        + (0.20 * features["metric_or_column"])
-        + (0.10 * features["year"])
-        + (0.10 * features["entity"])
-        + (0.05 * features["unit"])
-        + (0.10 * features["consensus"])
+        + (0.40 * features["concept"])
+        + (0.06 * features["year"])
+        + (0.02 * features["unit"])
+        + (0.07 * features["consensus"])
     )
     return _with_score(candidate, score=score, features=features)
 
@@ -167,41 +234,31 @@ def score_text_candidate(
 def score_table_candidate(
     candidate: Mapping[str, Any],
     *,
-    signals: RetrievalSignals,
-    query_count: int,
+    context: ScoringContext,
 ) -> dict[str, Any]:
-    descriptive_text = " ".join(
-        str(value or "")
-        for value in (
-            candidate.get("title"),
-            candidate.get("summary"),
-            *(candidate.get("metrics") or []),
-            *(candidate.get("keywords") or []),
-        )
-    )
-    column_text = " ".join(
-        str(value or "") for value in candidate.get("columns", [])
-    )
-    unit_text = " ".join(
-        str(value or "") for value in candidate.get("units", [])
-    )
-    combined_text = f"{descriptive_text} {column_text} {unit_text}"
+    combined_text = table_candidate_content(candidate)
     features = {
-        "rrf": _rrf_score(candidate, query_count),
-        "metric": _coverage(signals.metrics, descriptive_text),
-        "column": _coverage(signals.column_terms, column_text),
-        "year": _coverage(signals.years, combined_text),
-        "entity": _coverage(signals.entities, combined_text),
-        "unit": _coverage(signals.units, unit_text or combined_text),
-        "consensus": _consensus(candidate, query_count),
+        "rrf": _rrf_score(candidate, context.query_count),
+        "concept": concept_coverage(
+            context.signals.concepts,
+            combined_text,
+            specificities=context.concept_specificities,
+        ),
+        "schema": concept_coverage(
+            context.signals.concepts,
+            _table_schema_content(candidate),
+            specificities=context.concept_specificities,
+        ),
+        "year": _signal_coverage(context.signals.years, combined_text),
+        "unit": _signal_coverage(context.signals.units, combined_text),
+        "consensus": context.consensus(candidate),
     }
     score = (
-        (0.35 * features["rrf"])
-        + (0.20 * features["metric"])
-        + (0.15 * features["column"])
-        + (0.10 * features["year"])
-        + (0.05 * features["entity"])
-        + (0.05 * features["unit"])
-        + (0.10 * features["consensus"])
+        (0.36 * features["rrf"])
+        + (0.36 * features["concept"])
+        + (0.16 * features["schema"])
+        + (0.05 * features["year"])
+        + (0.02 * features["unit"])
+        + (0.05 * features["consensus"])
     )
     return _with_score(candidate, score=score, features=features)
