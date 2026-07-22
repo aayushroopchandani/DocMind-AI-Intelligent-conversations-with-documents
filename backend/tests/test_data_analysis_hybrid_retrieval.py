@@ -44,6 +44,9 @@ class _FakeQueryGenerator:
             shared_queries=["shared one", "shared two"],
             text_queries=["text one", "text two"],
             table_queries=["table one", "table two"],
+            metrics=["revenue"],
+            years=["2024"],
+            column_terms=["revenue"],
         )
 
 
@@ -70,7 +73,16 @@ class _FakeTextRetriever:
 
     async def retrieve(self, state: Any) -> list[dict[str, Any]]:
         await self.probe.run("text")
-        return [{"chunk_id": "chunk-1"}]
+        return [
+            {
+                "chunk_id": "chunk-1",
+                "rrf_score": 0.1,
+                "text": "Revenue for 2024 increased.",
+                "metadata": {"doc_id": "d1", "page": 3},
+                "matched_queries": ["compare revenue"],
+                "retrieval_modes": ["dense", "sparse"],
+            }
+        ]
 
 
 class _FakeTableRetriever:
@@ -79,7 +91,23 @@ class _FakeTableRetriever:
 
     async def retrieve(self, state: Any) -> list[dict[str, Any]]:
         await self.probe.run("table")
-        return [{"table_id": "table-1"}]
+        return [
+            {
+                "table_id": "table-1",
+                "document_id": "d1",
+                "rrf_score": 0.1,
+                "title": "Revenue by year",
+                "summary": "Annual revenue for 2024",
+                "columns": ["year", "revenue"],
+                "metrics": ["revenue"],
+                "units": [],
+                "keywords": [],
+                "page_start": 3,
+                "page_end": 3,
+                "matched_queries": ["compare revenue"],
+                "retrieval_modes": ["dense", "sparse"],
+            }
+        ]
 
 
 class HybridRetrievalUnitTests(unittest.TestCase):
@@ -178,8 +206,8 @@ class HybridRetrievalGraphTests(unittest.IsolatedAsyncioTestCase):
                 dense_collection="dense",
                 sparse_collection="sparse",
                 query_filter=_text_filter(user_id="u1", document_ids=["d1"]),
-                candidate_limit=5,
-                final_limit=3,
+                per_query_limit=5,
+                fusion_limit=3,
             )
         finally:
             await client.close()
@@ -205,5 +233,8 @@ class HybridRetrievalGraphTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(probe.started, {"text", "table"})
-        self.assertEqual(result["retrieved_text_chunks"], [{"chunk_id": "chunk-1"}])
-        self.assertEqual(result["retrieved_tables"], [{"table_id": "table-1"}])
+        self.assertEqual(result["retrieved_text_chunks"][0]["chunk_id"], "chunk-1")
+        self.assertEqual(result["retrieved_tables"][0]["table_id"], "table-1")
+        self.assertEqual(result["final_text_chunks"][0]["chunk_id"], "chunk-1")
+        self.assertEqual(result["final_tables"][0]["table_id"], "table-1")
+        self.assertIn("relevance_score", result["final_text_chunks"][0])

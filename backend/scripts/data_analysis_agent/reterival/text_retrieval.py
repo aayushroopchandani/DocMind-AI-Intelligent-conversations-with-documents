@@ -61,8 +61,8 @@ class QdrantTextRetriever:
                 user_id=state["user_id"],
                 document_ids=document_ids,
             ),
-            candidate_limit=limits.text_candidates,
-            final_limit=limits.final_text_chunks,
+            per_query_limit=limits.text_per_query,
+            fusion_limit=limits.text_candidates,
         )
         return [
             {

@@ -40,6 +40,11 @@ class _FakeQueryGenerator:
                 "net income by year table",
                 "financial statement profit after tax columns",
             ],
+            metrics=["net income", "profit after tax"],
+            years=[],
+            entities=[],
+            units=[],
+            column_terms=["year", "net income"],
         )
 
 
@@ -65,6 +70,8 @@ class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["shared_queries"]), 2)
         self.assertEqual(len(result["text_queries"]), 2)
         self.assertEqual(len(result["table_queries"]), 2)
+        self.assertEqual(result["metrics"], ["net income", "profit after tax"])
+        self.assertEqual(result["column_terms"], ["year", "net income"])
 
     def test_thread_id_is_the_chat_id(self) -> None:
         config = retrieval_thread_config(chat_id="chat-123", user_id="user-1")

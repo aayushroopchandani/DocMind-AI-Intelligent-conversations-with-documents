@@ -16,8 +16,15 @@ class DataAnalysisRetrievalState(TypedDict, total=False):
     shared_queries: list[str]
     text_queries: list[str]
     table_queries: list[str]
+    metrics: list[str]
+    years: list[str]
+    entities: list[str]
+    units: list[str]
+    column_terms: list[str]
     retrieved_text_chunks: list[dict[str, Any]]
     retrieved_tables: list[dict[str, Any]]
+    final_text_chunks: list[dict[str, Any]]
+    final_tables: list[dict[str, Any]]
 
 
 def _required_text(value: object, *, field: str) -> str:
@@ -54,8 +61,15 @@ def create_retrieval_state(
         shared_queries=[],
         text_queries=[],
         table_queries=[],
+        metrics=[],
+        years=[],
+        entities=[],
+        units=[],
+        column_terms=[],
         retrieved_text_chunks=[],
         retrieved_tables=[],
+        final_text_chunks=[],
+        final_tables=[],
     )
 
 

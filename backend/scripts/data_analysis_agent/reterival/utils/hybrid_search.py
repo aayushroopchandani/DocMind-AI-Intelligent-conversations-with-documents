@@ -89,12 +89,12 @@ class HybridQdrantSearcher:
         dense_collection: str,
         sparse_collection: str,
         query_filter: models.Filter,
-        candidate_limit: int,
-        final_limit: int,
+        per_query_limit: int,
+        fusion_limit: int,
     ) -> list[FusedPoint]:
         if not queries:
             return []
-        if candidate_limit <= 0 or final_limit <= 0:
+        if per_query_limit <= 0 or fusion_limit <= 0:
             raise ValueError("Hybrid retrieval limits must be positive")
         qdrant = self.client
         dense_vectors = await self.embeddings.aembed_documents(list(queries))
@@ -106,7 +106,7 @@ class HybridQdrantSearcher:
                 models.QueryRequest(
                     query=vector,
                     filter=query_filter,
-                    limit=candidate_limit,
+                    limit=per_query_limit,
                     with_payload=True,
                     with_vector=False,
                 )
@@ -120,7 +120,7 @@ class HybridQdrantSearcher:
                     query=vector,
                     using=SPARSE_VECTOR_NAME,
                     filter=query_filter,
-                    limit=candidate_limit,
+                    limit=per_query_limit,
                     with_payload=True,
                     with_vector=False,
                 )
@@ -138,4 +138,4 @@ class HybridQdrantSearcher:
             ("sparse", query, response.points)
             for query, response in zip(queries, sparse_responses, strict=True)
         ]
-        return reciprocal_rank_fusion(ranked_lists, limit=final_limit)
+        return reciprocal_rank_fusion(ranked_lists, limit=fusion_limit)

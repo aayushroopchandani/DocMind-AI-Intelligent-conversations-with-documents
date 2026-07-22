@@ -4,6 +4,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from .fusion import ResultSelector, build_fusion_node
 from .query_generation import AsyncQueryGenerator, build_query_generation_node
 from .query_generation_subgraph import QUERY_GENERATION_NODE
 from .state import DataAnalysisRetrievalState
@@ -13,6 +14,7 @@ from .text_retrieval import AsyncTextRetriever, build_text_retrieval_node
 
 TEXT_RETRIEVAL_NODE = "retrieve_text"
 TABLE_RETRIEVAL_NODE = "retrieve_tables"
+FUSION_NODE = "fusion"
 
 
 def build_hybrid_retrieval_subgraph(
@@ -20,8 +22,9 @@ def build_hybrid_retrieval_subgraph(
     query_generator: AsyncQueryGenerator | None = None,
     text_retriever: AsyncTextRetriever | None = None,
     table_retriever: AsyncTableRetriever | None = None,
+    result_selector: ResultSelector | None = None,
 ) -> Any:
-    """Generate queries, then retrieve text and tables in parallel."""
+    """Retrieve both evidence types, then select the final context."""
 
     builder = StateGraph(DataAnalysisRetrievalState)
     builder.add_node(
@@ -33,11 +36,12 @@ def build_hybrid_retrieval_subgraph(
         TABLE_RETRIEVAL_NODE,
         build_table_retrieval_node(table_retriever),
     )
+    builder.add_node(FUSION_NODE, build_fusion_node(result_selector))
     builder.add_edge(START, QUERY_GENERATION_NODE)
     builder.add_edge(QUERY_GENERATION_NODE, TEXT_RETRIEVAL_NODE)
     builder.add_edge(QUERY_GENERATION_NODE, TABLE_RETRIEVAL_NODE)
-    builder.add_edge(TEXT_RETRIEVAL_NODE, END)
-    builder.add_edge(TABLE_RETRIEVAL_NODE, END)
+    builder.add_edge([TEXT_RETRIEVAL_NODE, TABLE_RETRIEVAL_NODE], FUSION_NODE)
+    builder.add_edge(FUSION_NODE, END)
     return builder.compile()
 
 

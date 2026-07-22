@@ -58,8 +58,8 @@ class QdrantTableRetriever:
                 user_id=state["user_id"],
                 document_ids=document_ids,
             ),
-            candidate_limit=limits.table_candidates,
-            final_limit=limits.final_tables,
+            per_query_limit=limits.table_per_query,
+            fusion_limit=limits.table_candidates,
         )
         return [
             {
@@ -72,6 +72,7 @@ class QdrantTableRetriever:
                 "columns": list(hit.payload.get("columns") or []),
                 "metrics": list(hit.payload.get("metrics") or []),
                 "units": list(hit.payload.get("units") or []),
+                "keywords": list(hit.payload.get("keywords") or []),
                 "page_start": hit.payload.get("page_start"),
                 "page_end": hit.payload.get("page_end"),
                 "matched_queries": hit.matched_queries,

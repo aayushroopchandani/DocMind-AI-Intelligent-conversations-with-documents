@@ -18,6 +18,11 @@ for a data-analysis agent that searches two indexes: narrative PDF text chunks a
 structured-table summaries. Classify the request's retrieval scope and return 2 or 3
 queries in each requested list.
 
+Also extract compact relevance signals for deterministic result selection: requested
+metrics, years or fiscal periods, named entities, units, and likely table-column terms.
+Only include signals stated or clearly implied by the request. Use empty lists when a
+signal type is absent; do not invent constraints.
+
 Use retrieval_scope="normal" for a focused request about a specific metric, period,
 company, section, or table. A comparison between a small, explicitly bounded set of
 values can still be normal.
@@ -53,8 +58,23 @@ class GeneratedRetrievalQueries(BaseModel):
     shared_queries: list[str] = Field(min_length=2, max_length=3)
     text_queries: list[str] = Field(min_length=2, max_length=3)
     table_queries: list[str] = Field(min_length=2, max_length=3)
+    metrics: list[str] = Field(default_factory=list, max_length=10)
+    years: list[str] = Field(default_factory=list, max_length=10)
+    entities: list[str] = Field(default_factory=list, max_length=10)
+    units: list[str] = Field(default_factory=list, max_length=10)
+    column_terms: list[str] = Field(default_factory=list, max_length=12)
 
-    @field_validator("shared_queries", "text_queries", "table_queries", mode="before")
+    @field_validator(
+        "shared_queries",
+        "text_queries",
+        "table_queries",
+        "metrics",
+        "years",
+        "entities",
+        "units",
+        "column_terms",
+        mode="before",
+    )
     @classmethod
     def clean_queries(cls, value: Any) -> list[str]:
         if not isinstance(value, list):
