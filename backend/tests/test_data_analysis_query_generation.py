@@ -5,17 +5,17 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from scripts.data_analysis_agent.reterival.query_generation import (
+from scripts.data_analysis_agent.retrieval.query_generation import (
     ConceptKind,
     GeneratedRetrievalQueries,
     MatchConcept,
     RetrievalScope,
     TableIntent,
 )
-from scripts.data_analysis_agent.reterival.query_generation_subgraph import (
+from scripts.data_analysis_agent.retrieval.query_generation_subgraph import (
     build_query_generation_subgraph,
 )
-from scripts.data_analysis_agent.reterival.state import (
+from scripts.data_analysis_agent.retrieval.state import (
     create_retrieval_state,
     retrieval_thread_config,
 )

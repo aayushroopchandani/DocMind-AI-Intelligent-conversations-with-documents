@@ -8,10 +8,10 @@ from qdrant_client import models
 
 import qdrant_manager
 from db.models.structured_table import StructuredTable
-from scripts.data_analysis_agent.reterival.utils.collections import (
+from scripts.data_analysis_agent.retrieval.utils.collections import (
     STRUCTURED_TABLES_COLLECTION,
 )
-from scripts.data_analysis_agent.reterival.utils.sparse_index import (
+from scripts.data_analysis_agent.retrieval.utils.sparse_index import (
     SparseRecord,
     delete_sparse_by_filter,
     delete_sparse_ids,

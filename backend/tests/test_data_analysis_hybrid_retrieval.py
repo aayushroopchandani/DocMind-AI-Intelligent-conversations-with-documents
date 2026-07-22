@@ -6,26 +6,26 @@ from typing import Any
 
 from qdrant_client import AsyncQdrantClient, models
 
-from scripts.data_analysis_agent.reterival.hybrid_retrieval_subgraph import (
+from scripts.data_analysis_agent.retrieval.hybrid_retrieval_subgraph import (
     build_hybrid_retrieval_subgraph,
 )
-from scripts.data_analysis_agent.reterival.query_generation import (
+from scripts.data_analysis_agent.retrieval.query_generation import (
     ConceptKind,
     GeneratedRetrievalQueries,
     MatchConcept,
     RetrievalScope,
     TableIntent,
 )
-from scripts.data_analysis_agent.reterival.state import create_retrieval_state
-from scripts.data_analysis_agent.reterival.table_retrieval import _table_filter
-from scripts.data_analysis_agent.reterival.text_retrieval import _text_filter
-from scripts.data_analysis_agent.reterival.utils.hybrid_search import (
+from scripts.data_analysis_agent.retrieval.state import create_retrieval_state
+from scripts.data_analysis_agent.retrieval.table_retrieval import _table_filter
+from scripts.data_analysis_agent.retrieval.text_retrieval import _text_filter
+from scripts.data_analysis_agent.retrieval.utils.hybrid_search import (
     HybridQdrantSearcher,
     reciprocal_rank_fusion,
 )
-from scripts.data_analysis_agent.reterival.utils.limits import limits_for_scope
-from scripts.data_analysis_agent.reterival.utils.query_sets import combine_queries
-from scripts.data_analysis_agent.reterival.utils.sparse_index import (
+from scripts.data_analysis_agent.retrieval.utils.limits import limits_for_scope
+from scripts.data_analysis_agent.retrieval.utils.query_sets import combine_queries
+from scripts.data_analysis_agent.retrieval.utils.sparse_index import (
     SPARSE_VECTOR_NAME,
     get_sparse_encoder,
 )

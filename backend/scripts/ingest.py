@@ -19,7 +19,7 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 import qdrant_manager
-from scripts.data_analysis_agent.reterival.utils.sparse_index import (
+from scripts.data_analysis_agent.retrieval.utils.sparse_index import (
     SparseRecord,
     delete_sparse_by_filter,
     delete_sparse_ids,

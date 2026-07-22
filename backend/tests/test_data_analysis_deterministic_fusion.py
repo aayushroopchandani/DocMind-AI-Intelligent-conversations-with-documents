@@ -3,22 +3,22 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from scripts.data_analysis_agent.reterival.fusion import (
+from scripts.data_analysis_agent.retrieval.fusion import (
     DeterministicResultSelector,
 )
-from scripts.data_analysis_agent.reterival.state import create_retrieval_state
-from scripts.data_analysis_agent.reterival.utils.concepts import (
+from scripts.data_analysis_agent.retrieval.state import create_retrieval_state
+from scripts.data_analysis_agent.retrieval.utils.concepts import (
     acronym_matches,
     concept_coverage,
     concept_specificities,
     phrase_match_strength,
     RetrievalConcept,
 )
-from scripts.data_analysis_agent.reterival.utils.diversity import (
+from scripts.data_analysis_agent.retrieval.utils.diversity import (
     select_tables,
     select_text_chunks,
 )
-from scripts.data_analysis_agent.reterival.utils.relevance import (
+from scripts.data_analysis_agent.retrieval.utils.relevance import (
     RetrievalSignals,
     build_scoring_context,
     text_candidate_content,
