@@ -124,15 +124,17 @@ def upsert_sparse_records(
     *,
     payload_indexes: Iterable[str],
     client: QdrantClient | None = None,
+    ensure: bool = True,
 ) -> int:
     if not records:
         return 0
     qdrant = client or qdrant_manager.get_client()
-    ensure_sparse_collection(
-        collection_name,
-        payload_indexes=payload_indexes,
-        client=qdrant,
-    )
+    if ensure:
+        ensure_sparse_collection(
+            collection_name,
+            payload_indexes=payload_indexes,
+            client=qdrant,
+        )
     vectors = get_sparse_encoder().encode_many([record.text for record in records])
     qdrant.upsert(
         collection_name=collection_name,

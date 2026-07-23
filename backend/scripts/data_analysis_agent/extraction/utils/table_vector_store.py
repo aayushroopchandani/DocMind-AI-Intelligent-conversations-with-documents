@@ -10,6 +10,7 @@ import qdrant_manager
 from db.models.structured_table import StructuredTable
 from scripts.data_analysis_agent.retrieval.utils.collections import (
     STRUCTURED_TABLES_COLLECTION,
+    TABLE_PAYLOAD_INDEXES,
 )
 from scripts.data_analysis_agent.retrieval.utils.sparse_index import (
     SparseRecord,
@@ -22,16 +23,6 @@ from utils.embeddings import get_chunk_embedding
 
 
 TABLE_VECTOR_SIZE: Final = 1536
-TABLE_PAYLOAD_INDEXES: Final = (
-    "content_type",
-    "table_id",
-    "document_id",
-    "user_id",
-    "chat_id",
-    "node_id",
-)
-
-
 def table_discovery_payload(table: StructuredTable) -> dict[str, Any]:
     """Build Qdrant discovery metadata without including any table rows."""
     payload: dict[str, Any] = {
