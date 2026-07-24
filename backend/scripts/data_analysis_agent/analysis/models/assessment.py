@@ -7,13 +7,14 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .completion import EvidenceFact
 from .evidence import EvidencePackage
 from .profile import DatasetProfiles
 from .requirements import AnalysisRequirements
 from .retrieval import RetrievalResult
 
 
-EVIDENCE_ASSESSOR_VERSION = "1.5.0"
+EVIDENCE_ASSESSOR_VERSION = "1.6.0"
 AMBIGUITY_PROMPT_VERSION = "1.0.0"
 
 
@@ -38,6 +39,7 @@ class EvidenceKind(str, Enum):
     DATASET = "dataset"
     DATASET_COLUMN = "dataset_column"
     TEXT_CHUNK = "text_chunk"
+    FACT = "fact"
 
 
 class MatchMethod(str, Enum):
@@ -48,6 +50,7 @@ class MatchMethod(str, Enum):
     UNIT = "unit"
     LEXICAL = "lexical"
     TABLE_SUMMARY = "table_summary"
+    VALIDATED_EXTRACTION = "validated_extraction"
     LLM = "llm"
 
 
@@ -62,6 +65,7 @@ class EvidenceReference(BaseModel):
     table_id: str | None = None
     column_key: str | None = None
     chunk_id: str | None = None
+    fact_id: str | None = None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -76,6 +80,10 @@ class EvidenceReference(BaseModel):
             raise ValueError("column evidence needs a column key")
         if self.evidence_kind == EvidenceKind.TEXT_CHUNK and not self.chunk_id:
             raise ValueError("text evidence needs a chunk ID")
+        if self.evidence_kind == EvidenceKind.FACT and not (
+            self.fact_id and self.chunk_id
+        ):
+            raise ValueError("fact evidence needs fact and source chunk IDs")
         return self
 
 
@@ -97,6 +105,7 @@ class DocumentCoverage(BaseModel):
     status: CoverageStatus
     dataset_ids: tuple[str, ...] = ()
     text_chunk_ids: tuple[str, ...] = ()
+    fact_ids: tuple[str, ...] = ()
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -161,6 +170,7 @@ def assessment_cache_key(
     retrieval: RetrievalResult,
     ambiguity_model: str,
     metadata_signatures: tuple[tuple[str, str], ...] = (),
+    facts: tuple[EvidenceFact, ...] = (),
 ) -> str:
     requirement_payload = requirements.model_dump(
         mode="json",
@@ -183,6 +193,15 @@ def assessment_cache_key(
         ),
         "text_chunks": sorted(
             (item.document_id, item.chunk_id) for item in retrieval.text_evidence
+        ),
+        "facts": sorted(
+            (
+                item.fact_id,
+                item.requirement_id,
+                item.document_id,
+                item.chunk_hash,
+            )
+            for item in facts
         ),
         "unresolved_tables": sorted(
             (item.document_id, item.table_id, item.reason)

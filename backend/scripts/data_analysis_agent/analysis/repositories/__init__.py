@@ -10,6 +10,17 @@ from .assessment_metadata import (
     TableAssessmentMetadata,
 )
 from .datasets import DatasetRepository, DatasetRepositoryError, MongoDatasetRepository
+from .completion_cache import (
+    MongoTextExtractionCache,
+    TextExtractionCache,
+    TextExtractionCacheError,
+)
+from .derived_datasets import (
+    DerivedDatasetRepository,
+    DerivedDatasetRepositoryError,
+    DerivedDatasetWrite,
+    MongoDerivedDatasetRepository,
+)
 from .evidence import (
     EvidenceRepository,
     EvidenceRepositoryError,
@@ -30,18 +41,25 @@ __all__ = [
     "AssessmentMetadataRepositoryError",
     "DatasetRepository",
     "DatasetRepositoryError",
+    "DerivedDatasetRepository",
+    "DerivedDatasetRepositoryError",
+    "DerivedDatasetWrite",
     "EvidenceRepository",
     "EvidenceRepositoryError",
     "HydrationSourceBatch",
     "MongoAssessmentCache",
     "MongoAssessmentMetadataRepository",
+    "MongoDerivedDatasetRepository",
     "MongoDatasetRepository",
     "MongoEvidenceRepository",
     "MongoProfileCache",
     "MongoRequirementsCache",
+    "MongoTextExtractionCache",
     "ProfileCache",
     "ProfileCacheError",
     "RequirementsCache",
     "RequirementsCacheError",
     "TableAssessmentMetadata",
+    "TextExtractionCache",
+    "TextExtractionCacheError",
 ]

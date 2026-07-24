@@ -8,6 +8,7 @@ from ...models import (
     ColumnProfile,
     DatasetProfile,
     DatasetProfiles,
+    EvidenceFact,
     EvidencePackage,
     HydratedDatasetReference,
     ProfiledDataType,
@@ -138,6 +139,19 @@ def _text_reference(
         label=label[:240],
         confidence=confidence,
         match_method=MatchMethod.EXACT,
+    )
+
+
+def _fact_reference(fact: EvidenceFact) -> EvidenceReference:
+    period = f" ({fact.period})" if fact.period else ""
+    return EvidenceReference(
+        evidence_kind=EvidenceKind.FACT,
+        fact_id=fact.fact_id,
+        chunk_id=fact.chunk_id,
+        document_id=fact.document_id,
+        label=f"{fact.entity}: {fact.metric}{period} = {fact.raw_value}"[:240],
+        confidence=fact.confidence,
+        match_method=MatchMethod.VALIDATED_EXTRACTION,
     )
 
 
@@ -611,6 +625,79 @@ def _text_matches(
     return output[:_MAX_EVIDENCE_PER_REQUIREMENT]
 
 
+def _fact_matches(
+    requirement: RequirementItem,
+    facts: tuple[EvidenceFact, ...],
+    *,
+    allowed_document_ids: set[str],
+) -> list[EvidenceReference]:
+    terms = _requirement_terms(requirement)
+    output: list[EvidenceReference] = []
+    for fact in facts:
+        if allowed_document_ids and fact.document_id not in allowed_document_ids:
+            continue
+        if requirement.kind == RequirementKind.METRIC:
+            matched = (
+                fact.requirement_id == requirement.requirement_id
+                or any(
+                    safe_equivalent(term, fact.metric)
+                    or lexical_score(term, fact.metric) >= 0.82
+                    for term in terms
+                )
+            )
+        elif requirement.kind == RequirementKind.PERIOD:
+            requested = parse_period(requirement.name)
+            actual = parse_period(fact.period) if fact.period else None
+            matched = bool(
+                requested
+                and actual
+                and requested.label == actual.label
+            ) or bool(
+                fact.period
+                and any(contains_phrase(fact.period, term) for term in terms)
+            )
+        elif requirement.kind == RequirementKind.UNIT:
+            matched = bool(
+                fact.unit
+                and any(
+                    safe_equivalent(term, fact.unit)
+                    or lexical_score(term, fact.unit) >= 0.80
+                    for term in terms
+                )
+            )
+        elif requirement.kind == RequirementKind.ENTITY:
+            matched = any(
+                contains_phrase(fact.entity, term)
+                or lexical_score(term, fact.entity) >= 0.80
+                for term in terms
+            )
+        elif requirement.kind in {
+            RequirementKind.DIMENSION,
+            RequirementKind.FILTER,
+        }:
+            values = tuple(
+                value
+                for dimension in fact.dimensions
+                for value in (dimension.name, dimension.value)
+            )
+            matched = any(
+                contains_phrase(value, term)
+                or lexical_score(term, value) >= 0.82
+                for term in terms
+                for value in values
+            )
+        elif requirement.kind == RequirementKind.TOPIC:
+            matched = any(
+                contains_phrase(f"{fact.entity} {fact.metric}", term)
+                for term in terms
+            )
+        else:
+            matched = False
+        if matched:
+            output.append(_fact_reference(fact))
+    return output[:_MAX_EVIDENCE_PER_REQUIREMENT]
+
+
 def _deduplicate_evidence(
     values: Iterable[EvidenceReference],
 ) -> tuple[EvidenceReference, ...]:
@@ -621,6 +708,7 @@ def _deduplicate_evidence(
             value.dataset_id,
             value.column_key,
             value.chunk_id,
+            value.fact_id,
         )
         current = best.get(key)
         if current is None or value.confidence > current.confidence:
@@ -634,6 +722,7 @@ def _deduplicate_evidence(
                 item.dataset_id or "",
                 item.column_key or "",
                 item.chunk_id or "",
+                item.fact_id or "",
             ),
         )[:_MAX_EVIDENCE_PER_REQUIREMENT]
     )
@@ -677,7 +766,17 @@ def _coverage_from_matches(
             requirement_id=requirement.requirement_id,
             status=CoverageStatus.SUPPORTED,
             confidence=max(item.confidence for item in dataset_matches),
-            reason="Deterministic profile matching found suitable structured evidence.",
+            reason=(
+                "Validated source-grounded facts satisfy this requirement."
+                if any(
+                    item.evidence_kind == EvidenceKind.FACT
+                    for item in dataset_matches
+                )
+                else (
+                    "Deterministic profile matching found suitable "
+                    "structured evidence."
+                )
+            ),
             evidence=evidence,
             text_evidence_available=bool(text_matches),
         )
@@ -754,6 +853,7 @@ class DeterministicEvidenceMatcher:
         profiles: DatasetProfiles,
         retrieval: RetrievalResult,
         metadata: Mapping[str, TableAssessmentMetadata],
+        facts: tuple[EvidenceFact, ...] = (),
     ) -> MatchingResult:
         contexts = _profile_contexts(
             evidence=evidence,
@@ -828,6 +928,23 @@ class DeterministicEvidenceMatcher:
                 retrieval,
                 allowed_document_ids=required_documents,
             )
+            fact_matches = _fact_matches(
+                requirement,
+                facts,
+                allowed_document_ids=required_documents,
+            )
+            dataset_matches.extend(fact_matches)
+            if requirement.unit and any(
+                fact.unit
+                and (
+                    safe_equivalent(requirement.unit, fact.unit)
+                    or lexical_score(requirement.unit, fact.unit) >= 0.80
+                )
+                for fact in facts
+                if not required_documents
+                or fact.document_id in required_documents
+            ):
+                verified_unit_match = True
             item_coverage = _coverage_from_matches(
                 requirement=requirement,
                 dataset_matches=dataset_matches,

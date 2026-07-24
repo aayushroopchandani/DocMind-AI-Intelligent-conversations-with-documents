@@ -616,6 +616,14 @@ npm install
 | `DATA_ANALYSIS_DOCLING_DEVICE` | Worker inference device (default `cpu`) | No |
 | `DATA_ANALYSIS_DOCLING_PAGE_PADDING` | Context pages around flagged runs (default `1`) | No |
 | `DATA_ANALYSIS_DOCLING_MAX_PAGES_PER_JOB` | Maximum pages in one fallback range (default `12`) | No |
+| `DATA_ANALYSIS_TEXT_EVIDENCE_MODEL` | Phase 6 structured fact extractor (default `google/gemini-2.5-flash-lite`) | No |
+| `DATA_ANALYSIS_TEXT_EVIDENCE_MAX_TOKENS` / `TIMEOUT` / `ATTEMPTS` | Extractor response, timeout, and malformed-output retry bounds | No |
+| `DATA_ANALYSIS_TEXT_EVIDENCE_CONCURRENCY` | Parallel document extraction calls, capped at `6` (default `3`) | No |
+| `DATA_ANALYSIS_TEXT_EVIDENCE_CHUNKS_PER_DOCUMENT` | Retrieved chunks sent per document, capped at `8` (default `4`) | No |
+| `DATA_ANALYSIS_TEXT_EVIDENCE_MAX_CHARS_PER_DOCUMENT` | Extraction prompt text budget, capped at `40000` (default `16000`) | No |
+| `DATA_ANALYSIS_TEXT_EVIDENCE_SUCCESS_TTL_DAYS` | Positive extraction-cache TTL (default `30`) | No |
+| `DATA_ANALYSIS_TEXT_EVIDENCE_NEGATIVE_TTL_DAYS` | Absent/rejected extraction-cache TTL (default `1`) | No |
+| `DATA_ANALYSIS_REPAIR_ATTEMPTS` | Targeted hybrid-retrieval attempts, capped at `2` (default `2`) | No |
 | `LANGSMITH_TRACING` | Set to `true` to trace LangGraph and LLM runs | Recommended |
 | `LANGSMITH_API_KEY` | LangSmith API key used to upload traces | When tracing |
 | `LANGSMITH_PROJECT` | LangSmith project name, e.g. `docmind-data-analysis` | When tracing |
@@ -625,7 +633,9 @@ npm install
 Data-analysis traces use the run name `data_analysis_agent`. Their metadata includes
 retrieval counts and fallback status, hydration failures, profile cache hit ratio,
 requirements operation/cache/fallback diagnostics, readiness decision, coverage
-counts, match-method counts, ambiguity-LLM usage, and minimum supported confidence.
+counts, match-method counts, ambiguity-LLM usage, completion attempts, rescued
+datasets, validated text facts, derived datasets, cache hits, and remaining
+requirements.
 LangSmith captures node/LLM latency and token usage automatically.
 
 ### Frontend (`frontend/my-app/.env`)

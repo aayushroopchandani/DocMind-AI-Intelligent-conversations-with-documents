@@ -16,6 +16,7 @@ class IssueStage(str, Enum):
     PROFILING = "profiling"
     REQUIREMENTS = "requirements"
     ASSESSMENT = "assessment"
+    COMPLETION = "completion"
 
 
 class IssueCode(str, Enum):
@@ -40,6 +41,13 @@ class IssueCode(str, Enum):
     ASSESSMENT_CACHE_READ_FAILED = "assessment_cache_read_failed"
     ASSESSMENT_CACHE_WRITE_FAILED = "assessment_cache_write_failed"
     AMBIGUITY_RESOLUTION_FAILED = "ambiguity_resolution_failed"
+    CANDIDATE_RESCUE_FAILED = "candidate_rescue_failed"
+    TEXT_EXTRACTION_FAILED = "text_extraction_failed"
+    TEXT_EXTRACTION_CACHE_READ_FAILED = "text_extraction_cache_read_failed"
+    TEXT_EXTRACTION_CACHE_WRITE_FAILED = "text_extraction_cache_write_failed"
+    DERIVED_DATASET_WRITE_FAILED = "derived_dataset_write_failed"
+    TARGETED_RETRIEVAL_FAILED = "targeted_retrieval_failed"
+    EVIDENCE_COMPLETION_EXHAUSTED = "evidence_completion_exhausted"
 
 
 class AnalysisIssue(BaseModel):

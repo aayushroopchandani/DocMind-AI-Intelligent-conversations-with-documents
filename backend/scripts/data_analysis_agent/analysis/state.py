@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from langchain_core.runnables import RunnableConfig
 
 from .models import (
+    AugmentedEvidence,
     AnalysisIssue,
     AnalysisRequest,
     AnalysisRequirements,
@@ -18,7 +19,7 @@ from .models import (
 )
 
 
-ANALYSIS_STATE_VERSION: Literal[3] = 3
+ANALYSIS_STATE_VERSION: Literal[4] = 4
 
 
 class AnalysisPhase(str, Enum):
@@ -27,13 +28,14 @@ class AnalysisPhase(str, Enum):
     HYDRATED = "hydrated"
     PROFILED = "profiled"
     ASSESSED = "assessed"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
 class DataAnalysisState(TypedDict):
     """Minimal checkpoint state for the capabilities implemented today."""
 
-    state_version: Required[Literal[3]]
+    state_version: Required[Literal[4]]
     run_id: Required[str]
     request: Required[AnalysisRequest]
     phase: Required[AnalysisPhase]
@@ -42,6 +44,7 @@ class DataAnalysisState(TypedDict):
     dataset_profiles: NotRequired[DatasetProfiles]
     analysis_requirements: NotRequired[AnalysisRequirements]
     evidence_assessment: NotRequired[EvidenceAssessment]
+    augmented_evidence: NotRequired[AugmentedEvidence]
     warnings: Annotated[list[AnalysisIssue], operator.add]
     errors: Annotated[list[AnalysisIssue], operator.add]
 

@@ -19,6 +19,9 @@ from scripts.data_analysis_agent.retrieval.query_generation import (
 from scripts.data_analysis_agent.retrieval.state import create_retrieval_state
 from scripts.data_analysis_agent.retrieval.table_retrieval import _table_filter
 from scripts.data_analysis_agent.retrieval.text_retrieval import _text_filter
+from scripts.data_analysis_agent.retrieval.utils.embedding_cache import (
+    SingleFlightEmbeddingCache,
+)
 from scripts.data_analysis_agent.retrieval.utils.hybrid_search import (
     HybridQdrantSearcher,
     reciprocal_rank_fusion,
@@ -63,6 +66,18 @@ class _FakeQueryGenerator:
 class _FakeDenseEmbeddings:
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[1.0, 0.0, 0.0] for _ in texts]
+
+
+class _CountingDenseEmbeddings:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.batches: list[tuple[str, ...]] = []
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        self.batches.append(tuple(texts))
+        await asyncio.sleep(0)
+        return [[float(len(text))] for text in texts]
 
 
 class _ParallelProbe:
@@ -166,6 +181,32 @@ class HybridRetrievalUnitTests(unittest.TestCase):
 
 
 class HybridRetrievalGraphTests(unittest.IsolatedAsyncioTestCase):
+    async def test_parallel_branches_reuse_overlapping_query_embeddings(
+        self,
+    ) -> None:
+        delegate = _CountingDenseEmbeddings()
+        cache = SingleFlightEmbeddingCache(delegate)
+
+        first, second = await asyncio.gather(
+            cache.aembed_documents(["revenue 2023", "table revenue"]),
+            cache.aembed_documents(["revenue 2023", "narrative revenue"]),
+        )
+        third = await cache.aembed_documents(
+            ["revenue 2023", "narrative revenue"]
+        )
+
+        self.assertEqual(delegate.calls, 2)
+        self.assertEqual(
+            sum(
+                value == "revenue 2023"
+                for batch in delegate.batches
+                for value in batch
+            ),
+            1,
+        )
+        self.assertEqual(first[0], second[0])
+        self.assertEqual(second, third)
+
     async def test_hybrid_search_queries_dense_and_sparse_indexes(self) -> None:
         client = AsyncQdrantClient(":memory:")
         await client.create_collection(

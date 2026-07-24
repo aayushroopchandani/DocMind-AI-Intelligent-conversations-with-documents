@@ -9,6 +9,7 @@ from ...models import (
     AnalysisIssue,
     AnalysisRequest,
     DatasetProfiles,
+    EvidenceFact,
     EvidencePackage,
     IssueCode,
     IssueSeverity,
@@ -200,6 +201,7 @@ def _document_coverage(
     evidence: EvidencePackage,
     profiles: DatasetProfiles,
     retrieval: RetrievalResult,
+    facts: tuple[EvidenceFact, ...] = (),
 ) -> tuple[DocumentCoverage, ...]:
     profile_by_dataset = {
         profile.dataset_id: profile for profile in profiles.profiles
@@ -221,6 +223,11 @@ def _document_coverage(
     for chunk in retrieval.text_evidence:
         names_by_document.setdefault(chunk.document_id, chunk.document_name)
         chunks_by_document.setdefault(chunk.document_id, []).append(chunk.chunk_id)
+    facts_by_document: dict[str, list[str]] = {
+        document_id: [] for document_id in requirements.selected_document_ids
+    }
+    for fact in facts:
+        facts_by_document.setdefault(fact.document_id, []).append(fact.fact_id)
 
     explicit_entities = {
         entity
@@ -255,10 +262,11 @@ def _document_coverage(
     for document_id in requirements.selected_document_ids:
         dataset_ids = tuple(dict.fromkeys(datasets_by_document.get(document_id, [])))
         chunk_ids = tuple(dict.fromkeys(chunks_by_document.get(document_id, [])))
+        fact_ids = tuple(dict.fromkeys(facts_by_document.get(document_id, [])))
         if requirements.table_evidence_required:
             status = (
                 CoverageStatus.SUPPORTED
-                if dataset_ids
+                if dataset_ids or fact_ids
                 else CoverageStatus.PARTIAL
                 if chunk_ids and requirements.text_evidence_acceptable
                 else CoverageStatus.MISSING
@@ -266,7 +274,7 @@ def _document_coverage(
         else:
             status = (
                 CoverageStatus.SUPPORTED
-                if dataset_ids or chunk_ids
+                if dataset_ids or chunk_ids or fact_ids
                 else CoverageStatus.MISSING
             )
         output.append(
@@ -280,6 +288,7 @@ def _document_coverage(
                 status=status,
                 dataset_ids=dataset_ids,
                 text_chunk_ids=chunk_ids,
+                fact_ids=fact_ids,
             )
         )
     return tuple(output)
@@ -393,12 +402,14 @@ def _build_artifact(
     ambiguity_candidate_count: int,
     ambiguity_resolved_count: int,
     ambiguity_llm_used: bool,
+    facts: tuple[EvidenceFact, ...] = (),
 ) -> EvidenceAssessment:
     document_coverage = _document_coverage(
         requirements=requirements,
         evidence=evidence,
         profiles=profiles,
         retrieval=retrieval,
+        facts=facts,
     )
     decision = _readiness(
         requirements=requirements,
@@ -458,6 +469,7 @@ class EvidenceAssessmentRunner:
         retrieval: RetrievalResult,
         evidence: EvidencePackage,
         profiles: DatasetProfiles,
+        facts: tuple[EvidenceFact, ...] = (),
     ) -> AssessmentRunOutcome:
         effective_requirements = _effective_document_scope(
             requirements,
@@ -495,6 +507,7 @@ class EvidenceAssessmentRunner:
             retrieval=retrieval,
             ambiguity_model=self._resolver.model,
             metadata_signatures=_metadata_signatures(metadata),
+            facts=facts,
         )
         try:
             cached = await self._cache.load(
@@ -530,6 +543,7 @@ class EvidenceAssessmentRunner:
             profiles=profiles,
             retrieval=retrieval,
             metadata=metadata,
+            facts=facts,
         )
         resolutions = {}
         resolution_failed = False
@@ -568,6 +582,7 @@ class EvidenceAssessmentRunner:
             ambiguity_candidate_count=len(matched.ambiguities),
             ambiguity_resolved_count=resolved_count,
             ambiguity_llm_used=bool(matched.ambiguities),
+            facts=facts,
         )
         if not metadata_load_failed and not resolution_failed:
             try:

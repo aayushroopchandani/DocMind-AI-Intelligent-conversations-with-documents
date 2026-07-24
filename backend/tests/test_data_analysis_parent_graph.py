@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from scripts.data_analysis_agent.analysis.graph import build_data_analysis_graph
 from scripts.data_analysis_agent.analysis.models import (
     AnalysisOperation,
+    AugmentedEvidence,
+    CompletionStatus,
     ExpectedDataType,
     ExtractedRequirement,
     IssueCode,
@@ -23,7 +25,10 @@ from scripts.data_analysis_agent.analysis.repositories import (
     HydrationSourceBatch,
     MongoEvidenceRepository,
 )
-from scripts.data_analysis_agent.analysis.services import RequirementsExtractor
+from scripts.data_analysis_agent.analysis.services import (
+    CompletionRunOutcome,
+    RequirementsExtractor,
+)
 from scripts.data_analysis_agent.analysis.state import (
     AnalysisPhase,
     analysis_thread_config,
@@ -265,6 +270,20 @@ class _FakeAssessmentMetadataRepository:
         return {}
 
 
+class _NoopCompletionRunner:
+    async def run(self, **kwargs: Any) -> CompletionRunOutcome:
+        assessment = kwargs["assessment"]
+        return CompletionRunOutcome(
+            artifact=AugmentedEvidence(
+                run_id=kwargs["run_id"],
+                base_evidence_signature="0" * 64,
+                status=CompletionStatus.PARTIAL,
+                final_decision=assessment.decision.value,
+            ),
+            assessment=assessment,
+        )
+
+
 def _build_graph(
     *,
     retrieval_graph: Any,
@@ -287,6 +306,7 @@ def _build_graph(
         ),
         assessment_metadata_repository=_FakeAssessmentMetadataRepository(),
         assessment_cache=_FakeArtifactCache(),
+        completion_runner=_NoopCompletionRunner(),
     )
 
 
@@ -516,6 +536,8 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
 
         result = await graph.ainvoke(state)
 
+        self.assertEqual(result["phase"], AnalysisPhase.COMPLETED)
+        self.assertIn("augmented_evidence", result)
         self.assertEqual(result["evidence_package"].status, "empty")
         self.assertEqual(result["evidence_package"].datasets, ())
         self.assertEqual(

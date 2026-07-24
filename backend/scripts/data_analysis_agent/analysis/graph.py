@@ -11,6 +11,7 @@ from scripts.data_analysis_agent.retrieval.hybrid_retrieval_subgraph import (
 from .nodes import (
     AsyncRetrievalGraph,
     build_assessment_node,
+    build_completion_node,
     build_hydration_node,
     build_profiling_node,
     build_requirements_node,
@@ -24,9 +25,11 @@ from .repositories import (
     MongoAssessmentCache,
     MongoAssessmentMetadataRepository,
     MongoDatasetRepository,
+    MongoDerivedDatasetRepository,
     MongoEvidenceRepository,
     MongoProfileCache,
     MongoRequirementsCache,
+    MongoTextExtractionCache,
     ProfileCache,
     RequirementsCache,
 )
@@ -37,8 +40,12 @@ from .services import (
     DatasetProfilingRunner,
     DeterministicEvidenceMatcher,
     EvidenceAssessmentRunner,
+    EvidenceCompletionRunner,
+    QdrantTargetedRepairRetriever,
     RequirementsExtractor,
+    TextEvidenceCompletionService,
 )
+from .models import EvidenceAssessment, ReadinessDecision
 from .state import AnalysisPhase, DataAnalysisState
 
 
@@ -47,6 +54,7 @@ HYDRATE_EVIDENCE_NODE = "hydrate_evidence"
 PROFILE_DATASETS_NODE = "profile_datasets"
 EXTRACT_REQUIREMENTS_NODE = "extract_requirements"
 ASSESS_EVIDENCE_NODE = "assess_evidence"
+COMPLETE_EVIDENCE_NODE = "complete_evidence"
 ASSESSMENT_GATE_NODE = "assessment_gate"
 
 
@@ -66,6 +74,24 @@ def _assessment_gate(_state: DataAnalysisState) -> dict[str, Any]:
     return {}
 
 
+def _after_assessment(
+    state: DataAnalysisState,
+) -> Literal["complete", "end"]:
+    if state["phase"] == AnalysisPhase.FAILED:
+        return "end"
+    assessment = EvidenceAssessment.model_validate(state["evidence_assessment"])
+    return (
+        "end"
+        if assessment.decision
+        in {
+            ReadinessDecision.READY,
+            ReadinessDecision.NEEDS_CLARIFICATION,
+            ReadinessDecision.UNANSWERABLE,
+        }
+        else "complete"
+    )
+
+
 def build_data_analysis_graph(
     *,
     retrieval_graph: AsyncRetrievalGraph | None = None,
@@ -80,8 +106,9 @@ def build_data_analysis_graph(
     assessment_cache: AssessmentCache | None = None,
     evidence_matcher: DeterministicEvidenceMatcher | None = None,
     ambiguity_resolver: AmbiguityResolver | None = None,
+    completion_runner: EvidenceCompletionRunner | None = None,
 ) -> Any:
-    """Build retrieval/profiling plus parallel requirements and assessment."""
+    """Build retrieval, profiling, assessment, and bounded evidence completion."""
 
     selected_retrieval_graph = retrieval_graph or hybrid_retrieval_subgraph
     selected_repository = evidence_repository or MongoEvidenceRepository()
@@ -103,6 +130,16 @@ def build_data_analysis_graph(
         cache=assessment_cache or MongoAssessmentCache(),
         matcher=evidence_matcher,
         resolver=ambiguity_resolver,
+    )
+    selected_completion_runner = completion_runner or EvidenceCompletionRunner(
+        evidence_repository=selected_repository,
+        profiling_runner=profiling_runner,
+        assessment_runner=assessment_runner,
+        text_service=TextEvidenceCompletionService(
+            cache=MongoTextExtractionCache(),
+            derived_repository=MongoDerivedDatasetRepository(),
+        ),
+        repair_retriever=QdrantTargetedRepairRetriever(),
     )
 
     builder = StateGraph(DataAnalysisState)
@@ -126,6 +163,10 @@ def build_data_analysis_graph(
         ASSESS_EVIDENCE_NODE,
         build_assessment_node(assessment_runner),
     )
+    builder.add_node(
+        COMPLETE_EVIDENCE_NODE,
+        build_completion_node(selected_completion_runner),
+    )
     builder.add_node(ASSESSMENT_GATE_NODE, _assessment_gate)
     builder.add_edge(START, RETRIEVE_EVIDENCE_NODE)
     builder.add_edge(START, EXTRACT_REQUIREMENTS_NODE)
@@ -148,7 +189,12 @@ def build_data_analysis_graph(
         _after_profiling,
         {"assess": ASSESS_EVIDENCE_NODE, "end": END},
     )
-    builder.add_edge(ASSESS_EVIDENCE_NODE, END)
+    builder.add_conditional_edges(
+        ASSESS_EVIDENCE_NODE,
+        _after_assessment,
+        {"complete": COMPLETE_EVIDENCE_NODE, "end": END},
+    )
+    builder.add_edge(COMPLETE_EVIDENCE_NODE, END)
     return builder.compile()
 
 

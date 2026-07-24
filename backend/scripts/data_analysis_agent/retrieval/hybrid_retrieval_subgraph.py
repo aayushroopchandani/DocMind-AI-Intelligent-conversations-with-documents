@@ -9,7 +9,14 @@ from .query_generation import AsyncQueryGenerator, build_query_generation_node
 from .query_generation_subgraph import QUERY_GENERATION_NODE
 from .state import DataAnalysisRetrievalState
 from .table_retrieval import AsyncTableRetriever, build_table_retrieval_node
-from .text_retrieval import AsyncTextRetriever, build_text_retrieval_node
+from .table_retrieval import QdrantTableRetriever
+from .text_retrieval import (
+    AsyncTextRetriever,
+    QdrantTextRetriever,
+    build_text_retrieval_node,
+)
+from .utils.embedding_cache import SingleFlightEmbeddingCache
+from .utils.hybrid_search import HybridQdrantSearcher
 
 
 TEXT_RETRIEVAL_NODE = "retrieve_text"
@@ -26,15 +33,27 @@ def build_hybrid_retrieval_subgraph(
 ) -> Any:
     """Retrieve both evidence types, then select the final context."""
 
+    selected_text_retriever = text_retriever
+    selected_table_retriever = table_retriever
+    if text_retriever is None and table_retriever is None:
+        searcher = HybridQdrantSearcher(
+            embeddings=SingleFlightEmbeddingCache()
+        )
+        selected_text_retriever = QdrantTextRetriever(searcher)
+        selected_table_retriever = QdrantTableRetriever(searcher)
+
     builder = StateGraph(DataAnalysisRetrievalState)
     builder.add_node(
         QUERY_GENERATION_NODE,
         build_query_generation_node(query_generator),
     )
-    builder.add_node(TEXT_RETRIEVAL_NODE, build_text_retrieval_node(text_retriever))
+    builder.add_node(
+        TEXT_RETRIEVAL_NODE,
+        build_text_retrieval_node(selected_text_retriever),
+    )
     builder.add_node(
         TABLE_RETRIEVAL_NODE,
-        build_table_retrieval_node(table_retriever),
+        build_table_retrieval_node(selected_table_retriever),
     )
     builder.add_node(FUSION_NODE, build_fusion_node(result_selector))
     builder.add_edge(START, QUERY_GENERATION_NODE)
