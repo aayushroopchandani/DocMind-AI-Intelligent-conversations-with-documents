@@ -8,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 
 from scripts.data_analysis_agent.retrieval.state import create_retrieval_state
 
+from ..observability import record_analysis_trace
 from ..models import (
     AnalysisIssue,
     AnalysisRequest,
@@ -50,6 +51,13 @@ def build_retrieval_node(retrieval_graph: AsyncRetrievalGraph) -> Any:
             retrieval_result = RetrievalResult.from_retrieval_state(child_result)
         except Exception:
             logger.exception("Data-analysis retrieval failed for run %s", state["run_id"])
+            record_analysis_trace(
+                metrics={
+                    "retrieval_succeeded": False,
+                    "analysis_failed_stage": IssueStage.RETRIEVAL,
+                },
+                tags=("retrieval:error",),
+            )
             return {
                 "phase": AnalysisPhase.FAILED,
                 "errors": [
@@ -63,6 +71,33 @@ def build_retrieval_node(retrieval_graph: AsyncRetrievalGraph) -> Any:
                 ],
             }
 
+        record_analysis_trace(
+            metrics={
+                "retrieval_succeeded": True,
+                "retrieval_scope": retrieval_result.retrieval_scope,
+                "retrieval_table_intent": retrieval_result.table_intent,
+                "retrieved_text_chunk_count": len(
+                    retrieval_result.text_evidence
+                ),
+                "retrieved_table_reference_count": len(
+                    retrieval_result.table_references
+                ),
+                "query_generation_attempts": (
+                    retrieval_result.diagnostics.query_generation_attempts
+                ),
+                "query_generation_fallback": (
+                    retrieval_result.diagnostics.query_generation_fallback
+                ),
+            },
+            tags=(
+                f"retrieval-scope:{retrieval_result.retrieval_scope}",
+                (
+                    "query-generation:fallback"
+                    if retrieval_result.diagnostics.query_generation_fallback
+                    else "query-generation:llm"
+                ),
+            ),
+        )
         return {
             "phase": AnalysisPhase.RETRIEVED,
             "retrieval_result": retrieval_result,

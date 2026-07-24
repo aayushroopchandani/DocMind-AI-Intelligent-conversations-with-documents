@@ -7,6 +7,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import Any, Protocol
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, ValidationError, field_validator
@@ -54,6 +55,26 @@ metrics, dimensions, periods, columns, schemas, and units.
 Preserve the user's entities, metrics, periods, comparisons, and constraints. Make every
 query standalone and meaningfully different, not a minor synonym rewrite. Do not answer
 the request, invent facts, or mention vector databases, retrieval, PDFs, or these rules."""
+
+QUERY_GENERATION_JSON_INSTRUCTIONS = """Return one JSON object with this exact shape:
+{
+  "retrieval_scope": "normal|broad",
+  "shared_queries": ["query", "query"],
+  "text_queries": ["query", "query"],
+  "table_queries": ["query", "query"],
+  "table_intent": "required|supporting|none",
+  "match_concepts": [{
+    "canonical": "string",
+    "variants": [],
+    "kind": "metric|entity|dimension|topic"
+  }],
+  "metrics": [],
+  "years": [],
+  "entities": [],
+  "units": [],
+  "column_terms": []
+}
+Every query list must contain 2 or 3 distinct strings. Return JSON only."""
 
 
 class RetrievalScope(str, Enum):
@@ -155,6 +176,104 @@ class AsyncQueryGenerator(Protocol):
     async def ainvoke(self, input: Any, **kwargs: Any) -> Any: ...
 
 
+_EXPLICIT_PERIOD_RE = re.compile(r"\b(?:FY\s*)?(?:19|20)\d{2}\b", re.IGNORECASE)
+_TABLE_REQUIRED_RE = re.compile(
+    r"\b(?:compare|trend|correlat(?:e|ion)|calculate|compute|rank|"
+    r"year[- ]over[- ]year|yoy)\b",
+    re.IGNORECASE,
+)
+_METRIC_SIGNAL_RE = re.compile(
+    r"\b(?:"
+    r"program\s+services"
+    r"|general\s+and\s+administration"
+    r"|fundraising"
+    r"|research\s+and\s+development(?:\s+(?:expense|expenditure)s?)?"
+    r"|r\s*&\s*d(?:\s+(?:expense|expenditure)s?)?"
+    r"|net\s+cash\s+(?:provided\s+by|used\s+in)\s+operating\s+activities"
+    r"|(?:total|net|gross|operating|current|noncurrent|non-current)?\s*"
+    r"(?:revenues?|sales|expenses?|costs?|assets?|liabilit(?:y|ies)|"
+    r"income|earnings|profits?|loss(?:es)?|margin|cash\s+flows?|"
+    r"equity|debt|headcount|employees?|rate|ratio|returns?|"
+    r"contributions?|grants?|support)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _unique_signals(values: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        signal = " ".join(value.split()).strip(" .,:;")
+        canonical = signal.casefold()
+        canonical = re.sub(
+            r"\b(revenue|expense|asset|cost|profit|return|grant|"
+            r"contribution|employee)s\b",
+            r"\1",
+            canonical,
+        )
+        canonical = re.sub(r"\bliabilities\b", "liability", canonical)
+        if signal and canonical not in seen:
+            seen.add(canonical)
+            output.append(signal)
+    return output
+
+
+def _explicit_metric_signals(query: str) -> list[str]:
+    return _unique_signals(
+        [match.group(0) for match in _METRIC_SIGNAL_RE.finditer(query)]
+    )
+
+
+def _enrich_explicit_signals(
+    parsed: GeneratedRetrievalQueries,
+    query: str,
+) -> GeneratedRetrievalQueries:
+    """Restore explicit retrieval signals that a valid LLM response omitted."""
+
+    metrics = _unique_signals([*parsed.metrics, *_explicit_metric_signals(query)])
+    years = _unique_signals(
+        [
+            *parsed.years,
+            *(match.group(0) for match in _EXPLICIT_PERIOD_RE.finditer(query)),
+        ]
+    )
+    concepts = list(parsed.match_concepts)
+    covered = {
+        re.sub(
+            r"\b(revenue|expense|asset|cost|profit|return|grant|"
+            r"contribution|employee)s\b",
+            r"\1",
+            value.casefold(),
+        )
+        for concept in concepts
+        for value in (concept.canonical, *concept.variants)
+    }
+    for metric in metrics:
+        canonical_metric = re.sub(
+            r"\b(revenue|expense|asset|cost|profit|return|grant|"
+            r"contribution|employee)s\b",
+            r"\1",
+            metric.casefold(),
+        )
+        if canonical_metric not in covered:
+            concepts.append(
+                MatchConcept(canonical=metric, kind=ConceptKind.METRIC)
+            )
+            covered.add(canonical_metric)
+    table_intent = parsed.table_intent
+    if table_intent != TableIntent.REQUIRED and _TABLE_REQUIRED_RE.search(query):
+        table_intent = TableIntent.REQUIRED
+    return parsed.model_copy(
+        update={
+            "metrics": metrics[:10],
+            "years": years[:10],
+            "match_concepts": concepts[:12],
+            "table_intent": table_intent,
+        }
+    )
+
+
 @lru_cache(maxsize=1)
 def get_query_generation_llm() -> AsyncQueryGenerator:
     """Return the small structured-output model used by query generation."""
@@ -171,7 +290,12 @@ def get_query_generation_llm() -> AsyncQueryGenerator:
         max_tokens=int(os.getenv("DATA_ANALYSIS_QUERY_GENERATION_MAX_TOKENS", "1600")),
         timeout=float(os.getenv("DATA_ANALYSIS_QUERY_GENERATION_TIMEOUT", "30")),
     )
-    return llm.with_structured_output(GeneratedRetrievalQueries)
+    # JSON mode avoids provider-side schema grammar failures while Pydantic still
+    # performs strict local validation and the node retains its bounded retry.
+    return llm.with_structured_output(
+        GeneratedRetrievalQueries,
+        method="json_mode",
+    )
 
 
 def build_query_generation_node(
@@ -235,7 +359,13 @@ def build_query_generation_node(
 
         generator = query_generator or get_query_generation_llm()
         messages = [
-            SystemMessage(content=QUERY_GENERATION_SYSTEM_PROMPT),
+            SystemMessage(
+                content=(
+                    QUERY_GENERATION_SYSTEM_PROMPT
+                    + "\n\n"
+                    + QUERY_GENERATION_JSON_INSTRUCTIONS
+                )
+            ),
             HumanMessage(
                 content="User request:\n" + json.dumps(query, ensure_ascii=False)
             ),
@@ -260,7 +390,12 @@ def build_query_generation_node(
                     else GeneratedRetrievalQueries.model_validate(response)
                 )
                 break
-            except ValidationError:
+            except (
+                OutputParserException,
+                ValidationError,
+                ValueError,
+                TypeError,
+            ):
                 if attempt + 1 == attempts:
                     parsed = fallback_output(query, state)
                     used_fallback = True
@@ -277,8 +412,10 @@ def build_query_generation_node(
 
         if parsed is None:  # pragma: no cover - guarded by the attempt loop
             raise RuntimeError("query generation returned no structured output")
+        scope = resolved_scope(parsed, state, query)
+        parsed = _enrich_explicit_signals(parsed, query)
         output = parsed.model_dump(mode="json")
-        output["retrieval_scope"] = resolved_scope(parsed, state, query).value
+        output["retrieval_scope"] = scope.value
         output["query_generation_attempts"] = attempts_used
         output["query_generation_fallback"] = used_fallback
         return output

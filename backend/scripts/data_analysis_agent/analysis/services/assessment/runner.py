@@ -30,6 +30,7 @@ from ...models.assessment import (
     assessment_cache_key,
 )
 from ...models.requirements import (
+    AnalysisOperation,
     AnalysisRequirements,
     RequirementKind,
 )
@@ -54,6 +55,24 @@ logger = logging.getLogger(__name__)
 class AssessmentRunOutcome:
     artifact: EvidenceAssessment
     warnings: tuple[AnalysisIssue, ...] = ()
+
+
+def _effective_document_scope(
+    requirements: AnalysisRequirements,
+    retrieval: RetrievalResult,
+) -> AnalysisRequirements:
+    """Require all named documents for explicit cross-entity comparisons."""
+
+    cross_entity_comparison = (
+        requirements.operation == AnalysisOperation.COMPARISON
+        and len(requirements.selected_document_ids) > 1
+        and len(retrieval.signals.entities) >= 2
+    )
+    if requirements.requires_all_selected_documents or not cross_entity_comparison:
+        return requirements
+    return requirements.model_copy(
+        update={"requires_all_selected_documents": True}
+    )
 
 
 def _metadata_signatures(
@@ -440,6 +459,10 @@ class EvidenceAssessmentRunner:
         evidence: EvidencePackage,
         profiles: DatasetProfiles,
     ) -> AssessmentRunOutcome:
+        effective_requirements = _effective_document_scope(
+            requirements,
+            retrieval,
+        )
         warnings: list[AnalysisIssue] = []
         metadata_load_failed = False
         try:
@@ -466,7 +489,7 @@ class EvidenceAssessmentRunner:
             )
 
         cache_key = assessment_cache_key(
-            requirements=requirements,
+            requirements=effective_requirements,
             evidence=evidence,
             profiles=profiles,
             retrieval=retrieval,
@@ -502,7 +525,7 @@ class EvidenceAssessmentRunner:
             )
 
         matched = self._matcher.match(
-            requirements=requirements,
+            requirements=effective_requirements,
             evidence=evidence,
             profiles=profiles,
             retrieval=retrieval,
@@ -529,13 +552,13 @@ class EvidenceAssessmentRunner:
                     )
                 )
         resolved_coverage, resolved_count = _apply_ambiguity_resolutions(
-            requirements=requirements,
+            requirements=effective_requirements,
             coverage=matched.coverage,
             candidates=matched.ambiguities,
             resolutions=resolutions,
         )
         artifact = _build_artifact(
-            requirements=requirements,
+            requirements=effective_requirements,
             evidence=evidence,
             profiles=profiles,
             retrieval=retrieval,

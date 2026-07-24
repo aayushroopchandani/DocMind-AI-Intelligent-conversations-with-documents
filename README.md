@@ -616,8 +616,17 @@ npm install
 | `DATA_ANALYSIS_DOCLING_DEVICE` | Worker inference device (default `cpu`) | No |
 | `DATA_ANALYSIS_DOCLING_PAGE_PADDING` | Context pages around flagged runs (default `1`) | No |
 | `DATA_ANALYSIS_DOCLING_MAX_PAGES_PER_JOB` | Maximum pages in one fallback range (default `12`) | No |
+| `LANGSMITH_TRACING` | Set to `true` to trace LangGraph and LLM runs | Recommended |
+| `LANGSMITH_API_KEY` | LangSmith API key used to upload traces | When tracing |
+| `LANGSMITH_PROJECT` | LangSmith project name, e.g. `docmind-data-analysis` | When tracing |
 
 \* Provide either `QDRANT_PATH` (default embedded) **or** remote URL/host settings.
+
+Data-analysis traces use the run name `data_analysis_agent`. Their metadata includes
+retrieval counts and fallback status, hydration failures, profile cache hit ratio,
+requirements operation/cache/fallback diagnostics, readiness decision, coverage
+counts, match-method counts, ambiguity-LLM usage, and minimum supported confidence.
+LangSmith captures node/LLM latency and token usage automatically.
 
 ### Frontend (`frontend/my-app/.env`)
 

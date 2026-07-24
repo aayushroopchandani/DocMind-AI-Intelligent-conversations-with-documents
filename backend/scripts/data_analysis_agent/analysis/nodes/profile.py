@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..observability import record_analysis_trace
 from ..models import AnalysisRequest, EvidencePackage
 from ..services import DatasetProfilingRunner
 from ..state import AnalysisPhase, DataAnalysisState
@@ -17,6 +18,25 @@ def build_profiling_node(runner: DatasetProfilingRunner) -> Any:
             user_id=request.user_id,
             document_ids=request.document_ids,
             evidence=evidence,
+        )
+        record_analysis_trace(
+            metrics={
+                "profiling_status": outcome.artifact.status,
+                "profiling_requested_dataset_count": (
+                    outcome.artifact.requested_count
+                ),
+                "profiled_dataset_count": outcome.artifact.profiled_count,
+                "profile_failure_count": len(outcome.artifact.failures),
+                "profile_cache_hit_count": outcome.artifact.cache_hit_count,
+                "profile_generated_count": outcome.artifact.generated_count,
+                "profile_cache_hit_ratio": (
+                    outcome.artifact.cache_hit_count
+                    / outcome.artifact.profiled_count
+                    if outcome.artifact.profiled_count
+                    else 0.0
+                ),
+            },
+            tags=(f"profiling:{outcome.artifact.status}",),
         )
         return {
             "phase": (

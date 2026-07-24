@@ -46,6 +46,12 @@ def normalized_phrase(value: object) -> str:
         "selling general and administrative",
         normalized,
     )
+    normalized = re.sub(
+        r"\b(?:expense|expenditure)s?\b",
+        "expense",
+        normalized,
+    )
+    normalized = re.sub(r"\brevenues\b", "revenue", normalized)
     return normalized
 
 

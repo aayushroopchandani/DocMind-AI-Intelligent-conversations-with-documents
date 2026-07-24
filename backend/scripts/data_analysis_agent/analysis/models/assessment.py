@@ -13,7 +13,7 @@ from .requirements import AnalysisRequirements
 from .retrieval import RetrievalResult
 
 
-EVIDENCE_ASSESSOR_VERSION = "1.0.0"
+EVIDENCE_ASSESSOR_VERSION = "1.5.0"
 AMBIGUITY_PROMPT_VERSION = "1.0.0"
 
 

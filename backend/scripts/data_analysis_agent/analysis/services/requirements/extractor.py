@@ -5,6 +5,7 @@ import os
 from functools import lru_cache
 from typing import Any, Protocol
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
@@ -32,6 +33,31 @@ only when the request explicitly compares or covers all selected documents.
 
 Do not answer the request and do not produce an analysis plan."""
 
+REQUIREMENTS_JSON_INSTRUCTIONS = """Return one JSON object with this exact shape:
+{
+  "operation": "comparison|trend|aggregation|correlation|anomaly_detection|ranking|distribution|lookup|summarization|other",
+  "requirements": [{
+    "kind": "metric|entity|period|dimension|unit|filter|topic",
+    "name": "string",
+    "aliases": ["strictly equivalent alias"],
+    "required": true,
+    "expected_data_type": "number|string|boolean|date|any",
+    "unit": null,
+    "entity_names": [],
+    "filter_operator": null,
+    "filter_values": []
+  }],
+  "groupings": [],
+  "expected_granularity": null,
+  "requires_join": false,
+  "requires_all_selected_documents": false,
+  "table_evidence_required": false,
+  "text_evidence_acceptable": true
+}
+For a filter, filter_operator must be one of equals, not_equals, greater_than,
+greater_than_or_equal, less_than, less_than_or_equal, in, contains, or between.
+For non-filter requirements, use null filter_operator and an empty filter_values list."""
+
 
 class AsyncRequirementsGenerator(Protocol):
     async def ainvoke(self, input: Any, **kwargs: Any) -> Any: ...
@@ -55,7 +81,12 @@ def get_requirements_llm() -> AsyncRequirementsGenerator:
         max_tokens=int(os.getenv("DATA_ANALYSIS_REQUIREMENTS_MAX_TOKENS", "2200")),
         timeout=float(os.getenv("DATA_ANALYSIS_REQUIREMENTS_TIMEOUT", "30")),
     )
-    return llm.with_structured_output(RequirementsExtraction)
+    # JSON mode avoids provider-side grammar explosions from the richer internal
+    # Pydantic schema while retaining local Pydantic validation and retry behavior.
+    return llm.with_structured_output(
+        RequirementsExtraction,
+        method="json_mode",
+    )
 
 
 class RequirementsExtractor:
@@ -81,7 +112,13 @@ class RequirementsExtractor:
             "selected_document_count": len(request.document_ids),
         }
         messages: list[Any] = [
-            SystemMessage(content=REQUIREMENTS_SYSTEM_PROMPT),
+            SystemMessage(
+                content=(
+                    REQUIREMENTS_SYSTEM_PROMPT
+                    + "\n\n"
+                    + REQUIREMENTS_JSON_INSTRUCTIONS
+                )
+            ),
             HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
         ]
         attempts = min(
@@ -98,7 +135,12 @@ class RequirementsExtractor:
                     else RequirementsExtraction.model_validate(response)
                 )
                 return parsed, attempt
-            except (ValidationError, ValueError, TypeError) as exc:
+            except (
+                OutputParserException,
+                ValidationError,
+                ValueError,
+                TypeError,
+            ) as exc:
                 last_error = exc
                 if attempt < attempts:
                     messages.append(

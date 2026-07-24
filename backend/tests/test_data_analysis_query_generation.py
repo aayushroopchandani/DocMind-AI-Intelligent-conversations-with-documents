@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
+from langchain_core.exceptions import OutputParserException
 from pydantic import ValidationError
 
 from scripts.data_analysis_agent.retrieval.query_generation import (
@@ -103,6 +104,39 @@ class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
                 text_queries=["text one", "text two"],
                 table_queries=["table one", "table two"],
             )
+
+    async def test_explicit_quantitative_signals_are_restored_when_omitted(
+        self,
+    ) -> None:
+        class IncompleteSignalGenerator:
+            async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
+                return GeneratedRetrievalQueries(
+                    retrieval_scope=RetrievalScope.NORMAL,
+                    table_intent=TableIntent.SUPPORTING,
+                    shared_queries=["revenue trend", "annual revenue"],
+                    text_queries=["revenue discussion", "revenue changes"],
+                    table_queries=["revenue by year", "total revenue table"],
+                )
+
+        graph = build_query_generation_subgraph(
+            query_generator=IncompleteSignalGenerator()
+        )
+        result = await graph.ainvoke(
+            create_retrieval_state(
+                user_id="user-1",
+                chat_id="chat-signals",
+                query="Show the total revenues trend from 2022 through 2024.",
+                document_ids=["doc-1"],
+            )
+        )
+
+        self.assertEqual(result["table_intent"], "required")
+        self.assertIn("total revenues", result["metrics"])
+        self.assertEqual(result["years"], ["2022", "2024"])
+        self.assertEqual(
+            result["match_concepts"][0]["canonical"],
+            "total revenues",
+        )
 
     async def test_comprehensive_multi_facet_request_is_forced_broad(self) -> None:
         class BroadCorrectionGenerator:
@@ -223,6 +257,38 @@ class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(generator.calls, 2)
         self.assertEqual(result["table_intent"], "none")
+        self.assertFalse(result["query_generation_fallback"])
+
+    async def test_wrapped_output_parser_error_is_retried(self) -> None:
+        class RecoveringGenerator:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
+                self.calls += 1
+                if self.calls == 1:
+                    raise OutputParserException("truncated JSON")
+                return GeneratedRetrievalQueries(
+                    retrieval_scope=RetrievalScope.NORMAL,
+                    table_intent=TableIntent.REQUIRED,
+                    shared_queries=["revenue trend", "annual revenue"],
+                    text_queries=["revenue discussion", "revenue changes"],
+                    table_queries=["revenue by year", "total revenue table"],
+                    metrics=["revenue"],
+                )
+
+        generator = RecoveringGenerator()
+        graph = build_query_generation_subgraph(query_generator=generator)
+        result = await graph.ainvoke(
+            create_retrieval_state(
+                user_id="user-1",
+                chat_id="chat-parser-retry",
+                query="Show the revenue trend.",
+                document_ids=["doc-1"],
+            )
+        )
+
+        self.assertEqual(generator.calls, 2)
         self.assertFalse(result["query_generation_fallback"])
 
     async def test_repeated_malformed_output_uses_deterministic_fallback(self) -> None:

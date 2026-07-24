@@ -22,7 +22,17 @@ merely related, and ambiguous when the compact metadata is insufficient.
 You receive only table metadata, inferred types, units, and example values. Never infer
 that unseen rows contain a requested value. The payload contains a deduplicated tables
 map and pairs that reference it by table_key. Do not answer the user's analysis
-request."""
+request.
+
+Return one JSON object:
+{
+  "resolutions": [{
+    "pair_id": "copy the supplied pair_id",
+    "decision": "match|no_match|ambiguous",
+    "confidence": 0.0,
+    "reason": "short reason"
+  }]
+}"""
 
 
 class AmbiguityDecision(str, Enum):
@@ -68,7 +78,10 @@ def get_ambiguity_llm() -> AsyncAmbiguityGenerator:
         max_tokens=int(os.getenv("DATA_ANALYSIS_AMBIGUITY_MAX_TOKENS", "1800")),
         timeout=float(os.getenv("DATA_ANALYSIS_AMBIGUITY_TIMEOUT", "25")),
     )
-    return llm.with_structured_output(AmbiguityResolutionBatch)
+    return llm.with_structured_output(
+        AmbiguityResolutionBatch,
+        method="json_mode",
+    )
 
 
 class AmbiguityResolver:

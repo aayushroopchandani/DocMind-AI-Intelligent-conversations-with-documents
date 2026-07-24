@@ -87,9 +87,16 @@ def analysis_thread_config(state: DataAnalysisState) -> RunnableConfig:
     request = AnalysisRequest.model_validate(state["request"])
     run_id = _normalized_run_id(state["run_id"])
     return {
+        "run_name": "data_analysis_agent",
+        "tags": [
+            "data-analysis",
+            f"analysis-state-v{ANALYSIS_STATE_VERSION}",
+        ],
         "configurable": {"thread_id": run_id},
         "metadata": {
             "agent": "data_analysis",
+            "analysis_state_version": ANALYSIS_STATE_VERSION,
+            "selected_document_count": len(request.document_ids),
             "run_id": run_id,
             "chat_id": request.chat_id,
             "user_id": request.user_id,

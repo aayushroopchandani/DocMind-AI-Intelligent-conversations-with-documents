@@ -368,6 +368,69 @@ def _summary_matches(
     return []
 
 
+def _row_label_matches(
+    requirement: RequirementItem,
+    context: DatasetContext,
+) -> list[EvidenceReference]:
+    """Match metrics represented as rows in transposed and wide PDF tables."""
+
+    if requirement.kind not in {
+        RequirementKind.METRIC,
+        RequirementKind.DIMENSION,
+        RequirementKind.FILTER,
+        RequirementKind.TOPIC,
+    }:
+        return []
+    if (
+        requirement.kind == RequirementKind.METRIC
+        and not any(
+            column.inferred_type in _NUMERIC_TYPES
+            for column in context.profile.columns
+        )
+    ):
+        return []
+
+    output: list[EvidenceReference] = []
+    for column in context.profile.columns:
+        if column.inferred_type not in {
+            ProfiledDataType.STRING,
+            ProfiledDataType.MIXED,
+        }:
+            continue
+        if column.semantic_role not in {
+            SemanticRole.DIMENSION,
+            SemanticRole.CATEGORY,
+            SemanticRole.IDENTIFIER,
+            SemanticRole.FREE_TEXT,
+            SemanticRole.UNKNOWN,
+        }:
+            continue
+        for example in column.example_values:
+            score, method = _best_label_score(requirement, example)
+            required = normalized_phrase(requirement.name)
+            candidate = normalized_phrase(example)
+            total_only_difference = (
+                required.startswith("total ")
+                and required.removeprefix("total ") == candidate
+                and context.profile.row_count <= 5
+                and context.profile.periods_in_headers
+            )
+            if total_only_difference:
+                score = max(score, 0.90)
+                method = MatchMethod.LEXICAL
+            if score < 0.82:
+                continue
+            output.append(
+                _dataset_reference(
+                    context,
+                    confidence=score,
+                    method=method,
+                    label=f"{context.profile.title}: {example}",
+                )
+            )
+    return output
+
+
 def _period_matches(
     requirement: RequirementItem,
     context: DatasetContext,
@@ -383,6 +446,17 @@ def _period_matches(
                 _dataset_reference(
                     context,
                     confidence=1.0,
+                    method=MatchMethod.PROFILE_PERIOD,
+                    label=f"{context.profile.title}: {column.label}",
+                    column=column,
+                )
+            )
+            continue
+        if contains_phrase(column.label, requirement.name):
+            matches.append(
+                _dataset_reference(
+                    context,
+                    confidence=0.90,
                     method=MatchMethod.PROFILE_PERIOD,
                     label=f"{context.profile.title}: {column.label}",
                     column=column,
@@ -743,6 +817,9 @@ class DeterministicEvidenceMatcher:
                     unit_conflict = unit_conflict or column_unit_conflict
                     verified_unit_match = (
                         verified_unit_match or column_unit_verified
+                    )
+                    dataset_matches.extend(
+                        _row_label_matches(requirement, context)
                     )
                     dataset_matches.extend(_summary_matches(requirement, context))
 

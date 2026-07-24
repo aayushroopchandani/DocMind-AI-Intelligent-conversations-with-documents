@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..observability import record_analysis_trace
 from ..models import (
     AnalysisIssue,
     AnalysisRequest,
@@ -34,6 +35,14 @@ def build_hydration_node(
         references = deduplicate_table_references(retrieval.table_references)
 
         if not references:
+            record_analysis_trace(
+                metrics={
+                    "hydration_status": "empty",
+                    "hydration_requested_table_count": 0,
+                    "hydrated_table_count": 0,
+                },
+                tags=("hydration:empty",),
+            )
             return {
                 "phase": AnalysisPhase.HYDRATED,
                 "evidence_package": EvidencePackage(
@@ -52,6 +61,15 @@ def build_hydration_node(
             )
         except EvidenceRepositoryError:
             logger.exception("Evidence hydration failed for run %s", state["run_id"])
+            record_analysis_trace(
+                metrics={
+                    "hydration_status": "failed",
+                    "hydration_requested_table_count": len(references),
+                    "hydrated_table_count": 0,
+                    "analysis_failed_stage": IssueStage.HYDRATION,
+                },
+                tags=("hydration:error",),
+            )
             return {
                 "phase": AnalysisPhase.FAILED,
                 "evidence_package": EvidencePackage(
@@ -77,6 +95,17 @@ def build_hydration_node(
             document_ids=request.document_ids,
             references=references,
             sources=sources,
+        )
+        record_analysis_trace(
+            metrics={
+                "hydration_status": outcome.package.status,
+                "hydration_requested_table_count": len(references),
+                "hydrated_table_count": outcome.package.hydrated_table_count,
+                "hydration_unresolved_table_count": len(
+                    outcome.package.unresolved_tables
+                ),
+            },
+            tags=(f"hydration:{outcome.package.status}",),
         )
         return {
             "phase": AnalysisPhase.HYDRATED,

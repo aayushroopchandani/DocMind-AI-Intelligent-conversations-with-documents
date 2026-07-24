@@ -58,6 +58,28 @@ _TABLE_REQUIRED_RE = re.compile(
 )
 _CURRENCY_RE = re.compile(r"\b(?:USD|INR|EUR|GBP)\b", re.IGNORECASE)
 _PERCENT_RE = re.compile(r"(?:%|\bpercent(?:age)?\b)", re.IGNORECASE)
+_VALID_UNIT_RE = re.compile(
+    r"(?:₹|\$|€|£|\b(?:USD|INR|EUR|GBP|dollars?|rupees?|euros?|pounds?|"
+    r"thousands?|millions?|billions?|crores?|lakhs?|percent(?:age)?)\b)",
+    re.IGNORECASE,
+)
+_METRIC_LIST_RE = re.compile(
+    r"\b(?:compare|show|analy[sz]e|calculate|compute|report|plot|track)\s+"
+    r"(?P<items>.+?)"
+    r"(?=\s+(?:for|in|from|during|over|across|between)\s+"
+    r"(?:FY\s*)?(?:19|20)\d{2}\b|[?.!]|$)",
+    re.IGNORECASE,
+)
+_METRIC_WORD_RE = re.compile(
+    r"\b(?:program\s+services|general\s+and\s+administration|fundraising|"
+    r"research\s+and\s+development(?:\s+(?:expense|expenditure)s?)?|"
+    r"(?:total|net|gross|operating|current|noncurrent|non-current)?\s*"
+    r"(?:assets?|liabilit(?:y|ies)|revenues?|sales|expenses?|costs?|"
+    r"income|earnings|profits?|loss(?:es)?|margin|cash(?:\s+flows?)?|"
+    r"equity|debt|headcount|employees?|rate|ratio|returns?|"
+    r"expenditures?|contributions?|grants?|support))\b",
+    re.IGNORECASE,
+)
 
 _SAFE_ALIAS_GROUPS = (
     frozenset({"research and development", "r&d", "r and d"}),
@@ -201,6 +223,55 @@ def _explicit_units(query: str) -> tuple[str, ...]:
     if _PERCENT_RE.search(query):
         output.append("percent")
     return tuple(output)
+
+
+def _explicit_metric_list(query: str) -> tuple[str, ...]:
+    """Recover only clear, coordinated metric lists from the original request."""
+
+    match = _METRIC_LIST_RE.search(query)
+    if match is None:
+        return ()
+    phrase = normalize_requirement_text(match.group("items"))
+    if "," not in phrase:
+        return ()
+    parts = re.split(r"\s*,\s*", phrase)
+    output: list[str] = []
+    for part in parts:
+        candidate = normalize_requirement_text(part)
+        candidate = re.sub(
+            r"^(?:(?:and|the|their|its)\s+)+",
+            "",
+            candidate,
+            flags=re.IGNORECASE,
+        )
+        metric_match = _METRIC_WORD_RE.search(candidate)
+        if candidate and len(candidate.split()) <= 8 and metric_match:
+            output.append(normalize_requirement_text(metric_match.group(0)))
+    return tuple(dict.fromkeys(output)) if len(output) >= 2 else ()
+
+
+def _metric_is_present(
+    candidate: str,
+    requirements: Iterable[ExtractedRequirement],
+) -> bool:
+    canonical_candidate = canonical_requirement_text(candidate)
+    return any(
+        item.kind == RequirementKind.METRIC
+        and (
+            canonical_candidate == canonical_requirement_text(item.name)
+            or canonical_candidate in canonical_requirement_text(item.name)
+            or any(
+                canonical_candidate == canonical_requirement_text(alias)
+                or canonical_candidate in canonical_requirement_text(alias)
+                for alias in item.aliases
+            )
+        )
+        for item in requirements
+    )
+
+
+def _has_valid_unit(value: str) -> bool:
+    return bool(_VALID_UNIT_RE.search(value))
 
 
 def _is_optional(query: str, name: str) -> bool:
@@ -395,6 +466,11 @@ def validate_requirements_extraction(
     adjustments: list[str] = []
     grounded: list[ExtractedRequirement] = []
     for item in extraction.requirements:
+        if item.kind == RequirementKind.UNIT and not _has_valid_unit(item.name):
+            adjustments.append(
+                f"dropped_invalid_unit:{canonical_requirement_text(item.name)}"
+            )
+            continue
         valid_entity_names = tuple(
             entity
             for entity in item.entity_names
@@ -469,6 +545,65 @@ def validate_requirements_extraction(
                 f"restored_explicit_unit:{canonical_requirement_text(unit)}"
             )
 
+    explicit_metric_list = _explicit_metric_list(query)
+    for metric in explicit_metric_list:
+        if not _metric_is_present(metric, grounded):
+            grounded.append(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name=metric,
+                    required=not _is_optional(query, metric),
+                    expected_data_type=ExpectedDataType.NUMBER,
+                )
+            )
+            adjustments.append(
+                f"restored_explicit_metric:{canonical_requirement_text(metric)}"
+            )
+
+    if explicit_metric_list:
+        explicit_names = {
+            canonical_requirement_text(metric)
+            for metric in explicit_metric_list
+        }
+        precise_names = tuple(explicit_names)
+        filtered_grounded: list[ExtractedRequirement] = []
+        for item in grounded:
+            item_name = canonical_requirement_text(item.name)
+            collapsed_generic = (
+                item.kind == RequirementKind.METRIC
+                and item_name not in explicit_names
+                and any(
+                    item_name
+                    and item_name in precise_name
+                    and item_name != precise_name
+                    for precise_name in precise_names
+                )
+            )
+            if collapsed_generic:
+                adjustments.append(f"dropped_collapsed_metric:{item_name}")
+            else:
+                filtered_grounded.append(item)
+        grounded = filtered_grounded
+    elif not any(
+        item.kind == RequirementKind.METRIC for item in grounded
+    ):
+        seen_metrics: set[str] = set()
+        for match in _METRIC_WORD_RE.finditer(query):
+            metric = normalize_requirement_text(match.group(0))
+            canonical = canonical_requirement_text(metric)
+            if not canonical or canonical in seen_metrics:
+                continue
+            seen_metrics.add(canonical)
+            grounded.append(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name=metric,
+                    required=not _is_optional(query, metric),
+                    expected_data_type=ExpectedDataType.NUMBER,
+                )
+            )
+            adjustments.append(f"restored_explicit_metric:{canonical}")
+
     grouping_names = {
         canonical_requirement_text(item.name)
         for item in grounded
@@ -515,7 +650,12 @@ def validate_requirements_extraction(
             query=query,
             origin=(
                 RequirementOrigin.EXPLICIT_GUARD
-                if item.kind in {RequirementKind.PERIOD, RequirementKind.UNIT}
+                if item.kind
+                in {
+                    RequirementKind.METRIC,
+                    RequirementKind.PERIOD,
+                    RequirementKind.UNIT,
+                }
                 and any(
                     adjustment.endswith(canonical_requirement_text(item.name))
                     for adjustment in adjustments

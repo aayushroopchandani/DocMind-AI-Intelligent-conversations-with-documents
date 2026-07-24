@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 from db.models.structured_table import StructuredTable
+from langchain_core.exceptions import OutputParserException
 from scripts.data_analysis_agent.analysis.models import (
     AnalysisOperation,
     AnalysisRequest,
@@ -27,6 +28,7 @@ from scripts.data_analysis_agent.analysis.models import (
     RequirementCoverage,
     RequirementItem,
     RequirementKind,
+    RequirementOrigin,
     RequirementsExtraction,
     RetrievalResult,
     RetrievalSignals,
@@ -366,6 +368,119 @@ class RequirementsValidationTests(unittest.TestCase):
             artifact.diagnostics.validation_adjustments,
         )
 
+    def test_explicit_coordinated_metric_list_restores_omitted_items(self) -> None:
+        request = _request(
+            "Compare total assets, liabilities, and net assets in 2022 and 2023."
+        )
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="total assets",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+            table_evidence_required=True,
+        )
+
+        artifact = validate_requirements_extraction(
+            request=request,
+            extraction=extraction,
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        by_name = {item.name.casefold(): item for item in artifact.requirements}
+        self.assertIn("total assets", by_name)
+        self.assertIn("liabilities", by_name)
+        self.assertIn("net assets", by_name)
+        self.assertEqual(
+            by_name["liabilities"].origin,
+            RequirementOrigin.EXPLICIT_GUARD,
+        )
+        self.assertIn(
+            "restored_explicit_metric:net assets",
+            artifact.diagnostics.validation_adjustments,
+        )
+
+    def test_explicit_operating_category_list_is_not_collapsed(self) -> None:
+        request = _request(
+            "Compare ACT program services, general and administration, "
+            "fundraising, and total expenses for 2022 and 2023."
+        )
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="expenses",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+            table_evidence_required=True,
+        )
+
+        artifact = validate_requirements_extraction(
+            request=request,
+            extraction=extraction,
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        names = {item.name.casefold() for item in artifact.requirements}
+        self.assertTrue(
+            {
+                "program services",
+                "general and administration",
+                "fundraising",
+                "total expenses",
+            }.issubset(names)
+        )
+        self.assertNotIn("expenses", names)
+
+    def test_fallback_restores_single_metric_and_drops_non_unit_instruction(
+        self,
+    ) -> None:
+        request = _request(
+            "Compare total revenue in 2023 using each report's original units."
+        )
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.TOPIC,
+                    name=request.query,
+                ),
+                ExtractedRequirement(
+                    kind=RequirementKind.UNIT,
+                    name="original units",
+                ),
+            ),
+            table_evidence_required=True,
+        )
+
+        artifact = validate_requirements_extraction(
+            request=request,
+            extraction=extraction,
+            model="test-model",
+            extraction_attempts=0,
+            used_fallback=True,
+        ).requirements
+
+        names = {
+            (item.kind, item.name.casefold())
+            for item in artifact.requirements
+        }
+        self.assertIn(
+            (RequirementKind.METRIC, "total revenue"),
+            names,
+        )
+        self.assertNotIn(
+            (RequirementKind.UNIT, "original units"),
+            names,
+        )
+
     def test_contradictory_required_filters_are_flagged_for_clarification(
         self,
     ) -> None:
@@ -453,6 +568,40 @@ class RequirementsRunnerTests(unittest.IsolatedAsyncioTestCase):
             [item.requirement_id for item in outcome.artifact.requirements],
         )
         self.assertEqual(cache.saves, 0)
+
+    async def test_wrapped_parser_error_is_retried_before_fallback(self) -> None:
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.TREND,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="revenue",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+            table_evidence_required=True,
+        )
+
+        class RecoveringRequirementsGenerator:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def ainvoke(self, _input: Any, **_kwargs: Any) -> Any:
+                self.calls += 1
+                if self.calls == 1:
+                    raise OutputParserException("truncated JSON")
+                return extraction
+
+        generator = RecoveringRequirementsGenerator()
+        runner = AnalysisRequirementsRunner(
+            cache=_ArtifactCache(),
+            extractor=RequirementsExtractor(generator, model="test-model"),
+        )
+
+        outcome = await runner.run(_request("Show the revenue trend"))
+
+        self.assertEqual(generator.calls, 2)
+        self.assertFalse(outcome.artifact.diagnostics.used_fallback)
 
 
 class EvidenceAssessmentTests(unittest.IsolatedAsyncioTestCase):
@@ -550,6 +699,141 @@ class EvidenceAssessmentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
         self.assertEqual(generator.calls, 0)
+
+    async def test_transposed_metric_and_verbose_year_headers_match(self) -> None:
+        item = _raw_table(
+            table_id="rd-table",
+            document_id=DOCUMENT_A,
+            title="Research and development costs",
+            document_name="PDF Solutions 2024 Annual Report.pdf",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {
+                    "key": "year_2022",
+                    "label": "Year Ended December 31, 2022",
+                    "type": "number",
+                },
+                {
+                    "key": "year_2024",
+                    "label": "Year Ended December 31, 2024",
+                    "type": "number",
+                },
+            ],
+            rows=[
+                {
+                    "metric": "Research and development expenditures",
+                    "year_2022": 112,
+                    "year_2024": 141,
+                }
+            ],
+            summary=(
+                "Research and development expenditures for the years ended "
+                "December 31, 2022 and 2024."
+            ),
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        generator = _AmbiguityGenerator()
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(generator, model="test-model"),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_research_and_development_expense",
+                kind=RequirementKind.METRIC,
+                name="research and development expense",
+                aliases=("R&D expense",),
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2022",
+                kind=RequirementKind.PERIOD,
+                name="2022",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2024",
+                kind=RequirementKind.PERIOD,
+                name="2024",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+        )
+
+        outcome = await runner.run(
+            request=_request(
+                "Show research and development expense in 2022 and 2024"
+            ),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+        self.assertTrue(
+            all(
+                item.status == CoverageStatus.SUPPORTED
+                for item in outcome.artifact.coverage
+            )
+        )
+        self.assertEqual(generator.calls, 0)
+
+    async def test_total_metric_matches_small_wide_table_row_label(self) -> None:
+        item = _raw_table(
+            table_id="expense-trend",
+            document_id=DOCUMENT_A,
+            title="Revenue and Expenses Trends",
+            document_name="amazon-conservation-team_2023.pdf",
+            columns=[
+                {
+                    "key": "metric",
+                    "label": "Revenue and Expenses Trends",
+                    "type": "string",
+                },
+                {"key": "year_2022", "label": "2022", "type": "number"},
+                {"key": "year_2023", "label": "2023", "type": "number"},
+            ],
+            rows=[
+                {"metric": "Revenue", "year_2022": 100, "year_2023": 110},
+                {"metric": "Expenses", "year_2022": 80, "year_2023": 90},
+            ],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(
+                _AmbiguityGenerator(),
+                model="test-model",
+            ),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_total_expenses",
+                kind=RequirementKind.METRIC,
+                name="total expenses",
+                expected_data_type=ExpectedDataType.NUMBER,
+            )
+        )
+
+        outcome = await runner.run(
+            request=_request("Compare total expenses"),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+        self.assertEqual(
+            outcome.artifact.coverage[0].status,
+            CoverageStatus.SUPPORTED,
+        )
+        self.assertEqual(
+            outcome.artifact.coverage[0].evidence[0].label,
+            "Revenue and Expenses Trends: Expenses",
+        )
 
     async def test_metric_with_conflicting_unit_is_not_marked_supported(self) -> None:
         item = _raw_table(
@@ -684,6 +968,68 @@ class EvidenceAssessmentTests(unittest.IsolatedAsyncioTestCase):
             if item.document_id == DOCUMENT_B
         )
         self.assertEqual(document_b.status, CoverageStatus.PARTIAL)
+
+    async def test_cross_entity_comparison_enforces_all_retrieved_entities(
+        self,
+    ) -> None:
+        item = _raw_table(
+            table_id="company-a-revenue",
+            document_id=DOCUMENT_A,
+            title="Revenue by year",
+            document_name="Company A Annual Report.pdf",
+            columns=[
+                {"key": "year", "label": "Year", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[{"year": "2023", "revenue": 100}],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(
+                _AmbiguityGenerator(),
+                model="test-model",
+            ),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_revenue",
+                kind=RequirementKind.METRIC,
+                name="revenue",
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            document_ids=(DOCUMENT_A, DOCUMENT_B),
+            requires_all=False,
+        )
+        retrieval = RetrievalResult(
+            retrieval_scope="normal",
+            table_intent="required",
+            signals=RetrievalSignals(entities=("Company A", "Company B")),
+        )
+
+        outcome = await runner.run(
+            request=_request(
+                "Compare Company A and Company B revenue",
+                document_ids=(DOCUMENT_A, DOCUMENT_B),
+            ),
+            requirements=requirements,
+            retrieval=retrieval,
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(
+            outcome.artifact.coverage[0].status,
+            CoverageStatus.PARTIAL,
+        )
+        self.assertEqual(
+            outcome.artifact.decision,
+            ReadinessDecision.NEEDS_RETRIEVAL_REPAIR,
+        )
+        self.assertTrue(
+            all(item.required for item in outcome.artifact.document_coverage)
+        )
 
     async def test_unresolved_metric_entity_scope_cannot_be_marked_ready(self) -> None:
         item = _raw_table(

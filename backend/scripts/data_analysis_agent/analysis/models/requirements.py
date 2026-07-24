@@ -9,8 +9,8 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-ANALYSIS_REQUIREMENTS_VERSION = "1.0.0"
-REQUIREMENTS_PROMPT_VERSION = "1.0.0"
+ANALYSIS_REQUIREMENTS_VERSION = "1.3.0"
+REQUIREMENTS_PROMPT_VERSION = "1.3.0"
 
 _SPACE_RE = re.compile(r"\s+")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
