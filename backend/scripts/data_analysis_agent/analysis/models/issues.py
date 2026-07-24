@@ -14,6 +14,8 @@ class IssueStage(str, Enum):
     RETRIEVAL = "retrieval"
     HYDRATION = "hydration"
     PROFILING = "profiling"
+    REQUIREMENTS = "requirements"
+    ASSESSMENT = "assessment"
 
 
 class IssueCode(str, Enum):
@@ -31,6 +33,13 @@ class IssueCode(str, Enum):
     DATASET_NOT_AVAILABLE = "dataset_not_available"
     DATASET_VERSION_MISMATCH = "dataset_version_mismatch"
     DATASET_PROFILE_FAILED = "dataset_profile_failed"
+    REQUIREMENTS_CACHE_READ_FAILED = "requirements_cache_read_failed"
+    REQUIREMENTS_CACHE_WRITE_FAILED = "requirements_cache_write_failed"
+    REQUIREMENTS_EXTRACTION_FALLBACK = "requirements_extraction_fallback"
+    ASSESSMENT_METADATA_LOAD_FAILED = "assessment_metadata_load_failed"
+    ASSESSMENT_CACHE_READ_FAILED = "assessment_cache_read_failed"
+    ASSESSMENT_CACHE_WRITE_FAILED = "assessment_cache_write_failed"
+    AMBIGUITY_RESOLUTION_FAILED = "ambiguity_resolution_failed"
 
 
 class AnalysisIssue(BaseModel):

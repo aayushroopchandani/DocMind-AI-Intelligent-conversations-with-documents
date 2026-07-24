@@ -10,13 +10,15 @@ from langchain_core.runnables import RunnableConfig
 from .models import (
     AnalysisIssue,
     AnalysisRequest,
+    AnalysisRequirements,
     DatasetProfiles,
+    EvidenceAssessment,
     EvidencePackage,
     RetrievalResult,
 )
 
 
-ANALYSIS_STATE_VERSION: Literal[2] = 2
+ANALYSIS_STATE_VERSION: Literal[3] = 3
 
 
 class AnalysisPhase(str, Enum):
@@ -24,19 +26,22 @@ class AnalysisPhase(str, Enum):
     RETRIEVED = "retrieved"
     HYDRATED = "hydrated"
     PROFILED = "profiled"
+    ASSESSED = "assessed"
     FAILED = "failed"
 
 
 class DataAnalysisState(TypedDict):
     """Minimal checkpoint state for the capabilities implemented today."""
 
-    state_version: Required[Literal[2]]
+    state_version: Required[Literal[3]]
     run_id: Required[str]
     request: Required[AnalysisRequest]
     phase: Required[AnalysisPhase]
     retrieval_result: NotRequired[RetrievalResult]
     evidence_package: NotRequired[EvidencePackage]
     dataset_profiles: NotRequired[DatasetProfiles]
+    analysis_requirements: NotRequired[AnalysisRequirements]
+    evidence_assessment: NotRequired[EvidenceAssessment]
     warnings: Annotated[list[AnalysisIssue], operator.add]
     errors: Annotated[list[AnalysisIssue], operator.add]
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from typing import Any
 from unittest.mock import patch
@@ -8,12 +9,21 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from scripts.data_analysis_agent.analysis.graph import build_data_analysis_graph
-from scripts.data_analysis_agent.analysis.models import IssueCode, profile_cache_key
+from scripts.data_analysis_agent.analysis.models import (
+    AnalysisOperation,
+    ExpectedDataType,
+    ExtractedRequirement,
+    IssueCode,
+    RequirementKind,
+    RequirementsExtraction,
+    profile_cache_key,
+)
 from scripts.data_analysis_agent.analysis.repositories import (
     EvidenceRepositoryError,
     HydrationSourceBatch,
     MongoEvidenceRepository,
 )
+from scripts.data_analysis_agent.analysis.services import RequirementsExtractor
 from scripts.data_analysis_agent.analysis.state import (
     AnalysisPhase,
     analysis_thread_config,
@@ -185,16 +195,98 @@ class _FakeProfileCache:
             self.values[key] = profile
 
 
+class _FakeArtifactCache:
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {}
+
+    async def load(self, *, user_id: str, cache_key: str) -> Any:
+        return self.values.get(f"{user_id}:{cache_key}")
+
+    async def save(
+        self,
+        *,
+        user_id: str,
+        cache_key: str,
+        **kwargs: Any,
+    ) -> None:
+        value = kwargs.get("requirements") or kwargs.get("assessment")
+        self.values[f"{user_id}:{cache_key}"] = value
+
+
+class _FakeRequirementsGenerator:
+    async def ainvoke(self, _input: Any, **_kwargs: Any) -> RequirementsExtraction:
+        return RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="revenue",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+            table_evidence_required=True,
+            text_evidence_acceptable=True,
+        )
+
+
+class _CoordinatedRetrievalGraph(_FakeRetrievalGraph):
+    def __init__(
+        self,
+        retrieval_started: asyncio.Event,
+        requirements_started: asyncio.Event,
+    ) -> None:
+        super().__init__()
+        self._retrieval_started = retrieval_started
+        self._requirements_started = requirements_started
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        self._retrieval_started.set()
+        await self._requirements_started.wait()
+        return await super().ainvoke(input, config=config, **kwargs)
+
+
+class _CoordinatedRequirementsGenerator(_FakeRequirementsGenerator):
+    def __init__(
+        self,
+        retrieval_started: asyncio.Event,
+        requirements_started: asyncio.Event,
+    ) -> None:
+        self._retrieval_started = retrieval_started
+        self._requirements_started = requirements_started
+
+    async def ainvoke(self, input: Any, **kwargs: Any) -> RequirementsExtraction:
+        self._requirements_started.set()
+        await self._retrieval_started.wait()
+        return await super().ainvoke(input, **kwargs)
+
+
+class _FakeAssessmentMetadataRepository:
+    async def load_table_metadata(self, **_kwargs: Any) -> dict[str, Any]:
+        return {}
+
+
 def _build_graph(
     *,
     retrieval_graph: Any,
     evidence_repository: _FakeEvidenceRepository,
+    dataset_tables: tuple[dict[str, Any], ...] | None = None,
 ) -> Any:
     return build_data_analysis_graph(
         retrieval_graph=retrieval_graph,
         evidence_repository=evidence_repository,
-        dataset_repository=_FakeDatasetRepository(evidence_repository.tables),
+        dataset_repository=_FakeDatasetRepository(
+            evidence_repository.tables
+            if dataset_tables is None
+            else dataset_tables
+        ),
         profile_cache=_FakeProfileCache(),
+        requirements_cache=_FakeArtifactCache(),
+        requirements_extractor=RequirementsExtractor(
+            _FakeRequirementsGenerator(),
+            model="test-requirements-model",
+        ),
+        assessment_metadata_repository=_FakeAssessmentMetadataRepository(),
+        assessment_cache=_FakeArtifactCache(),
     )
 
 
@@ -239,6 +331,42 @@ class ParentStateTests(unittest.TestCase):
 
 
 class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
+    async def test_requirements_and_retrieval_start_in_parallel(self) -> None:
+        retrieval_started = asyncio.Event()
+        requirements_started = asyncio.Event()
+        repository = _FakeEvidenceRepository()
+        graph = build_data_analysis_graph(
+            retrieval_graph=_CoordinatedRetrievalGraph(
+                retrieval_started,
+                requirements_started,
+            ),
+            evidence_repository=repository,
+            dataset_repository=_FakeDatasetRepository(repository.tables),
+            profile_cache=_FakeProfileCache(),
+            requirements_cache=_FakeArtifactCache(),
+            requirements_extractor=RequirementsExtractor(
+                _CoordinatedRequirementsGenerator(
+                    retrieval_started,
+                    requirements_started,
+                ),
+                model="test-requirements-model",
+            ),
+            assessment_metadata_repository=_FakeAssessmentMetadataRepository(),
+            assessment_cache=_FakeArtifactCache(),
+        )
+        state = create_analysis_state(
+            user_id="user-1",
+            chat_id="chat-1",
+            query="compare revenue",
+            document_ids=[DOCUMENT_ID],
+        )
+
+        result = await asyncio.wait_for(graph.ainvoke(state), timeout=2)
+
+        self.assertTrue(retrieval_started.is_set())
+        self.assertTrue(requirements_started.is_set())
+        self.assertEqual(result["phase"], AnalysisPhase.ASSESSED)
+
     async def test_graph_retrieves_and_hydrates_without_checkpointing_rows(self) -> None:
         retrieval = _FakeRetrievalGraph()
         repository = _FakeEvidenceRepository()
@@ -255,7 +383,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
 
         result = await graph.ainvoke(state, config=analysis_thread_config(state))
 
-        self.assertEqual(result["phase"], AnalysisPhase.PROFILED)
+        self.assertEqual(result["phase"], AnalysisPhase.ASSESSED)
         self.assertEqual(result["evidence_package"].status, "complete")
         self.assertEqual(result["evidence_package"].hydrated_table_count, 1)
         dataset = result["evidence_package"].datasets[0]
@@ -276,6 +404,11 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
             "rows",
             result["dataset_profiles"].profiles[0].model_dump(),
         )
+        self.assertEqual(
+            result["analysis_requirements"].requirements[0].requirement_id,
+            "req_metric_revenue",
+        )
+        self.assertEqual(result["evidence_assessment"].decision, "ready")
 
     async def test_dataset_identity_is_stable_for_unchanged_source_content(self) -> None:
         graph = _build_graph(
@@ -436,6 +569,27 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["phase"], AnalysisPhase.FAILED)
         self.assertEqual(result["evidence_package"].status, "failed")
         self.assertEqual(result["errors"][0].code, IssueCode.HYDRATION_FAILED)
+
+    async def test_profile_failure_stops_before_evidence_assessment(self) -> None:
+        repository = _FakeEvidenceRepository()
+        graph = _build_graph(
+            retrieval_graph=_FakeRetrievalGraph(),
+            evidence_repository=repository,
+            dataset_tables=(),
+        )
+        state = create_analysis_state(
+            user_id="user-1",
+            chat_id="chat-1",
+            query="compare revenue",
+            document_ids=[DOCUMENT_ID],
+        )
+
+        result = await graph.ainvoke(state)
+
+        self.assertEqual(result["phase"], AnalysisPhase.FAILED)
+        self.assertEqual(result["dataset_profiles"].status, "failed")
+        self.assertIn("analysis_requirements", result)
+        self.assertNotIn("evidence_assessment", result)
 
 
 class _Cursor:
