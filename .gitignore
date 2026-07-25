@@ -28,6 +28,8 @@ ehthumbs.db
 # IDEs and editors
 .vscode/
 .idea/
+.claude/launch.json
+**/.claude/launch.json
 *.suo
 *.ntvs*
 *.njsproj
