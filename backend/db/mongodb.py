@@ -91,6 +91,10 @@ async def ensure_indexes() -> None:
         [("user_id", 1), ("cache_key", 1)], unique=True
     )
     await db.analysis_requirements_cache.create_index("updated_at")
+    await db.analysis_query_generation_cache.create_index(
+        [("user_id", 1), ("cache_key", 1)], unique=True
+    )
+    await db.analysis_query_generation_cache.create_index("updated_at")
     await db.evidence_assessments_cache.create_index(
         [("user_id", 1), ("cache_key", 1)], unique=True
     )
@@ -100,6 +104,14 @@ async def ensure_indexes() -> None:
         unique=True,
     )
     await db.analysis_text_extraction_cache.create_index(
+        "expires_at",
+        expireAfterSeconds=0,
+    )
+    await db.analysis_repair_retrieval_cache.create_index(
+        [("user_id", 1), ("cache_key", 1)],
+        unique=True,
+    )
+    await db.analysis_repair_retrieval_cache.create_index(
         "expires_at",
         expireAfterSeconds=0,
     )

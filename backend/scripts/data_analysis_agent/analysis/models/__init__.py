@@ -14,6 +14,7 @@ from .assessment import (
 )
 from .completion import (
     EVIDENCE_COMPLETION_VERSION,
+    REPAIR_RETRIEVAL_CACHE_VERSION,
     TEXT_EVIDENCE_EXTRACTOR_VERSION,
     TEXT_EVIDENCE_PROMPT_VERSION,
     AugmentedDatasetReference,
@@ -29,6 +30,7 @@ from .completion import (
     FactDimension,
     ProposedEvidenceFact,
     RejectedEvidence,
+    RepairRetrievalCacheEntry,
     TextExtractionResponse,
     TextExtractionCacheEntry,
     base_evidence_signature,
@@ -118,6 +120,7 @@ __all__ = [
     "DerivedDatasetColumn",
     "DerivedDatasetReference",
     "EVIDENCE_COMPLETION_VERSION",
+    "REPAIR_RETRIEVAL_CACHE_VERSION",
     "EvidenceAssessment",
     "EvidenceKind",
     "EvidencePackage",
@@ -145,6 +148,7 @@ __all__ = [
     "RequirementsDiagnostics",
     "RequirementsExtraction",
     "RejectedEvidence",
+    "RepairRetrievalCacheEntry",
     "RetrievalConcept",
     "RetrievalDiagnostics",
     "RetrievalResult",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from enum import Enum
@@ -13,7 +14,17 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .state import DataAnalysisRetrievalState
+from .query_cache import (
+    MongoQueryGenerationCache,
+    QueryGenerationCache,
+    QueryGenerationCacheError,
+    query_generation_cache_key,
+)
 
+
+logger = logging.getLogger(__name__)
+QUERY_GENERATION_VERSION = "1.0.0"
+QUERY_GENERATION_PROMPT_VERSION = "1.0.0"
 
 QUERY_GENERATION_SYSTEM_PROMPT = """You generate concise semantic-search queries
 for a data-analysis agent that searches two indexes: narrative PDF text chunks and
@@ -279,10 +290,7 @@ def get_query_generation_llm() -> AsyncQueryGenerator:
     """Return the small structured-output model used by query generation."""
 
     llm = ChatOpenAI(
-        model=os.getenv(
-            "DATA_ANALYSIS_QUERY_GENERATION_MODEL",
-            "google/gemini-2.5-flash-lite",
-        ),
+        model=_query_generation_model(),
         base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         api_key=os.getenv("OPENROUTER_API_KEY"),
         temperature=0,
@@ -298,11 +306,26 @@ def get_query_generation_llm() -> AsyncQueryGenerator:
     )
 
 
+def _query_generation_model() -> str:
+    return os.getenv(
+        "DATA_ANALYSIS_QUERY_GENERATION_MODEL",
+        "google/gemini-2.5-flash-lite",
+    )
+
+
 def build_query_generation_node(
     query_generator: AsyncQueryGenerator | None = None,
+    query_cache: QueryGenerationCache | None = None,
 ) -> Any:
     """Build a one-call node with one malformed-output recovery attempt."""
 
+    selected_cache = (
+        query_cache
+        if query_cache is not None
+        else MongoQueryGenerationCache()
+        if query_generator is None
+        else None
+    )
     broad_cue = re.compile(
         r"\b(?:all|complete|comprehensive|in[- ]depth|overall)\b",
         re.IGNORECASE,
@@ -356,6 +379,38 @@ def build_query_generation_node(
         query = " ".join(str(state.get("query") or "").split()).strip()
         if not query:
             raise ValueError("retrieval state query must not be empty")
+
+        cache_key = query_generation_cache_key(
+            query=query,
+            document_ids=tuple(state.get("document_ids", [])),
+            model=_query_generation_model(),
+            prompt_version=QUERY_GENERATION_PROMPT_VERSION,
+            generation_version=QUERY_GENERATION_VERSION,
+        )
+        if selected_cache is not None:
+            try:
+                cached = await selected_cache.load(
+                    user_id=str(state["user_id"]),
+                    cache_key=cache_key,
+                )
+                if cached is not None:
+                    parsed_cached = GeneratedRetrievalQueries.model_validate(cached)
+                    parsed_cached = _enrich_explicit_signals(parsed_cached, query)
+                    output = parsed_cached.model_dump(mode="json")
+                    output["retrieval_scope"] = resolved_scope(
+                        parsed_cached,
+                        state,
+                        query,
+                    ).value
+                    output["query_generation_attempts"] = 0
+                    output["query_generation_fallback"] = False
+                    output["query_generation_cache_hit"] = True
+                    return output
+            except (QueryGenerationCacheError, ValidationError, ValueError, TypeError):
+                logger.warning(
+                    "Query-generation cache read failed; continuing without it",
+                    exc_info=True,
+                )
 
         generator = query_generator or get_query_generation_llm()
         messages = [
@@ -418,6 +473,19 @@ def build_query_generation_node(
         output["retrieval_scope"] = scope.value
         output["query_generation_attempts"] = attempts_used
         output["query_generation_fallback"] = used_fallback
+        output["query_generation_cache_hit"] = False
+        if selected_cache is not None and not used_fallback:
+            try:
+                await selected_cache.save(
+                    user_id=str(state["user_id"]),
+                    cache_key=cache_key,
+                    result=parsed.model_dump(mode="python"),
+                )
+            except QueryGenerationCacheError:
+                logger.warning(
+                    "Query-generation cache write failed; continuing without it",
+                    exc_info=True,
+                )
         return output
 
     return generate_queries

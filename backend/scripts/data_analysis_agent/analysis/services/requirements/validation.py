@@ -21,6 +21,10 @@ from ...models.requirements import (
     stable_requirement_id,
 )
 from ...models.request import AnalysisRequest
+from .explicit import (
+    explicit_category_constraints,
+    semantically_grounded_in_query,
+)
 
 
 _EXPLICIT_PERIOD_RE = re.compile(
@@ -114,7 +118,7 @@ def _strict_acronym_match(left: str, right: str) -> bool:
 
 
 def _grounded_entity_name(query: str, entity: str) -> bool:
-    if _mentioned(query, entity):
+    if _mentioned(query, entity) or semantically_grounded_in_query(query, entity):
         return True
     return any(
         _strict_acronym_match(entity, token)
@@ -323,9 +327,13 @@ def _is_grounded(item: ExtractedRequirement, query: str) -> bool:
         RequirementKind.ENTITY,
         RequirementKind.DIMENSION,
     }:
-        return _mentioned(query, item.name) or any(
+        return (
+            _mentioned(query, item.name)
+            or semantically_grounded_in_query(query, item.name)
+            or any(
             _mentioned(query, alias) and _safe_alias(item.name, alias, query)
             for alias in item.aliases
+        )
         )
     return True
 
@@ -584,25 +592,65 @@ def validate_requirements_extraction(
             else:
                 filtered_grounded.append(item)
         grounded = filtered_grounded
-    elif not any(
-        item.kind == RequirementKind.METRIC for item in grounded
-    ):
-        seen_metrics: set[str] = set()
-        for match in _METRIC_WORD_RE.finditer(query):
-            metric = normalize_requirement_text(match.group(0))
-            canonical = canonical_requirement_text(metric)
-            if not canonical or canonical in seen_metrics:
-                continue
-            seen_metrics.add(canonical)
-            grounded.append(
-                ExtractedRequirement(
-                    kind=RequirementKind.METRIC,
-                    name=metric,
-                    required=not _is_optional(query, metric),
-                    expected_data_type=ExpectedDataType.NUMBER,
-                )
+    seen_metrics: set[str] = set()
+    for match in _METRIC_WORD_RE.finditer(query):
+        metric = normalize_requirement_text(match.group(0))
+        canonical = canonical_requirement_text(metric)
+        if (
+            not canonical
+            or canonical in seen_metrics
+            or _metric_is_present(metric, grounded)
+        ):
+            continue
+        seen_metrics.add(canonical)
+        grounded.append(
+            ExtractedRequirement(
+                kind=RequirementKind.METRIC,
+                name=metric,
+                required=not _is_optional(query, metric),
+                expected_data_type=ExpectedDataType.NUMBER,
             )
-            adjustments.append(f"restored_explicit_metric:{canonical}")
+        )
+        adjustments.append(f"restored_explicit_metric:{canonical}")
+
+    existing_filters = {
+        (
+            canonical_requirement_text(item.name),
+            tuple(canonical_requirement_text(value) for value in item.filter_values),
+        )
+        for item in grounded
+        if item.kind == RequirementKind.FILTER
+    }
+    explicit_category_names: list[str] = []
+    for constraint in explicit_category_constraints(query):
+        key = (
+            canonical_requirement_text(constraint.name),
+            tuple(
+                canonical_requirement_text(value)
+                for value in constraint.values
+            ),
+        )
+        explicit_category_names.append(constraint.name)
+        if key in existing_filters:
+            continue
+        grounded.append(
+            ExtractedRequirement(
+                kind=RequirementKind.FILTER,
+                name=constraint.name,
+                required=True,
+                expected_data_type=ExpectedDataType.STRING,
+                filter_operator=FilterOperator.IN,
+                filter_values=constraint.values,
+            )
+        )
+        adjustments.append(
+            "restored_explicit_filter:"
+            f"{canonical_requirement_text(constraint.name)}:"
+            + ",".join(
+                canonical_requirement_text(value)
+                for value in constraint.values
+            )
+        )
 
     grouping_names = {
         canonical_requirement_text(item.name)
@@ -626,6 +674,12 @@ def validate_requirements_extraction(
                 )
             )
             grouping_names.add(canonical_requirement_text(grouping))
+    for grouping in explicit_category_names:
+        canonical_grouping = canonical_requirement_text(grouping)
+        if canonical_grouping not in {
+            canonical_requirement_text(value) for value in valid_groupings
+        }:
+            valid_groupings.append(grouping)
 
     if not grounded:
         grounded.append(
@@ -655,6 +709,7 @@ def validate_requirements_extraction(
                     RequirementKind.METRIC,
                     RequirementKind.PERIOD,
                     RequirementKind.UNIT,
+                    RequirementKind.FILTER,
                 }
                 and any(
                     adjustment.endswith(canonical_requirement_text(item.name))
@@ -670,9 +725,19 @@ def validate_requirements_extraction(
     )
     operation = _resolved_operation(query, extraction.operation, adjustments)
     multi_document = len(request.document_ids) > 1
+    scoped_entity_names = {
+        canonical_requirement_text(entity)
+        for item in items
+        for entity in item.entity_names
+        if canonical_requirement_text(entity)
+    }
     requires_all_documents = multi_document and (
         extraction.requires_all_selected_documents
         or bool(_ALL_DOCUMENTS_RE.search(query))
+        or (
+            operation == AnalysisOperation.COMPARISON
+            and len(scoped_entity_names) >= 2
+        )
         or (
             operation == AnalysisOperation.COMPARISON
             and sum(item.kind == RequirementKind.ENTITY for item in items) >= 2

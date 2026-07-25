@@ -66,6 +66,15 @@ def _requirement_score(
                 and contains_phrase(field, relaxed)
             ):
                 best = max(best, 0.82)
+    if requirement.kind == RequirementKind.FILTER and requirement.filter_values:
+        combined = " ".join(fields)
+        values_supported = all(
+            contains_phrase(combined, value)
+            or lexical_score(value, combined) >= 0.94
+            for value in requirement.filter_values
+        )
+        if not values_supported:
+            return 0.0
     return best
 
 
@@ -153,13 +162,32 @@ class CandidateRescueSelector:
                 continue
             matched_ids: list[str] = []
             substantive_score = 0.0
+            constraint_scores: list[float] = []
+            primary_scores: list[float] = []
             for requirement in substantive:
                 score = _requirement_score(requirement, candidate)
+                if requirement.kind in {
+                    RequirementKind.DIMENSION,
+                    RequirementKind.FILTER,
+                }:
+                    constraint_scores.append(score)
+                else:
+                    primary_scores.append(score)
                 if score >= self._minimum_substantive_score:
                     substantive_score = max(substantive_score, score)
                     if requirement.requirement_id in incomplete_ids:
                         matched_ids.append(requirement.requirement_id)
-            if substantive_score < self._minimum_substantive_score:
+            if (
+                any(
+                    score < self._minimum_substantive_score
+                    for score in constraint_scores
+                )
+                or (
+                    primary_scores
+                    and max(primary_scores) < self._minimum_substantive_score
+                )
+                or substantive_score < self._minimum_substantive_score
+            ):
                 continue
             period_score = 0.0
             for requirement in periods:

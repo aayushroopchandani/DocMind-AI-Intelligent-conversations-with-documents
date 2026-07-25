@@ -10,11 +10,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .evidence import HydratedDatasetReference
 from .profile import DatasetProfiles
+from .retrieval import TableCandidateReference, TextEvidenceReference
 
 
-EVIDENCE_COMPLETION_VERSION = "1.0.0"
-TEXT_EVIDENCE_EXTRACTOR_VERSION = "1.0.0"
+EVIDENCE_COMPLETION_VERSION = "1.2.0"
+TEXT_EVIDENCE_EXTRACTOR_VERSION = "1.2.0"
 TEXT_EVIDENCE_PROMPT_VERSION = "1.0.0"
+REPAIR_RETRIEVAL_CACHE_VERSION = "1.0.0"
 
 
 def completion_utc_now() -> datetime:
@@ -315,6 +317,24 @@ class TextExtractionCacheEntry(BaseModel):
         ):
             raise ValueError("absent cache entries cannot contain evidence")
         return self
+
+
+class RepairRetrievalCacheEntry(BaseModel):
+    """Short-lived targeted-retrieval result, including negative results."""
+
+    queries: tuple[str, ...] = Field(min_length=1, max_length=12)
+    document_ids: tuple[str, ...] = Field(min_length=1, max_length=10)
+    table_candidates: tuple[TableCandidateReference, ...] = Field(
+        default=(),
+        max_length=30,
+    )
+    text_evidence: tuple[TextEvidenceReference, ...] = Field(
+        default=(),
+        max_length=30,
+    )
+    expires_at: datetime
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 def stable_fact_id(payload: dict[str, Any]) -> str:

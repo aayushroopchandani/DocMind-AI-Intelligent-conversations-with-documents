@@ -126,6 +126,7 @@ class TableCandidateReference(BaseModel):
 class RetrievalDiagnostics(BaseModel):
     query_generation_attempts: int = Field(default=0, ge=0)
     query_generation_fallback: bool = False
+    query_generation_cache_hit: bool = False
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -261,6 +262,9 @@ class RetrievalResult(BaseModel):
                 ),
                 query_generation_fallback=bool(
                     state.get("query_generation_fallback", False)
+                ),
+                query_generation_cache_hit=bool(
+                    state.get("query_generation_cache_hit", False)
                 ),
             ),
         )

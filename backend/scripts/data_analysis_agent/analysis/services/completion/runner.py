@@ -429,6 +429,7 @@ class EvidenceCompletionRunner:
                 attempt_id=f"targeted_retrieval_{repair_number}",
                 queries=repair.queries,
                 discovered_table_count=len(new_candidates),
+                cache_hit=repair.cache_hit,
             )
             warnings.extend(repaired.warnings)
             if repaired.attempt:
@@ -565,6 +566,7 @@ class EvidenceCompletionRunner:
         attempt_id: str,
         queries: tuple[str, ...] = (),
         discovered_table_count: int | None = None,
+        cache_hit: bool = False,
     ) -> _DatasetRescueOutcome:
         requirement_ids = tuple(
             dict.fromkeys(
@@ -582,6 +584,7 @@ class EvidenceCompletionRunner:
                     requirement_ids=requirement_ids,
                     queries=queries,
                     discovered_table_count=discovered_table_count or 0,
+                    cache_hit=cache_hit,
                     reason="No unused table candidate passed the rescue gate.",
                 )
             )
@@ -616,6 +619,7 @@ class EvidenceCompletionRunner:
                         if discovered_table_count is not None
                         else len(selections)
                     ),
+                    cache_hit=cache_hit,
                     reason="Authoritative candidate tables could not be loaded.",
                 ),
             )
@@ -640,6 +644,7 @@ class EvidenceCompletionRunner:
                         if discovered_table_count is not None
                         else len(selections)
                     ),
+                    cache_hit=cache_hit,
                     reason="Selected candidates did not hydrate successfully.",
                 ),
             )
@@ -699,6 +704,7 @@ class EvidenceCompletionRunner:
                     else len(selections)
                 ),
                 hydrated_table_count=len(additions),
+                cache_hit=cache_hit,
                 reason=(
                     "Hydrated and profiled requirement-specific candidates."
                     if additions

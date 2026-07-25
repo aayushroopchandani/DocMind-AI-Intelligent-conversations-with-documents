@@ -88,12 +88,17 @@ def build_retrieval_node(retrieval_graph: AsyncRetrievalGraph) -> Any:
                 "query_generation_fallback": (
                     retrieval_result.diagnostics.query_generation_fallback
                 ),
+                "query_generation_cache_hit": (
+                    retrieval_result.diagnostics.query_generation_cache_hit
+                ),
             },
             tags=(
                 f"retrieval-scope:{retrieval_result.retrieval_scope}",
                 (
                     "query-generation:fallback"
                     if retrieval_result.diagnostics.query_generation_fallback
+                    else "query-generation:cache"
+                    if retrieval_result.diagnostics.query_generation_cache_hit
                     else "query-generation:llm"
                 ),
             ),

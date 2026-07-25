@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import logging
+import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from scripts.data_analysis_agent.retrieval.state import DataAnalysisRetrievalState
@@ -25,11 +30,21 @@ from ...models import (
     AnalysisRequirements,
     CoverageStatus,
     EvidenceAssessment,
+    REPAIR_RETRIEVAL_CACHE_VERSION,
+    RepairRetrievalCacheEntry,
     RequirementKind,
     RetrievalResult,
     TableCandidateReference,
     TextEvidenceReference,
 )
+from ...repositories import (
+    MongoRepairRetrievalCache,
+    RepairRetrievalCache,
+    RepairRetrievalCacheError,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +53,7 @@ class TargetedRepairResult:
     document_ids: tuple[str, ...]
     table_candidates: tuple[TableCandidateReference, ...]
     text_evidence: tuple[TextEvidenceReference, ...]
+    cache_hit: bool = False
 
 
 class TargetedRepairRetriever(Protocol):
@@ -162,6 +178,48 @@ def build_repair_queries(
     return tuple(queries)
 
 
+def _repair_cache_key(
+    *,
+    queries: tuple[str, ...],
+    document_ids: tuple[str, ...],
+    requirements: AnalysisRequirements,
+    assessment: EvidenceAssessment,
+    attempt: int,
+) -> str:
+    incomplete = sorted(
+        (
+            item.requirement_id,
+            item.status.value,
+        )
+        for item in assessment.coverage
+        if item.status != CoverageStatus.SUPPORTED
+    )
+    payload = {
+        "queries": [" ".join(value.casefold().split()) for value in queries],
+        "document_ids": sorted(set(document_ids)),
+        "requirements_version": requirements.requirements_version,
+        "incomplete": incomplete,
+        "attempt": attempt,
+        "cache_version": REPAIR_RETRIEVAL_CACHE_VERSION,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _cache_ttl(*, has_evidence: bool) -> timedelta:
+    variable = (
+        "DATA_ANALYSIS_REPAIR_POSITIVE_CACHE_MINUTES"
+        if has_evidence
+        else "DATA_ANALYSIS_REPAIR_NEGATIVE_CACHE_MINUTES"
+    )
+    fallback = 360 if has_evidence else 15
+    try:
+        minutes = max(1, int(os.getenv(variable, str(fallback))))
+    except ValueError:
+        minutes = fallback
+    return timedelta(minutes=minutes)
+
+
 class QdrantTargetedRepairRetriever:
     """Run the existing hybrid retrievers without rerunning broad query generation."""
 
@@ -170,7 +228,11 @@ class QdrantTargetedRepairRetriever:
         *,
         text_retriever: AsyncTextRetriever | None = None,
         table_retriever: AsyncTableRetriever | None = None,
+        cache: RepairRetrievalCache | None = None,
     ) -> None:
+        use_default_dependencies = (
+            text_retriever is None and table_retriever is None
+        )
         if text_retriever is None and table_retriever is None:
             searcher = HybridQdrantSearcher(
                 embeddings=SingleFlightEmbeddingCache()
@@ -179,6 +241,13 @@ class QdrantTargetedRepairRetriever:
             table_retriever = QdrantTableRetriever(searcher)
         self._text_retriever = text_retriever or QdrantTextRetriever()
         self._table_retriever = table_retriever or QdrantTableRetriever()
+        self._cache = (
+            cache
+            if cache is not None
+            else MongoRepairRetrievalCache()
+            if use_default_dependencies
+            else None
+        )
 
     async def retrieve(
         self,
@@ -207,6 +276,32 @@ class QdrantTargetedRepairRetriever:
                 table_candidates=(),
                 text_evidence=(),
             )
+        cache_key = _repair_cache_key(
+            queries=queries,
+            document_ids=tuple(target_documents),
+            requirements=requirements,
+            assessment=assessment,
+            attempt=attempt,
+        )
+        if self._cache is not None:
+            try:
+                cached = await self._cache.load(
+                    user_id=request.user_id,
+                    cache_key=cache_key,
+                )
+                if cached is not None:
+                    return TargetedRepairResult(
+                        queries=cached.queries,
+                        document_ids=cached.document_ids,
+                        table_candidates=cached.table_candidates,
+                        text_evidence=cached.text_evidence,
+                        cache_hit=True,
+                    )
+            except RepairRetrievalCacheError:
+                logger.warning(
+                    "Targeted-retrieval cache read failed; querying Qdrant",
+                    exc_info=True,
+                )
         state = DataAnalysisRetrievalState(
             user_id=request.user_id,
             chat_id=request.chat_id,
@@ -260,9 +355,33 @@ class QdrantTargetedRepairRetriever:
                 "retrieved_tables": raw_tables,
             }
         )
-        return TargetedRepairResult(
+        result = TargetedRepairResult(
             queries=queries,
             document_ids=tuple(target_documents),
             table_candidates=adapted.table_candidates,
             text_evidence=adapted.text_evidence,
         )
+        if self._cache is not None:
+            has_evidence = bool(result.table_candidates or result.text_evidence)
+            entry = RepairRetrievalCacheEntry(
+                queries=result.queries,
+                document_ids=result.document_ids,
+                table_candidates=result.table_candidates,
+                text_evidence=result.text_evidence,
+                expires_at=(
+                    datetime.now(timezone.utc)
+                    + _cache_ttl(has_evidence=has_evidence)
+                ),
+            )
+            try:
+                await self._cache.save(
+                    user_id=request.user_id,
+                    cache_key=cache_key,
+                    entry=entry,
+                )
+            except RepairRetrievalCacheError:
+                logger.warning(
+                    "Targeted-retrieval cache write failed",
+                    exc_info=True,
+                )
+        return result

@@ -439,6 +439,134 @@ class RequirementsValidationTests(unittest.TestCase):
         )
         self.assertNotIn("expenses", names)
 
+    def test_explicit_metric_variants_are_not_dropped_by_phrase_order(self) -> None:
+        request = _request(
+            "In 2023, how many Indigenous communities did Amazon Conservation "
+            "Team partner with and how many acres of forest did it protect or manage?"
+        )
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.AGGREGATION,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="number of Indigenous communities partnered with",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="acres of forest protected or managed",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+            text_evidence_acceptable=True,
+        )
+
+        artifact = validate_requirements_extraction(
+            request=request,
+            extraction=extraction,
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        names = {item.name.casefold() for item in artifact.requirements}
+        self.assertIn("number of indigenous communities partnered with", names)
+        self.assertIn("acres of forest protected or managed", names)
+
+    def test_conjunction_metric_is_restored_even_when_another_metric_survives(
+        self,
+    ) -> None:
+        request = _request(
+            "Compare Amazon Conservation Team program services and fundraising "
+            "expenses in 2022 and 2023."
+        )
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="fundraising expenses",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+            table_evidence_required=True,
+        )
+
+        artifact = validate_requirements_extraction(
+            request=request,
+            extraction=extraction,
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        names = {item.name.casefold() for item in artifact.requirements}
+        self.assertIn("program services", names)
+        self.assertIn("fundraising expenses", names)
+
+    def test_explicit_category_values_are_preserved_as_required_filter(self) -> None:
+        request = _request(
+            "How did revenue concentration for Customers A, B, and C change "
+            "across 2022, 2023, and 2024 for PDF Solutions?"
+        )
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="revenue",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+            table_evidence_required=True,
+        )
+
+        artifact = validate_requirements_extraction(
+            request=request,
+            extraction=extraction,
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        customer_filter = next(
+            item
+            for item in artifact.requirements
+            if item.kind == RequirementKind.FILTER and item.name == "customer"
+        )
+        self.assertEqual(customer_filter.filter_operator, FilterOperator.IN)
+        self.assertEqual(customer_filter.filter_values, ("A", "B", "C"))
+        self.assertTrue(customer_filter.required)
+
+    def test_cross_document_entity_scopes_enforce_all_selected_documents(
+        self,
+    ) -> None:
+        request = _request(
+            "Compare revenue growth from 2022 to 2023 between Amazon "
+            "Conservation Team and PDF Solutions.",
+            document_ids=(DOCUMENT_A, DOCUMENT_B),
+        )
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="revenue",
+                    entity_names=(
+                        "Amazon Conservation Team",
+                        "PDF Solutions",
+                    ),
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+            ),
+        )
+
+        artifact = validate_requirements_extraction(
+            request=request,
+            extraction=extraction,
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        self.assertTrue(artifact.requires_all_selected_documents)
+
     def test_fallback_restores_single_metric_and_drops_non_unit_instruction(
         self,
     ) -> None:
@@ -605,6 +733,110 @@ class RequirementsRunnerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class EvidenceAssessmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_irrelevant_column_unit_does_not_create_metric_conflict(
+        self,
+    ) -> None:
+        item = _raw_table(
+            table_id="administrative-expense",
+            document_id=DOCUMENT_A,
+            title="Selling, general, and administrative",
+            document_name="annual-report.pdf",
+            columns=[
+                {
+                    "key": "administrative_expense",
+                    "label": "Administrative expense",
+                    "type": "number",
+                    "unit": "USD thousand",
+                }
+            ],
+            rows=[{"administrative_expense": 100}],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(
+                _AmbiguityGenerator(),
+                model="test-model",
+            ),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_graduation_rate",
+                kind=RequirementKind.METRIC,
+                name="graduation rate",
+                unit="percent",
+                expected_data_type=ExpectedDataType.NUMBER,
+            )
+        )
+
+        outcome = await runner.run(
+            request=_request("Compare student graduation rate by gender"),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(
+            outcome.artifact.coverage[0].status,
+            CoverageStatus.MISSING,
+        )
+        self.assertEqual(
+            outcome.artifact.decision,
+            ReadinessDecision.NEEDS_RETRIEVAL_REPAIR,
+        )
+
+    async def test_filter_requires_all_explicit_category_values(self) -> None:
+        item = _raw_table(
+            table_id="customer-concentration",
+            document_id=DOCUMENT_A,
+            title="Customer revenue concentration",
+            document_name="annual-report.pdf",
+            columns=[
+                {"key": "customer", "label": "Customer", "type": "string"},
+                {"key": "year_2024", "label": "2024", "type": "number"},
+            ],
+            rows=[
+                {"customer": "A", "year_2024": 19},
+                {"customer": "B", "year_2024": 12},
+                {"customer": "C", "year_2024": 10},
+            ],
+            summary="Revenue percentages for Customers A, B, and C.",
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(
+                _AmbiguityGenerator(),
+                model="test-model",
+            ),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_filter_customer",
+                kind=RequirementKind.FILTER,
+                name="customer",
+                filter_operator=FilterOperator.IN,
+                filter_values=("A", "B", "C"),
+                expected_data_type=ExpectedDataType.STRING,
+            )
+        )
+
+        outcome = await runner.run(
+            request=_request("Show Customers A, B, and C"),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(
+            outcome.artifact.coverage[0].status,
+            CoverageStatus.SUPPORTED,
+        )
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
     async def test_exact_profile_matches_do_not_call_the_ambiguity_llm(self) -> None:
         item = _raw_table(
             table_id="revenue-table",

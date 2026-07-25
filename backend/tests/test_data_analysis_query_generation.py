@@ -60,6 +60,23 @@ class _FakeQueryGenerator:
         )
 
 
+class _QueryCache:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], dict[str, Any]] = {}
+
+    async def load(self, *, user_id: str, cache_key: str) -> dict[str, Any] | None:
+        return self.values.get((user_id, cache_key))
+
+    async def save(
+        self,
+        *,
+        user_id: str,
+        cache_key: str,
+        result: dict[str, Any],
+    ) -> None:
+        self.values[(user_id, cache_key)] = dict(result)
+
+
 class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
     async def test_subgraph_generates_all_query_types_with_one_llm_call(self) -> None:
         generator = _FakeQueryGenerator()
@@ -88,6 +105,30 @@ class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["column_terms"], ["year", "net income"])
         self.assertEqual(result["table_intent"], "required")
         self.assertEqual(result["match_concepts"][0]["canonical"], "net income")
+
+    async def test_valid_query_generation_is_reused_from_cache(self) -> None:
+        generator = _FakeQueryGenerator()
+        cache = _QueryCache()
+        graph = build_query_generation_subgraph(
+            query_generator=generator,
+            query_cache=cache,
+        )
+        state = create_retrieval_state(
+            user_id="user-1",
+            chat_id="chat-cache",
+            query="Compare net income and explain how profitability changed.",
+            document_ids=["doc-2", "doc-1"],
+        )
+
+        cold = await graph.ainvoke(state)
+        warm = await graph.ainvoke(state)
+
+        self.assertEqual(generator.calls, 1)
+        self.assertFalse(cold["query_generation_cache_hit"])
+        self.assertEqual(cold["query_generation_attempts"], 1)
+        self.assertTrue(warm["query_generation_cache_hit"])
+        self.assertEqual(warm["query_generation_attempts"], 0)
+        self.assertEqual(warm["table_queries"], cold["table_queries"])
 
     def test_thread_id_is_the_chat_id(self) -> None:
         config = retrieval_thread_config(chat_id="chat-123", user_id="user-1")

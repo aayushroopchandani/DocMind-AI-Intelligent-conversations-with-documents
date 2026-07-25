@@ -274,6 +274,36 @@ def _best_label_score(
     return best, method
 
 
+def _profile_category_values(column: ColumnProfile) -> tuple[str, ...]:
+    values = list(column.example_values)
+    if column.string_statistics is not None:
+        values.extend(
+            item.value
+            for item in column.string_statistics.most_frequent_values
+        )
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _filter_values_supported(
+    requirement: RequirementItem,
+    column: ColumnProfile,
+) -> bool:
+    if not requirement.filter_values:
+        return True
+    available = _profile_category_values(column)
+    if not available:
+        return False
+    return all(
+        any(
+            safe_equivalent(required, candidate)
+            or contains_phrase(candidate, required)
+            or lexical_score(required, candidate) >= 0.94
+            for candidate in available
+        )
+        for required in requirement.filter_values
+    )
+
+
 def _column_matches(
     requirement: RequirementItem,
     context: DatasetContext,
@@ -292,20 +322,31 @@ def _column_matches(
             continue
         if not _column_role_compatible(requirement, column):
             continue
+        score, method = _best_label_score(
+            requirement,
+            f"{column.label} {column.key}",
+        )
         if requirement.unit:
             if column.detected_unit:
                 unit_score = lexical_score(
                     requirement.unit,
                     column.detected_unit,
                 )
-                if unit_score < 0.80:
+                if unit_score >= 0.80:
+                    # In wide/transposed tables the metric is commonly stored
+                    # in a row label while the unit belongs to a year column.
+                    verified_unit = True
+                elif score >= 0.43:
+                    # An unrelated column must not create a unit conflict.
                     unit_conflict = True
                     continue
-                verified_unit = True
-        score, method = _best_label_score(
-            requirement,
-            f"{column.label} {column.key}",
-        )
+        if score < 0.43:
+            continue
+        if (
+            requirement.kind == RequirementKind.FILTER
+            and not _filter_values_supported(requirement, column)
+        ):
+            continue
         if score >= 0.82:
             matches.append(
                 _dataset_reference(
@@ -359,6 +400,24 @@ def _summary_matches(
     ):
         return []
     terms = _requirement_terms(requirement)
+    combined = f"{metadata.title}\n{metadata.summary}"
+    if requirement.kind == RequirementKind.FILTER and requirement.filter_values:
+        if (
+            any(contains_phrase(combined, term) for term in terms)
+            and all(
+                contains_phrase(combined, value)
+                for value in requirement.filter_values
+            )
+        ):
+            return [
+                _dataset_reference(
+                    context,
+                    confidence=0.88,
+                    method=MatchMethod.TABLE_SUMMARY,
+                    label=context.profile.title,
+                )
+            ]
+        return []
     for keyword in metadata.keywords:
         if any(safe_equivalent(term, keyword) for term in terms):
             return [
@@ -369,7 +428,6 @@ def _summary_matches(
                     label=f"{context.profile.title}: {keyword}",
                 )
             ]
-    combined = f"{metadata.title}\n{metadata.summary}"
     if any(contains_phrase(combined, term) for term in terms):
         return [
             _dataset_reference(

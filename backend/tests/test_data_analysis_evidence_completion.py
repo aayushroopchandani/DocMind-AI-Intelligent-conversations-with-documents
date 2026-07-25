@@ -310,6 +310,23 @@ class _CapturingTableRetriever:
         ]
 
 
+class _RepairCache:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], Any] = {}
+
+    async def load(self, *, user_id: str, cache_key: str) -> Any:
+        return self.values.get((user_id, cache_key))
+
+    async def save(
+        self,
+        *,
+        user_id: str,
+        cache_key: str,
+        entry: Any,
+    ) -> None:
+        self.values[(user_id, cache_key)] = entry
+
+
 class _MongoCollection:
     def __init__(self, value: dict[str, Any] | None = None) -> None:
         self.value = value
@@ -446,6 +463,92 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("req_period_2023", selected[0].requirement_ids)
 
+    def test_candidate_rescue_requires_explicit_category_coverage(self) -> None:
+        requirements = AnalysisRequirements(
+            model="test-model",
+            operation=AnalysisOperation.COMPARISON,
+            selected_document_ids=(DOCUMENT_ID,),
+            requirements=(
+                RequirementItem(
+                    requirement_id="req_metric_revenue",
+                    kind=RequirementKind.METRIC,
+                    name="revenue",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+                RequirementItem(
+                    requirement_id="req_filter_customer",
+                    kind=RequirementKind.FILTER,
+                    name="customer",
+                    filter_operator="in",
+                    filter_values=("A", "B", "C"),
+                    expected_data_type=ExpectedDataType.STRING,
+                ),
+            ),
+            table_evidence_required=True,
+        )
+        assessment = EvidenceAssessment(
+            ambiguity_model="test",
+            decision=ReadinessDecision.NEEDS_CANDIDATE_RESCUE,
+            coverage=(
+                RequirementCoverage(
+                    requirement_id="req_metric_revenue",
+                    status=CoverageStatus.MISSING,
+                    confidence=0,
+                    reason="missing",
+                ),
+                RequirementCoverage(
+                    requirement_id="req_filter_customer",
+                    status=CoverageStatus.MISSING,
+                    confidence=0,
+                    reason="missing",
+                ),
+            ),
+            document_coverage=(
+                DocumentCoverage(
+                    document_id=DOCUMENT_ID,
+                    required=True,
+                    status=CoverageStatus.MISSING,
+                ),
+            ),
+            required_count=2,
+            supported_count=0,
+            partial_count=0,
+            missing_count=2,
+            conflicting_count=0,
+            ambiguous_count=0,
+        )
+        candidates = (
+            TableCandidateReference(
+                table_id="customer-table",
+                document_id=DOCUMENT_ID,
+                title="Customer revenue concentration",
+                summary="Revenue percentages for Customers A, B, and C.",
+                expected_columns=("Customer", "2024", "2023", "2022"),
+                expected_metrics=("revenue",),
+            ),
+            TableCandidateReference(
+                table_id="analytics-table",
+                document_id=DOCUMENT_ID,
+                title="Analytics revenue",
+                summary="Total revenue and gross profit by year.",
+                expected_columns=("Revenue", "2024", "2023", "2022"),
+                expected_metrics=("revenue",),
+            ),
+        )
+
+        selected = CandidateRescueSelector().select(
+            requirements=requirements,
+            assessment=assessment,
+            candidates=candidates,
+            used_table_ids=set(),
+        )
+
+        self.assertEqual(
+            [item.candidate.table_id for item in selected],
+            ["customer-table"],
+        )
+        self.assertIn("req_filter_customer", selected[0].requirement_ids)
+
     def test_text_facts_require_verbatim_numeric_provenance(self) -> None:
         chunk = _chunk()
         accepted = validate_text_extraction(
@@ -502,7 +605,7 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
                         metric="total revenue",
                         raw_value="2023",
                         unit="USD million",
-                        period="2023",
+                        period=None,
                         document_id=DOCUMENT_ID,
                         chunk_id="chunk-1",
                         source_span=chunk.text,
@@ -520,6 +623,188 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rejected.facts, ())
         self.assertEqual(len(rejected.rejected), 1)
         self.assertEqual(period_as_value.facts, ())
+
+    def test_text_fact_normalizes_decimal_comma_scale_and_document_period(
+        self,
+    ) -> None:
+        chunk = TextEvidenceReference(
+            chunk_id="impact-chunk",
+            document_id=DOCUMENT_ID,
+            document_name="amazon-conservation-team_2023.pdf",
+            page_number=9,
+            text=(
+                "IMPACT SUMMARY\n"
+                "9,9 MILLION ACRES UNDER IMPROVED SUSTAINABLE MANAGEMENT"
+            ),
+        )
+        requirements = (
+            RequirementItem(
+                requirement_id="req_metric_managed_acres",
+                kind=RequirementKind.METRIC,
+                name="acres under improved sustainable management",
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2023",
+                kind=RequirementKind.PERIOD,
+                name="2023",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+        )
+
+        result = validate_text_extraction(
+            response=TextExtractionResponse(
+                status="evidence",
+                facts=(
+                    ProposedEvidenceFact(
+                        requirement_id="req_metric_managed_acres",
+                        entity="Amazon Conservation Team",
+                        metric="acres under improved sustainable management",
+                        raw_value="9,9 MILLION",
+                        unit="acres",
+                        period=None,
+                        document_id=DOCUMENT_ID,
+                        chunk_id="impact-chunk",
+                        source_span=(
+                            "9,9 MILLION ACRES UNDER IMPROVED "
+                            "SUSTAINABLE MANAGEMENT"
+                        ),
+                        confidence=0.99,
+                    ),
+                ),
+            ),
+            requirements=requirements,
+            chunks=(chunk,),
+            model="test-extractor",
+        )
+
+        self.assertEqual(len(result.facts), 1)
+        self.assertEqual(result.facts[0].normalized_value, "9.9")
+        self.assertEqual(result.facts[0].unit, "million acres")
+        self.assertEqual(result.facts[0].period, "2023")
+
+    def test_area_measure_cannot_satisfy_a_count_metric(self) -> None:
+        chunk = TextEvidenceReference(
+            chunk_id="reserve-chunk",
+            document_id=DOCUMENT_ID,
+            document_name="amazon-conservation-team_2023.pdf",
+            page_number=9,
+            text=(
+                "2,7 MILLION ACRES OF INDIGENOUS RESERVES ESTABLISHED\n"
+                "33 NEW INDIGENOUS RESERVES"
+            ),
+        )
+        requirements = (
+            RequirementItem(
+                requirement_id="req_metric_new_indigenous_reserves",
+                kind=RequirementKind.METRIC,
+                name="new Indigenous reserves",
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2023",
+                kind=RequirementKind.PERIOD,
+                name="2023",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+        )
+
+        result = validate_text_extraction(
+            response=TextExtractionResponse(
+                status="evidence",
+                facts=(
+                    ProposedEvidenceFact(
+                        requirement_id="req_metric_new_indigenous_reserves",
+                        entity="Amazon Conservation Team",
+                        metric="new Indigenous reserves",
+                        raw_value="2,7 MILLION",
+                        unit="acres",
+                        period=None,
+                        document_id=DOCUMENT_ID,
+                        chunk_id="reserve-chunk",
+                        source_span=(
+                            "2,7 MILLION ACRES OF INDIGENOUS "
+                            "RESERVES ESTABLISHED"
+                        ),
+                        confidence=0.99,
+                    ),
+                    ProposedEvidenceFact(
+                        requirement_id="req_metric_new_indigenous_reserves",
+                        entity="Amazon Conservation Team",
+                        metric="new Indigenous reserves",
+                        raw_value="33",
+                        unit=None,
+                        period=None,
+                        document_id=DOCUMENT_ID,
+                        chunk_id="reserve-chunk",
+                        source_span="33 NEW INDIGENOUS RESERVES",
+                        confidence=0.99,
+                    ),
+                ),
+            ),
+            requirements=requirements,
+            chunks=(chunk,),
+            model="test-extractor",
+        )
+
+        self.assertEqual(len(result.facts), 1)
+        self.assertEqual(result.facts[0].normalized_value, "33")
+        self.assertEqual(len(result.rejected), 1)
+        self.assertIn("cannot quantify", result.rejected[0].reason)
+
+    def test_text_fact_recovers_grounded_span_with_whitespace_differences(
+        self,
+    ) -> None:
+        text = (
+            "As of December 31, 2024, the aggregate amount allocated to the "
+            "remaining performance obligations was $221.4 million."
+        )
+        chunk = TextEvidenceReference(
+            chunk_id="obligations-chunk",
+            document_id=DOCUMENT_ID,
+            document_name="PDF Solutions 2024 Annual Report.pdf",
+            page_number=68,
+            text=text,
+        )
+        requirements = (
+            RequirementItem(
+                requirement_id="req_metric_remaining_obligations",
+                kind=RequirementKind.METRIC,
+                name="remaining performance obligations",
+                expected_data_type=ExpectedDataType.NUMBER,
+                unit="USD million",
+            ),
+        )
+
+        result = validate_text_extraction(
+            response=TextExtractionResponse(
+                status="evidence",
+                facts=(
+                    ProposedEvidenceFact(
+                        requirement_id="req_metric_remaining_obligations",
+                        entity="PDF Solutions",
+                        metric="remaining performance obligations",
+                        raw_value="$221.4",
+                        unit="USD million",
+                        period="2024",
+                        document_id=DOCUMENT_ID,
+                        chunk_id="obligations-chunk",
+                        source_span=(
+                            "remaining performance obligations   was "
+                            "$221.4 million"
+                        ),
+                        confidence=0.96,
+                    ),
+                ),
+            ),
+            requirements=requirements,
+            chunks=(chunk,),
+            model="test-extractor",
+        )
+
+        self.assertEqual(len(result.facts), 1)
+        self.assertEqual(result.facts[0].raw_value, "$221.4")
+        self.assertIn("$221.4 million", result.facts[0].source_span)
 
     async def test_text_extraction_is_cached_and_small_results_stay_as_facts(
         self,
@@ -677,22 +962,31 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         text = _CapturingTextRetriever()
         tables = _CapturingTableRetriever()
+        cache = _RepairCache()
         retriever = QdrantTargetedRepairRetriever(
             text_retriever=text,
             table_retriever=tables,
+            cache=cache,
         )
 
-        result = await retriever.retrieve(
-            request=AnalysisRequest(
+        kwargs = {
+            "request": AnalysisRequest(
                 user_id="user-1",
                 chat_id="chat-1",
                 query="original broad question",
                 document_ids=(DOCUMENT_ID,),
             ),
-            requirements=_requirements(),
-            assessment=_assessment(),
+            "requirements": _requirements(),
+            "assessment": _assessment(),
+            "attempt": 1,
+        }
+        result = await retriever.retrieve(
+            **kwargs,
             attempted_queries=set(),
-            attempt=1,
+        )
+        cached = await retriever.retrieve(
+            **kwargs,
+            attempted_queries=set(),
         )
 
         self.assertEqual(text.states[0]["retrieval_scope"], "broad")
@@ -704,6 +998,10 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
             result.table_candidates[0].table_id,
             "repair-table",
         )
+        self.assertEqual(len(text.states), 1)
+        self.assertEqual(len(tables.states), 1)
+        self.assertTrue(cached.cache_hit)
+        self.assertEqual(cached.table_candidates, result.table_candidates)
 
 
 class EvidenceFactAssessmentTests(unittest.IsolatedAsyncioTestCase):

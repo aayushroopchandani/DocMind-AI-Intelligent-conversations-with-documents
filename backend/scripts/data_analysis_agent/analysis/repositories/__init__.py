@@ -33,6 +33,11 @@ from .requirements_cache import (
     RequirementsCache,
     RequirementsCacheError,
 )
+from .repair_cache import (
+    MongoRepairRetrievalCache,
+    RepairRetrievalCache,
+    RepairRetrievalCacheError,
+)
 
 __all__ = [
     "AssessmentCache",
@@ -54,11 +59,14 @@ __all__ = [
     "MongoEvidenceRepository",
     "MongoProfileCache",
     "MongoRequirementsCache",
+    "MongoRepairRetrievalCache",
     "MongoTextExtractionCache",
     "ProfileCache",
     "ProfileCacheError",
     "RequirementsCache",
     "RequirementsCacheError",
+    "RepairRetrievalCache",
+    "RepairRetrievalCacheError",
     "TableAssessmentMetadata",
     "TextExtractionCache",
     "TextExtractionCacheError",

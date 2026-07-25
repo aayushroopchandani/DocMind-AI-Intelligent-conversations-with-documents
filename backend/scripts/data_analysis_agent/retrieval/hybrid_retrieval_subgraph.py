@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .fusion import ResultSelector, build_fusion_node
 from .query_generation import AsyncQueryGenerator, build_query_generation_node
+from .query_cache import QueryGenerationCache
 from .query_generation_subgraph import QUERY_GENERATION_NODE
 from .state import DataAnalysisRetrievalState
 from .table_retrieval import AsyncTableRetriever, build_table_retrieval_node
@@ -27,6 +28,7 @@ FUSION_NODE = "fusion"
 def build_hybrid_retrieval_subgraph(
     *,
     query_generator: AsyncQueryGenerator | None = None,
+    query_cache: QueryGenerationCache | None = None,
     text_retriever: AsyncTextRetriever | None = None,
     table_retriever: AsyncTableRetriever | None = None,
     result_selector: ResultSelector | None = None,
@@ -45,7 +47,7 @@ def build_hybrid_retrieval_subgraph(
     builder = StateGraph(DataAnalysisRetrievalState)
     builder.add_node(
         QUERY_GENERATION_NODE,
-        build_query_generation_node(query_generator),
+        build_query_generation_node(query_generator, query_cache),
     )
     builder.add_node(
         TEXT_RETRIEVAL_NODE,

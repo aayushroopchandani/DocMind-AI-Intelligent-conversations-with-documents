@@ -16,6 +16,7 @@ class DataAnalysisRetrievalState(TypedDict, total=False):
     table_intent: Literal["required", "supporting", "none"]
     query_generation_attempts: int
     query_generation_fallback: bool
+    query_generation_cache_hit: bool
     shared_queries: list[str]
     text_queries: list[str]
     table_queries: list[str]
@@ -68,6 +69,7 @@ def create_retrieval_state(
         table_intent="supporting",
         query_generation_attempts=0,
         query_generation_fallback=False,
+        query_generation_cache_hit=False,
         metrics=[],
         years=[],
         entities=[],
