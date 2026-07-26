@@ -12,6 +12,45 @@ export const WORKBOOK_STORAGE_PREFIX = `${STORAGE_PREFIX}.workbook.`;
 export const DEFAULT_PROJECT_NAME = "Untitled Analysis";
 export const SPREADSHEET_NAME_PREFIX = "Untitled spreadsheet";
 
+/* ------------------------------------------------------------------ */
+/* PDF documents                                                       */
+/* ------------------------------------------------------------------ */
+
+/** IndexedDB database holding uploaded PDF blobs (never localStorage). */
+export const PDF_DB_NAME = "docmind.data-analysis.pdfs";
+export const PDF_DB_VERSION = 1;
+export const PDF_DB_STORE = "blobs";
+
+/** Bump when the stored blob record shape changes; older rows are dropped. */
+export const PDF_RECORD_SCHEMA_VERSION = 1;
+
+/** Files accepted by the upload input. */
+export const PDF_ACCEPT_ATTRIBUTE = ".pdf,application/pdf";
+export const PDF_MIME_TYPE = "application/pdf";
+
+/** Maximum PDFs accepted in a single upload operation. */
+export const MAX_PDF_UPLOAD_BATCH = 2;
+
+/** Refuse absurdly large files before reading them into memory (200 MB). */
+export const MAX_PDF_FILE_BYTES = 200 * 1024 * 1024;
+
+/**
+ * PDFium WebAssembly binary. Served from `public/pdfium/` by the
+ * `predev`/`prebuild` copy script so the viewer never depends on a CDN.
+ */
+export const PDFIUM_WASM_URL =
+  process.env.NEXT_PUBLIC_PDFIUM_WASM_URL ?? "/pdfium/pdfium.wasm";
+
+/** PDF thumbnail sidebar (px). */
+export const PDF_THUMBNAIL_WIDTH = 104;
+export const PDF_SIDEBAR_WIDTH = 168;
+
+/** Debounce for persisting a PDF's page/zoom into artifact metadata. */
+export const PDF_VIEW_STATE_SAVE_DEBOUNCE_MS = 600;
+
+/** How long a citation highlight pulses before settling. */
+export const PDF_CITATION_PULSE_MS = 2200;
+
 /** Left explorer panel (px). */
 export const LEFT_PANEL_DEFAULT = 260;
 export const LEFT_PANEL_MIN = 216;

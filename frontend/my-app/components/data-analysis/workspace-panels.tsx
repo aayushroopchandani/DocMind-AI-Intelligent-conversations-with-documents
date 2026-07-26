@@ -7,7 +7,13 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { FilePlus2, PanelLeftOpen, PanelRightOpen, Sparkles } from "lucide-react";
+import {
+  FilePlus2,
+  FileUp,
+  PanelLeftOpen,
+  PanelRightOpen,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -29,8 +35,10 @@ import {
   RIGHT_PANEL_DEFAULT,
 } from "@/lib/data-analysis/constants";
 import { useIsDesktop } from "@/lib/data-analysis/use-is-desktop";
+import { usePdfUpload } from "@/lib/data-analysis/use-pdf-upload";
 import { AiAnalystPanel } from "@/components/data-analysis/analyst/ai-analyst-panel";
 import { FileExplorer } from "@/components/data-analysis/explorer/file-explorer";
+import { PdfUploadInput } from "@/components/data-analysis/explorer/pdf-upload-input";
 import { WorkspaceShell } from "@/components/data-analysis/workspace/workspace-shell";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 import { cn } from "@/lib/utils";
@@ -207,6 +215,7 @@ export function WorkspacePanels() {
 
 function ExplorerRail() {
   const { actions, updateLayout } = useRailHelpers();
+  const { inputRef, openFilePicker, handleInputChange } = usePdfUpload();
 
   return (
     <div className="flex h-full flex-col items-center gap-1 py-2 animate-in fade-in duration-200">
@@ -240,6 +249,22 @@ function ExplorerRail() {
         />
         <TooltipContent side="right">New blank spreadsheet</TooltipContent>
       </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Upload PDF"
+              onClick={openFilePicker}
+            >
+              <FileUp />
+            </Button>
+          }
+        />
+        <TooltipContent side="right">Upload PDF</TooltipContent>
+      </Tooltip>
+      <PdfUploadInput inputRef={inputRef} onChange={handleInputChange} />
     </div>
   );
 }

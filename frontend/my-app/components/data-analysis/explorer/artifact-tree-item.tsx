@@ -1,6 +1,13 @@
 "use client";
 
-import { Copy, FileSpreadsheet, FolderOpen, PanelTopClose, Pencil, Trash2 } from "lucide-react";
+import {
+  Copy,
+  FolderOpen,
+  PanelTopClose,
+  Pencil,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -8,7 +15,10 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { formatFileSize } from "@/lib/data-analysis/pdf/pdf-validation";
 import type { ArtifactMeta } from "@/lib/data-analysis/types";
+import { isPdfArtifact } from "@/lib/data-analysis/types";
+import { ArtifactIcon } from "@/components/data-analysis/workspace/artifact-icon";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +32,8 @@ export function ArtifactTreeItem({ artifact }: { artifact: ArtifactMeta }) {
 
   const isOpen = state.openTabIds.includes(artifact.id);
   const isActive = state.activeTabId === artifact.id;
+  const pdf = isPdfArtifact(artifact) ? artifact.pdf : null;
+  const isBroken = pdf?.loadingStatus === "missing" || pdf?.loadingStatus === "error";
 
   return (
     <ContextMenu>
@@ -30,6 +42,11 @@ export function ArtifactTreeItem({ artifact }: { artifact: ArtifactMeta }) {
           <button
             type="button"
             onClick={() => actions.openArtifact(artifact.id)}
+            title={
+              pdf
+                ? `${artifact.name} · ${formatFileSize(pdf.fileSize)}`
+                : artifact.name
+            }
             className={cn(
               "group flex w-full items-center gap-2 rounded-lg border border-transparent px-2 py-1.5 text-left text-sm outline-none transition-colors",
               "hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring/50",
@@ -38,7 +55,8 @@ export function ArtifactTreeItem({ artifact }: { artifact: ArtifactMeta }) {
                 : "text-muted-foreground",
             )}
           >
-            <FileSpreadsheet
+            <ArtifactIcon
+              type={artifact.type}
               className={cn(
                 "size-4 shrink-0",
                 isActive
@@ -47,7 +65,12 @@ export function ArtifactTreeItem({ artifact }: { artifact: ArtifactMeta }) {
               )}
             />
             <span className="min-w-0 flex-1 truncate">{artifact.name}</span>
-            {artifact.isDirty ? (
+            {isBroken ? (
+              <TriangleAlert
+                aria-label="This PDF is unavailable"
+                className="size-3.5 shrink-0 text-destructive"
+              />
+            ) : artifact.isDirty ? (
               <span
                 aria-label="Unsaved changes"
                 className="size-1.5 shrink-0 rounded-full bg-[color:var(--accent-cyan)]"
@@ -70,10 +93,13 @@ export function ArtifactTreeItem({ artifact }: { artifact: ArtifactMeta }) {
           <Pencil />
           Rename
         </ContextMenuItem>
-        <ContextMenuItem onClick={() => actions.duplicateArtifact(artifact.id)}>
-          <Copy />
-          Duplicate
-        </ContextMenuItem>
+        {/* Duplicating clones a workbook snapshot — meaningless for PDFs. */}
+        {artifact.type === "spreadsheet" ? (
+          <ContextMenuItem onClick={() => actions.duplicateArtifact(artifact.id)}>
+            <Copy />
+            Duplicate
+          </ContextMenuItem>
+        ) : null}
         {isOpen ? (
           <ContextMenuItem onClick={() => actions.closeTab(artifact.id)}>
             <PanelTopClose />

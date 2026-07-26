@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { AnalystMode } from "@/lib/data-analysis/types";
+import { activeArtifact } from "@/lib/data-analysis/workspace-state";
 import { AnalystComposer } from "@/components/data-analysis/analyst/analyst-composer";
 import { ProposedActionCard } from "@/components/data-analysis/analyst/proposed-action-card";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
@@ -17,12 +18,34 @@ const MODES: Array<{ value: AnalystMode; label: string }> = [
   { value: "edit", label: "Edit" },
 ];
 
-const SUGGESTIONS = [
-  "Summarise this sheet",
-  "Find missing values",
-  "Create a formula",
-  "Compare selected columns",
-];
+/**
+ * Prompt starters, chosen by the active artifact type. UI only — tapping one
+ * fills the composer; nothing is sent until the analyst backend exists.
+ */
+const SUGGESTIONS: Record<"spreadsheet" | "pdf" | "none", string[]> = {
+  spreadsheet: [
+    "Summarise this sheet",
+    "Find missing values",
+    "Create a formula",
+    "Compare selected columns",
+  ],
+  pdf: [
+    "Summarise this page",
+    "Explain the selected text",
+    "Find financial tables",
+    "Extract this table",
+  ],
+  none: [
+    "Summarise this workspace",
+    "What can you analyse?",
+  ],
+};
+
+const HEADINGS: Record<"spreadsheet" | "pdf" | "none", string> = {
+  spreadsheet: "Ask questions about the active spreadsheet",
+  pdf: "Ask questions about the active document",
+  none: "Open a document to start analysing",
+};
 
 interface AiAnalystPanelProps {
   onCollapse?: () => void;
@@ -35,6 +58,10 @@ interface AiAnalystPanelProps {
 export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
   const { state, actions } = useWorkspace();
   const [draft, setDraft] = useState("");
+
+  const activeType = activeArtifact(state)?.type;
+  const surface =
+    activeType === "pdf" || activeType === "spreadsheet" ? activeType : "none";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -94,14 +121,15 @@ export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
               <Sparkles className="size-5" />
             </span>
             <p className="mt-3 text-sm font-medium text-foreground">
-              Ask questions about the active spreadsheet
+              {HEADINGS[surface]}
             </p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              The analyst will read your selection, propose edits and build
-              new artifacts once its backend is connected.
+              {surface === "pdf"
+                ? "The analyst will read the page you are on, cite its sources and extract tables into spreadsheets once its backend is connected."
+                : "The analyst will read your selection, propose edits and build new artifacts once its backend is connected."}
             </p>
             <div className="mt-4 flex flex-wrap justify-center gap-1.5">
-              {SUGGESTIONS.map((suggestion) => (
+              {SUGGESTIONS[surface].map((suggestion) => (
                 <button
                   key={suggestion}
                   type="button"

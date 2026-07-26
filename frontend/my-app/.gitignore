@@ -43,3 +43,6 @@ next-env.d.ts
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# PDFium wasm copied from node_modules by scripts/copy-pdfium-wasm.mjs
+/public/pdfium/

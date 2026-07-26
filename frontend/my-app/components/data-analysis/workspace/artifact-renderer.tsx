@@ -8,17 +8,17 @@ import type { ArtifactMeta } from "@/lib/data-analysis/types";
  * Discriminated renderer for workspace artifacts — the single extension
  * point for future document types.
  *
- * - `spreadsheet` returns null: the persistent Univer host (mounted once in
- *   WorkspaceShell so tab switches never re-boot the engine) shows through.
- * - `pdf` / `chart` / `report` / `dashboard` get real renderers in later
- *   milestones; until then a clean placeholder keeps the architecture
- *   honest without fake viewers or extra dependencies.
+ * - `spreadsheet` and `pdf` return null: their persistent hosts (mounted once
+ *   in WorkspaceShell so tab switches never re-boot an engine) show through.
+ * - `chart` / `report` / `dashboard` get real renderers in later milestones;
+ *   until then a clean placeholder keeps the architecture honest without fake
+ *   viewers or extra dependencies.
  */
 export function ArtifactRenderer({ artifact }: { artifact: ArtifactMeta }) {
   switch (artifact.type) {
     case "spreadsheet":
-      return null;
     case "pdf":
+      return null;
     case "chart":
     case "report":
     case "dashboard":

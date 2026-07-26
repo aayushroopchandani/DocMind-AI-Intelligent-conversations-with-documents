@@ -1,16 +1,17 @@
 "use client";
 
-import { FileSpreadsheet, Plus, X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { ArtifactMeta } from "@/lib/data-analysis/types";
+import { ArtifactIcon } from "@/components/data-analysis/workspace/artifact-icon";
+import { NewArtifactMenu } from "@/components/data-analysis/explorer/new-artifact-menu";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 import { cn } from "@/lib/utils";
 
 /**
- * IDE-style artifact tab strip. Tabs represent files (spreadsheets today,
- * PDFs/charts/reports later) — not worksheets, which Univer renders at the
- * bottom of the grid.
+ * IDE-style artifact tab strip. Tabs represent files — spreadsheets and PDFs
+ * today, charts/reports later — not worksheets, which Univer renders at the
+ * bottom of the grid. A PDF has no worksheet tabs of its own.
  */
 export function WorkspaceTabs() {
   const { state, actions } = useWorkspace();
@@ -48,7 +49,8 @@ export function WorkspaceTabs() {
                 }}
                 className="flex min-w-0 max-w-52 items-center gap-1.5 rounded-t-lg py-1.5 pl-2.5 pr-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               >
-                <FileSpreadsheet
+                <ArtifactIcon
+                  type={artifact.type}
                   className={cn(
                     "size-3.5 shrink-0",
                     isActive && "text-[color:var(--accent-cyan)]",
@@ -84,22 +86,21 @@ export function WorkspaceTabs() {
         })}
       </div>
 
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="New blank spreadsheet"
-              onClick={actions.createSpreadsheet}
-              className="mb-0.5 shrink-0"
-            >
-              <Plus />
-            </Button>
-          }
-        />
-        <TooltipContent>New blank spreadsheet</TooltipContent>
-      </Tooltip>
+      {/* No tooltip here: the trigger already opens a labelled menu, and a
+          tooltip around a menu trigger fights the popup for hover state. */}
+      <NewArtifactMenu
+        trigger={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Add to workspace"
+            title="Add to workspace"
+            className="mb-0.5 shrink-0"
+          >
+            <Plus />
+          </Button>
+        }
+      />
     </div>
   );
 }

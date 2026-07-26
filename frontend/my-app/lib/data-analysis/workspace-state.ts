@@ -2,6 +2,7 @@ import {
   DEFAULT_PROJECT_NAME,
   SPREADSHEET_NAME_PREFIX,
 } from "@/lib/data-analysis/constants";
+import type { PdfArtifactMeta } from "@/lib/data-analysis/pdf/pdf-types";
 import type {
   AnalystContext,
   AnalystMode,
@@ -12,13 +13,16 @@ import type {
 } from "@/lib/data-analysis/types";
 
 /**
- * Pure reducer for the data-analysis workspace. All Univer objects stay
- * outside this state — the reducer only manages serializable metadata.
+ * Pure reducer for the data-analysis workspace. All Univer and EmbedPDF
+ * objects stay outside this state — the reducer only manages serializable
+ * metadata.
  */
 
 export type WorkspaceAction =
   | { type: "HYDRATE"; payload: PersistedWorkspaceState | null }
   | { type: "ADD_ARTIFACT"; artifact: ArtifactMeta; open: boolean }
+  | { type: "ADD_ARTIFACTS"; artifacts: ArtifactMeta[]; openFirst: boolean }
+  | { type: "PATCH_PDF_META"; id: string; patch: Partial<PdfArtifactMeta> }
   | { type: "OPEN_ARTIFACT"; id: string }
   | { type: "ACTIVATE_TAB"; id: string }
   | { type: "CLOSE_TAB"; id: string }
@@ -69,6 +73,23 @@ export function activeArtifact(
   return findArtifact(state, state.activeTabId);
 }
 
+/** Open tabs of one artifact type, in tab order. */
+export function openArtifactsOfType(
+  state: WorkspaceState,
+  type: ArtifactMeta["type"],
+): ArtifactMeta[] {
+  return state.openTabIds
+    .map((id) => findArtifact(state, id))
+    .filter(
+      (artifact): artifact is ArtifactMeta => artifact?.type === type,
+    );
+}
+
+/** Every display name in use — upload dedupes new file names against this. */
+export function artifactNames(state: WorkspaceState): Set<string> {
+  return new Set(state.artifacts.map((artifact) => artifact.name));
+}
+
 function touchProject(state: WorkspaceState): WorkspaceState {
   return {
     ...state,
@@ -92,9 +113,21 @@ export function workspaceReducer(
         hydrated: true,
         project,
         // Snapshots were flushed before the last unload; nothing is dirty.
+        // A PDF's loading status describes the current session only, so it
+        // restarts at `loading` — the host re-reads each blob from IndexedDB
+        // and reports `missing` if the bytes are gone.
         artifacts: artifacts.map((artifact) => ({
           ...artifact,
           isDirty: false,
+          ...(artifact.pdf
+            ? {
+                pdf: {
+                  ...artifact.pdf,
+                  loadingStatus: "loading" as const,
+                  errorMessage: undefined,
+                },
+              }
+            : null),
         })),
         openTabIds: tabs,
         activeTabId:
@@ -120,6 +153,45 @@ export function workspaceReducer(
         ...next,
         openTabIds: [...next.openTabIds, action.artifact.id],
         activeTabId: action.artifact.id,
+      };
+    }
+
+    case "ADD_ARTIFACTS": {
+      if (action.artifacts.length === 0) return state;
+      const spreadsheetsAdded = action.artifacts.filter(
+        (artifact) => artifact.type === "spreadsheet",
+      ).length;
+      const next = touchProject({
+        ...state,
+        artifacts: [...state.artifacts, ...action.artifacts],
+        spreadsheetCounter: state.spreadsheetCounter + spreadsheetsAdded,
+      });
+      if (!action.openFirst) return next;
+      // Only the first artifact opens as a tab; the rest stay in the
+      // explorer so a multi-file upload never floods the tab strip.
+      const first = action.artifacts[0];
+      return {
+        ...next,
+        openTabIds: [...next.openTabIds, first.id],
+        activeTabId: first.id,
+      };
+    }
+
+    case "PATCH_PDF_META": {
+      const artifact = findArtifact(state, action.id);
+      if (!artifact?.pdf) return state;
+      const pdf = { ...artifact.pdf, ...action.patch };
+      // Cheap identity guard: viewer events fire often and must not spam
+      // renders (or the debounced metadata write) with unchanged values.
+      const unchanged = (
+        Object.keys(action.patch) as Array<keyof PdfArtifactMeta>
+      ).every((key) => artifact.pdf?.[key] === pdf[key]);
+      if (unchanged) return state;
+      return {
+        ...state,
+        artifacts: state.artifacts.map((item) =>
+          item.id === action.id ? { ...item, pdf } : item,
+        ),
       };
     }
 

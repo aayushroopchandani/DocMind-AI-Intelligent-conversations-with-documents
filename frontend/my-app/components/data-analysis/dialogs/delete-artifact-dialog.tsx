@@ -12,10 +12,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 
-/** Confirmed, destructive delete: removes the artifact and its local draft. */
+/** Confirmed, destructive delete: removes the artifact and its local data. */
 export function DeleteArtifactDialog() {
   const { actions, ui } = useWorkspace();
   const target = ui.deleteTarget;
+  const isPdf = target?.type === "pdf";
 
   const close = () => ui.setDeleteTargetId(null);
 
@@ -24,11 +25,12 @@ export function DeleteArtifactDialog() {
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
-            Delete “{target?.name ?? "spreadsheet"}”?
+            Delete “{target?.name ?? "this file"}”?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            This removes the spreadsheet and its locally saved draft. This
-            action cannot be undone.
+            {isPdf
+              ? "This closes the document and erases the copy stored in this browser. This action cannot be undone."
+              : "This removes the spreadsheet and its locally saved draft. This action cannot be undone."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

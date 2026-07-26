@@ -15,8 +15,15 @@ import {
 import {
   DEFAULT_LAYOUT,
   METADATA_SAVE_DEBOUNCE_MS,
+  PDF_MIME_TYPE,
 } from "@/lib/data-analysis/constants";
-import { notifyStorageFull } from "@/lib/data-analysis/feedback";
+import {
+  notifyPdfAdded,
+  notifyPdfBatchTruncated,
+  notifyPdfRejected,
+  notifyPdfStoreFailed,
+  notifyStorageFull,
+} from "@/lib/data-analysis/feedback";
 import {
   cleanupOrphanWorkbookSnapshots,
   deleteWorkbookSnapshot,
@@ -27,19 +34,36 @@ import {
   saveWorkbookSnapshot,
   saveWorkspaceState,
 } from "@/lib/data-analysis/local-storage";
+import {
+  registerPdfWorkspaceLink,
+  type PdfWorkspaceLink,
+} from "@/lib/data-analysis/pdf/pdf-controller";
+import {
+  cleanupOrphanPdfBlobs,
+  deletePdfBlob,
+  savePdfBlob,
+} from "@/lib/data-analysis/pdf/pdf-storage";
+import type { PdfArtifactMeta } from "@/lib/data-analysis/pdf/pdf-types";
+import {
+  uniqueArtifactName,
+  validatePdfSelection,
+} from "@/lib/data-analysis/pdf/pdf-validation";
 import type {
   AnalystMode,
   ArtifactMeta,
   LayoutState,
   WorkspaceState,
 } from "@/lib/data-analysis/types";
+import { isPdfArtifact } from "@/lib/data-analysis/types";
 import { getUniverBridge } from "@/lib/data-analysis/univer-bridge";
 import {
   cloneWorkbookData,
   createBlankWorkbookData,
 } from "@/lib/data-analysis/workbook-factory";
 import {
+  artifactNames,
   createInitialWorkspaceState,
+  findArtifact,
   nextSpreadsheetName,
   workspaceReducer,
   type WorkspaceAction,
@@ -54,6 +78,13 @@ function createId(): string {
 
 interface WorkspaceActions {
   createSpreadsheet: () => void;
+  /**
+   * Validates, stores and registers PDFs picked from disk or dropped onto
+   * the workspace. Resolves once every accepted file is in IndexedDB.
+   */
+  addPdfFiles: (files: readonly File[]) => Promise<void>;
+  /** Records a PDF's page/zoom so reopening restores where the user was. */
+  patchPdfMeta: (id: string, patch: Partial<PdfArtifactMeta>) => void;
   openArtifact: (id: string) => void;
   activateTab: (id: string) => void;
   closeTab: (id: string) => void;
@@ -134,9 +165,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const stored = loadWorkspaceState();
     dispatch({ type: "HYDRATE", payload: stored });
-    cleanupOrphanWorkbookSnapshots(
-      stored?.artifacts.map((artifact) => artifact.id) ?? [],
-    );
+    const storedIds = stored?.artifacts.map((artifact) => artifact.id) ?? [];
+    cleanupOrphanWorkbookSnapshots(storedIds);
+    // Fire-and-forget: an unavailable IndexedDB must not block hydration.
+    void cleanupOrphanPdfBlobs(storedIds);
   }, []);
 
   /* ---------------- debounced metadata persistence ---------------- */
@@ -201,6 +233,73 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "ADD_ARTIFACT", artifact, open: true });
   }, []);
 
+  /**
+   * PDF upload is entirely local: validate → write the blob to IndexedDB →
+   * register serializable metadata. Nothing is sent anywhere, and the raw
+   * File never lands in React state.
+   */
+  const addPdfFiles = useCallback(async (files: readonly File[]) => {
+    if (files.length === 0) return;
+
+    const { accepted, rejected, truncated } = validatePdfSelection(files);
+    notifyPdfRejected(rejected);
+    if (truncated) notifyPdfBatchTruncated();
+    if (accepted.length === 0) return;
+
+    // Dedupe display names against the workspace *and* within this batch, so
+    // two files called "report.pdf" both stay visible and distinguishable.
+    const takenNames = artifactNames(stateRef.current);
+    const artifacts: ArtifactMeta[] = [];
+
+    for (const file of accepted) {
+      const id = createId();
+      try {
+        await savePdfBlob(id, file);
+      } catch (error) {
+        notifyPdfStoreFailed(
+          error instanceof Error
+            ? error.message
+            : "This browser refused the write.",
+        );
+        continue;
+      }
+
+      const name = uniqueArtifactName(file.name, takenNames);
+      takenNames.add(name);
+      const now = Date.now();
+      artifacts.push({
+        id,
+        name,
+        type: "pdf",
+        source: "uploaded",
+        createdAt: now,
+        updatedAt: now,
+        isDirty: false,
+        pdf: {
+          storageKey: id,
+          mimeType: file.type || PDF_MIME_TYPE,
+          fileSize: file.size,
+          originalFileName: file.name,
+          lastViewedPage: 1,
+          zoomLevel: "fit-width",
+          loadingStatus: "loading",
+        },
+      });
+    }
+
+    if (artifacts.length === 0) return;
+    // Only the first opens a tab; the rest wait in the explorer.
+    dispatch({ type: "ADD_ARTIFACTS", artifacts, openFirst: true });
+    notifyPdfAdded(artifacts.length);
+  }, []);
+
+  const patchPdfMeta = useCallback(
+    (id: string, patch: Partial<PdfArtifactMeta>) => {
+      dispatch({ type: "PATCH_PDF_META", id, patch });
+    },
+    [],
+  );
+
   const openArtifact = useCallback((id: string) => {
     dispatch({ type: "OPEN_ARTIFACT", id });
   }, []);
@@ -219,6 +318,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const trimmed = name.trim();
     if (!trimmed) return;
     dispatch({ type: "RENAME_ARTIFACT", id, name: trimmed });
+
+    // PDFs carry no workbook snapshot: the display name is the only thing to
+    // change, and the stored blob keeps its original file name for download.
+    if (findArtifact(stateRef.current, id)?.type !== "spreadsheet") return;
+
     const bridge = getUniverBridge();
     if (bridge.api && bridge.loadedUnitIds.has(id)) {
       // Loaded workbook: rename through the facade so undo history and the
@@ -236,7 +340,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const duplicateArtifact = useCallback((id: string) => {
     const current = stateRef.current;
     const source = current.artifacts.find((artifact) => artifact.id === id);
-    if (!source) return;
+    // Duplication clones a workbook snapshot; copying PDF bytes has no user
+    // value here, so the explorer only offers it for spreadsheets.
+    if (!source || source.type !== "spreadsheet") return;
     const bridge = getUniverBridge();
     const liveWorkbook =
       bridge.api && bridge.loadedUnitIds.has(id)
@@ -275,6 +381,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const deleteArtifact = useCallback((id: string) => {
+    const artifact = findArtifact(stateRef.current, id);
+
+    if (isPdfArtifact(artifact)) {
+      // Removing the tab unmounts the viewer, which closes the document in
+      // the engine and releases its render resources; then the bytes go.
+      dispatch({ type: "DELETE_ARTIFACT", id });
+      void deletePdfBlob(artifact.pdf.storageKey);
+      return;
+    }
+
     // Flag the unit so the host disposes it without a farewell save.
     const bridge = getUniverBridge();
     bridge.pendingDeleteIds.add(id);
@@ -306,6 +422,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const actions = useMemo<WorkspaceActions>(
     () => ({
       createSpreadsheet,
+      addPdfFiles,
+      patchPdfMeta,
       openArtifact,
       activateTab,
       closeTab,
@@ -319,6 +437,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }),
     [
       createSpreadsheet,
+      addPdfFiles,
+      patchPdfMeta,
       openArtifact,
       activateTab,
       closeTab,
@@ -331,6 +451,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       redo,
     ],
   );
+
+  /* ---------------- PDF controller link ---------------- */
+
+  // Lets the (future) AI analyst open a cited PDF tab from outside the tree.
+  // Reads live state through the ref, so the link never needs re-registering.
+  useEffect(() => {
+    const link: PdfWorkspaceLink = {
+      openArtifact: (artifactId) => {
+        if (!findArtifact(stateRef.current, artifactId)) return false;
+        dispatch({ type: "OPEN_ARTIFACT", id: artifactId });
+        return true;
+      },
+      getActivePdfArtifact: () => {
+        const active = findArtifact(
+          stateRef.current,
+          stateRef.current.activeTabId,
+        );
+        return isPdfArtifact(active)
+          ? { id: active.id, name: active.name }
+          : null;
+      },
+    };
+    return registerPdfWorkspaceLink(link);
+  }, []);
 
   const renameTarget = useMemo(
     () =>
