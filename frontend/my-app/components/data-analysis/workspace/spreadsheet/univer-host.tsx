@@ -203,10 +203,17 @@ export default function UniverHost() {
       dispatch({ type: "SET_DIRTY", id: unitId, isDirty: false });
     }
 
-    // Load units for newly opened tabs from their stored snapshots. The
-    // active tab's unit is created with makeCurrent so the very first unit
-    // boots Univer's sheet plugins and renders directly — `setCurrent` is
-    // reserved for units that already have a renderer (see below).
+    // Load units for newly opened tabs from their stored snapshots. A unit
+    // created with makeCurrent is what boots Univer's sheet plugins and gives
+    // units a renderer; `setCurrent` below can only focus a unit that already
+    // has one.
+    //
+    // So exactly one unit must claim `makeCurrent` on the first pass. Normally
+    // that is the active tab's unit, but the active tab can also be a PDF (the
+    // workspace mounts this host whenever *any* spreadsheet tab is open, e.g.
+    // after restoring a session where a PDF was in front). In that case no
+    // unit would qualify, Univer would never render, and every later tab
+    // switch would silently show a blank grid — so the first unit boots it.
     for (const unitId of openSpreadsheetIds) {
       if (bridge.loadedUnitIds.has(unitId)) continue;
       const artifact = state.artifacts.find((item) => item.id === unitId);
@@ -214,7 +221,7 @@ export default function UniverHost() {
         loadWorkbookSnapshot(unitId) ??
         createBlankWorkbookData(unitId, artifact?.name ?? "Untitled");
       api.createWorkbook(snapshot, {
-        makeCurrent: unitId === state.activeTabId,
+        makeCurrent: unitId === state.activeTabId || !api.getActiveWorkbook(),
       });
       bridge.loadedUnitIds.add(unitId);
     }
@@ -222,25 +229,45 @@ export default function UniverHost() {
     // Focus the unit belonging to the active tab. By the time a user can
     // switch tabs, Univer has rendered and every loaded unit has a renderer,
     // which `setCurrent` requires.
+    //
+    // When the active tab is not a spreadsheet, Univer still needs *some*
+    // current unit: its chrome (the formula bar) dereferences the current
+    // workbook unconditionally and throws on null. That happens when the
+    // current unit is disposed while other units remain — e.g. closing the
+    // active spreadsheet lands the user on a PDF tab. Adopting any remaining
+    // unit keeps the hidden host consistent and costs nothing.
     const activeId = state.activeTabId;
-    if (activeId && bridge.loadedUnitIds.has(activeId)) {
-      if (api.getActiveWorkbook()?.getId() !== activeId) {
+    const activeIsLoadedUnit = Boolean(
+      activeId && bridge.loadedUnitIds.has(activeId),
+    );
+    const focusId = activeIsLoadedUnit
+      ? activeId
+      : (api.getActiveWorkbook()?.getId() ??
+        bridge.loadedUnitIds.values().next().value ??
+        null);
+
+    if (focusId) {
+      if (api.getActiveWorkbook()?.getId() !== focusId) {
         try {
-          api.setCurrent(activeId);
+          api.setCurrent(focusId);
         } catch (error) {
           // Never let a facade timing quirk take down the workspace.
           console.error("[data-analysis] Failed to focus workbook", error);
           return;
         }
       }
-      const activeSheet = api.getWorkbook(activeId)?.getActiveSheet();
-      dispatch({
-        type: "SET_ANALYST_CONTEXT",
-        context: {
-          worksheetName: activeSheet?.getSheetName() ?? null,
-          selectedRange: null,
-        },
-      });
+      // Only describe the workbook to the analyst when it really is what the
+      // user is looking at — not when it was adopted to keep Univer happy.
+      if (activeIsLoadedUnit) {
+        const activeSheet = api.getWorkbook(focusId)?.getActiveSheet();
+        dispatch({
+          type: "SET_ANALYST_CONTEXT",
+          context: {
+            worksheetName: activeSheet?.getSheetName() ?? null,
+            selectedRange: null,
+          },
+        });
+      }
     }
   }, [
     dispatch,

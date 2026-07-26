@@ -5,6 +5,7 @@ import { Database, FileSpreadsheet, FileUp, Import } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -33,35 +34,40 @@ export function NewArtifactMenu({ trigger }: { trigger: ReactElement }) {
       <DropdownMenu>
         <DropdownMenuTrigger render={trigger} />
         <DropdownMenuContent align="end" className="w-64">
-          <DropdownMenuLabel>Add to workspace</DropdownMenuLabel>
-          <DropdownMenuItem onClick={openFilePicker}>
-            <FileUp />
-            Upload PDF
-            <DropdownMenuShortcut>
-              Up to {MAX_PDF_UPLOAD_BATCH}
-            </DropdownMenuShortcut>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={actions.createSpreadsheet}>
-            <FileSpreadsheet />
-            New blank spreadsheet
-          </DropdownMenuItem>
+          {/* Base UI requires GroupLabel to live inside a Group. */}
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Add to workspace</DropdownMenuLabel>
+            <DropdownMenuItem onClick={openFilePicker}>
+              <FileUp />
+              Upload PDF
+              <DropdownMenuShortcut>
+                Up to {MAX_PDF_UPLOAD_BATCH}
+              </DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={actions.createSpreadsheet}>
+              <FileSpreadsheet />
+              New blank spreadsheet
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
-          <DropdownMenuItem
-            disabled
-            onClick={() => notifyPendingFeature("import")}
-          >
-            <Import />
-            Import spreadsheet
-            <DropdownMenuShortcut>Soon</DropdownMenuShortcut>
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled
-            onClick={() => notifyPendingFeature("dataSource")}
-          >
-            <Database />
-            Add data source
-            <DropdownMenuShortcut>Soon</DropdownMenuShortcut>
-          </DropdownMenuItem>
+          <DropdownMenuGroup>
+            <DropdownMenuItem
+              disabled
+              onClick={() => notifyPendingFeature("import")}
+            >
+              <Import />
+              Import spreadsheet
+              <DropdownMenuShortcut>Soon</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled
+              onClick={() => notifyPendingFeature("dataSource")}
+            >
+              <Database />
+              Add data source
+              <DropdownMenuShortcut>Soon</DropdownMenuShortcut>
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
           <p className="px-2 pt-1 pb-1 text-[11px] leading-relaxed text-muted-foreground/70">
             XLSX, XLS and CSV import will be connected through the backend in a
             later milestone.

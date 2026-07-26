@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -138,15 +139,18 @@ export function PdfToolbar({
               }
             />
             <DropdownMenuContent align="start" className="w-40">
-              <DropdownMenuLabel>Zoom</DropdownMenuLabel>
-              {zoomCapability?.getPresets().map((preset) => (
-                <DropdownMenuItem
-                  key={preset.name}
-                  onClick={() => zoom?.requestZoom(preset.value)}
-                >
-                  {preset.name}
-                </DropdownMenuItem>
-              ))}
+              {/* Base UI requires GroupLabel to live inside a Group. */}
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Zoom</DropdownMenuLabel>
+                {zoomCapability?.getPresets().map((preset) => (
+                  <DropdownMenuItem
+                    key={preset.name}
+                    onClick={() => zoom?.requestZoom(preset.value)}
+                  >
+                    {preset.name}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -235,78 +239,93 @@ export function PdfToolbar({
           }
         />
         <DropdownMenuContent align="end" className="w-52">
-          <DropdownMenuLabel>Page layout</DropdownMenuLabel>
-          <DropdownMenuItem onClick={() => spread?.setSpreadMode(SpreadMode.None)}>
-            <Square
-              className={cn(
-                spreadMode === SpreadMode.None &&
-                  "text-[color:var(--accent-cyan)]",
-              )}
-            />
-            Single page
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => spread?.setSpreadMode(SpreadMode.Odd)}>
-            <Columns2
-              className={cn(
-                spreadMode === SpreadMode.Odd &&
-                  "text-[color:var(--accent-cyan)]",
-              )}
-            />
-            Two pages
-          </DropdownMenuItem>
+          {/* Base UI requires GroupLabel to live inside a Group. */}
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Page layout</DropdownMenuLabel>
+            <DropdownMenuItem
+              onClick={() => spread?.setSpreadMode(SpreadMode.None)}
+            >
+              <Square
+                className={cn(
+                  spreadMode === SpreadMode.None &&
+                    "text-[color:var(--accent-cyan)]",
+                )}
+              />
+              Single page
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => spread?.setSpreadMode(SpreadMode.Odd)}
+            >
+              <Columns2
+                className={cn(
+                  spreadMode === SpreadMode.Odd &&
+                    "text-[color:var(--accent-cyan)]",
+                )}
+              />
+              Two pages
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
 
           <DropdownMenuSeparator />
-          <DropdownMenuLabel>Scrolling</DropdownMenuLabel>
-          <DropdownMenuItem
-            onClick={() => scroll?.setScrollStrategy(ScrollStrategy.Vertical)}
-          >
-            <MoveVertical />
-            Vertical
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onClick={() => scroll?.setScrollStrategy(ScrollStrategy.Horizontal)}
-          >
-            <MoveHorizontal />
-            Horizontal
-          </DropdownMenuItem>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Scrolling</DropdownMenuLabel>
+            <DropdownMenuItem
+              onClick={() => scroll?.setScrollStrategy(ScrollStrategy.Vertical)}
+            >
+              <MoveVertical />
+              Vertical
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() =>
+                scroll?.setScrollStrategy(ScrollStrategy.Horizontal)
+              }
+            >
+              <MoveHorizontal />
+              Horizontal
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
 
           {isCompact ? (
             <>
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>Zoom &amp; rotation</DropdownMenuLabel>
-              <DropdownMenuItem onClick={() => zoom?.zoomOut()}>
-                <ZoomOut />
-                Zoom out
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => zoom?.zoomIn()}>
-                <ZoomIn />
-                Zoom in ({zoomPercent}%)
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => zoom?.requestZoom(ZoomMode.FitPage)}
-              >
-                <Scan />
-                Fit page
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => zoom?.requestZoom(ZoomMode.FitWidth)}
-              >
-                <MoveHorizontal />
-                Fit width
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => rotate?.rotateBackward()}>
-                <RotateCcw />
-                Rotate left
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => rotate?.rotateForward()}>
-                <RotateCw />
-                Rotate right
-              </DropdownMenuItem>
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>Zoom &amp; rotation</DropdownMenuLabel>
+                <DropdownMenuItem onClick={() => zoom?.zoomOut()}>
+                  <ZoomOut />
+                  Zoom out
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => zoom?.zoomIn()}>
+                  <ZoomIn />
+                  Zoom in ({zoomPercent}%)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => zoom?.requestZoom(ZoomMode.FitPage)}
+                >
+                  <Scan />
+                  Fit page
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => zoom?.requestZoom(ZoomMode.FitWidth)}
+                >
+                  <MoveHorizontal />
+                  Fit width
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => rotate?.rotateBackward()}>
+                  <RotateCcw />
+                  Rotate left
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => rotate?.rotateForward()}>
+                  <RotateCw />
+                  Rotate right
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => exportApi?.download()}>
-                <Download />
-                Download original
-              </DropdownMenuItem>
+              <DropdownMenuGroup>
+                <DropdownMenuItem onClick={() => exportApi?.download()}>
+                  <Download />
+                  Download original
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
             </>
           ) : null}
         </DropdownMenuContent>
