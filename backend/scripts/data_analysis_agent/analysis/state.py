@@ -15,11 +15,12 @@ from .models import (
     DatasetProfiles,
     EvidenceAssessment,
     EvidencePackage,
+    NormalizationResult,
     RetrievalResult,
 )
 
 
-ANALYSIS_STATE_VERSION: Literal[4] = 4
+ANALYSIS_STATE_VERSION: Literal[5] = 5
 
 
 class AnalysisPhase(str, Enum):
@@ -29,13 +30,14 @@ class AnalysisPhase(str, Enum):
     PROFILED = "profiled"
     ASSESSED = "assessed"
     COMPLETED = "completed"
+    PREPARED = "prepared"
     FAILED = "failed"
 
 
 class DataAnalysisState(TypedDict):
     """Minimal checkpoint state for the capabilities implemented today."""
 
-    state_version: Required[Literal[4]]
+    state_version: Required[Literal[5]]
     run_id: Required[str]
     request: Required[AnalysisRequest]
     phase: Required[AnalysisPhase]
@@ -45,6 +47,7 @@ class DataAnalysisState(TypedDict):
     analysis_requirements: NotRequired[AnalysisRequirements]
     evidence_assessment: NotRequired[EvidenceAssessment]
     augmented_evidence: NotRequired[AugmentedEvidence]
+    normalization_result: NotRequired[NormalizationResult]
     warnings: Annotated[list[AnalysisIssue], operator.add]
     errors: Annotated[list[AnalysisIssue], operator.add]
 

@@ -200,6 +200,28 @@ class _FakeProfileCache:
             self.values[key] = profile
 
 
+class _FakeNormalizedDatasetRepository:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], Any] = {}
+
+    async def load_many(
+        self,
+        *,
+        user_id: str,
+        cache_keys: tuple[str, ...],
+    ) -> dict[str, Any]:
+        return {
+            cache_key: self.values[(user_id, cache_key)]
+            for cache_key in cache_keys
+            if (user_id, cache_key) in self.values
+        }
+
+    async def save(self, *, user_id: str, value: Any) -> Any:
+        reference = value.reference
+        self.values[(user_id, reference.cache_key)] = reference
+        return reference
+
+
 class _FakeArtifactCache:
     def __init__(self) -> None:
         self.values: dict[str, Any] = {}
@@ -307,6 +329,7 @@ def _build_graph(
         assessment_metadata_repository=_FakeAssessmentMetadataRepository(),
         assessment_cache=_FakeArtifactCache(),
         completion_runner=_NoopCompletionRunner(),
+        normalized_dataset_repository=_FakeNormalizedDatasetRepository(),
     )
 
 
@@ -373,6 +396,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
             ),
             assessment_metadata_repository=_FakeAssessmentMetadataRepository(),
             assessment_cache=_FakeArtifactCache(),
+            normalized_dataset_repository=_FakeNormalizedDatasetRepository(),
         )
         state = create_analysis_state(
             user_id="user-1",
@@ -385,7 +409,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(retrieval_started.is_set())
         self.assertTrue(requirements_started.is_set())
-        self.assertEqual(result["phase"], AnalysisPhase.ASSESSED)
+        self.assertEqual(result["phase"], AnalysisPhase.PREPARED)
 
     async def test_graph_retrieves_and_hydrates_without_checkpointing_rows(self) -> None:
         retrieval = _FakeRetrievalGraph()
@@ -403,7 +427,7 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
 
         result = await graph.ainvoke(state, config=analysis_thread_config(state))
 
-        self.assertEqual(result["phase"], AnalysisPhase.ASSESSED)
+        self.assertEqual(result["phase"], AnalysisPhase.PREPARED)
         self.assertEqual(result["evidence_package"].status, "complete")
         self.assertEqual(result["evidence_package"].hydrated_table_count, 1)
         dataset = result["evidence_package"].datasets[0]
@@ -429,6 +453,11 @@ class ParentAnalysisGraphTests(unittest.IsolatedAsyncioTestCase):
             "req_metric_revenue",
         )
         self.assertEqual(result["evidence_assessment"].decision, "ready")
+        normalization = result["normalization_result"]
+        self.assertTrue(normalization.can_analyze)
+        self.assertEqual(normalization.selected_dataset_count, 1)
+        self.assertNotIn("rows", normalization.model_dump())
+        self.assertNotIn("rows", normalization.datasets[0].model_dump())
 
     async def test_dataset_identity_is_stable_for_unchanged_source_content(self) -> None:
         graph = _build_graph(

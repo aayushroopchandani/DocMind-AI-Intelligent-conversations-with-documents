@@ -87,6 +87,17 @@ async def ensure_indexes() -> None:
         [("user_id", 1), ("dataset_id", 1), ("profiler_version", 1)]
     )
     await db.dataset_profiles.create_index("updated_at")
+    await db.normalized_datasets.create_index(
+        [("user_id", 1), ("cache_key", 1)],
+        unique=True,
+    )
+    await db.normalized_datasets.create_index(
+        [("user_id", 1), ("normalized_dataset_id", 1)],
+        unique=True,
+    )
+    await db.normalized_datasets.create_index(
+        [("user_id", 1), ("source_dataset_ids", 1), ("updated_at", -1)]
+    )
     await db.analysis_requirements_cache.create_index(
         [("user_id", 1), ("cache_key", 1)], unique=True
     )

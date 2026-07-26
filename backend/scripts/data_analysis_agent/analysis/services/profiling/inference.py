@@ -36,6 +36,14 @@ _FISCAL_YEAR_RE = re.compile(
 _YEAR_RANGE_RE = re.compile(
     r"^(?P<start>(?:19|20)\d{2})\s*[-–/]\s*(?P<end>\d{2}|(?:19|20)\d{2})$"
 )
+_VERBOSE_YEAR_CONTEXT_RE = re.compile(
+    r"\b(?:year\s+ended|fiscal\s+year|as\s+of|period|"
+    r"january|february|march|april|may|june|july|august|"
+    r"september|october|november|december)\b",
+    re.IGNORECASE,
+)
+_YEAR_TOKEN_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_YEAR_PREFIX_RE = re.compile(r"^(?P<year>(?:19|20)\d{2})\s*(?:[/|:-]|$)")
 _QUARTER_RE = re.compile(
     r"^(?:q(?P<q1>[1-4])\s*[-/]?\s*(?P<y1>(?:19|20)\d{2})|"
     r"(?P<y2>(?:19|20)\d{2})\s*[-/]?\s*q(?P<q2>[1-4]))$",
@@ -194,6 +202,25 @@ def parse_period(value: Any, *, label: str = "") -> PeriodValue | None:
         or not normalize_text(label)
     ):
         year = int(match.group("year"))
+        return PeriodValue("calendar_year", str(year), (year, 0, 0), year)
+
+    # Annual-report headers often wrap one period in descriptive text, for
+    # example "Year Ended December 31, 2024 / Revenue". Only accept a single
+    # unambiguous year so comparison labels containing two periods are not
+    # silently collapsed.
+    year_tokens = _YEAR_TOKEN_RE.findall(text)
+    prefix_match = _YEAR_PREFIX_RE.match(text)
+    if len(year_tokens) == 1 and (
+        _VERBOSE_YEAR_CONTEXT_RE.search(text) or prefix_match is not None
+    ):
+        year = int(year_tokens[0])
+        if re.search(r"\bfiscal\s+year\b|\bfy\b", text, re.IGNORECASE):
+            return PeriodValue(
+                "fiscal_year",
+                f"FY{year}",
+                (year, 0, 0),
+                year,
+            )
         return PeriodValue("calendar_year", str(year), (year, 0, 0), year)
 
     iso_candidate = text.replace("/", "-")

@@ -28,6 +28,12 @@ from .evidence import (
     MongoEvidenceRepository,
 )
 from .profile_cache import MongoProfileCache, ProfileCache, ProfileCacheError
+from .normalized_datasets import (
+    MongoNormalizedDatasetRepository,
+    NormalizedDatasetRepository,
+    NormalizedDatasetRepositoryError,
+    NormalizedDatasetWrite,
+)
 from .requirements_cache import (
     MongoRequirementsCache,
     RequirementsCache,
@@ -58,11 +64,15 @@ __all__ = [
     "MongoDatasetRepository",
     "MongoEvidenceRepository",
     "MongoProfileCache",
+    "MongoNormalizedDatasetRepository",
     "MongoRequirementsCache",
     "MongoRepairRetrievalCache",
     "MongoTextExtractionCache",
     "ProfileCache",
     "ProfileCacheError",
+    "NormalizedDatasetRepository",
+    "NormalizedDatasetRepositoryError",
+    "NormalizedDatasetWrite",
     "RequirementsCache",
     "RequirementsCacheError",
     "RepairRetrievalCache",

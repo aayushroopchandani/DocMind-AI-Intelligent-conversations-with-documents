@@ -17,6 +17,7 @@ class IssueStage(str, Enum):
     REQUIREMENTS = "requirements"
     ASSESSMENT = "assessment"
     COMPLETION = "completion"
+    PREPARATION = "preparation"
 
 
 class IssueCode(str, Enum):
@@ -48,6 +49,12 @@ class IssueCode(str, Enum):
     DERIVED_DATASET_WRITE_FAILED = "derived_dataset_write_failed"
     TARGETED_RETRIEVAL_FAILED = "targeted_retrieval_failed"
     EVIDENCE_COMPLETION_EXHAUSTED = "evidence_completion_exhausted"
+    PREPARATION_DATA_LOAD_FAILED = "preparation_data_load_failed"
+    PREPARATION_CACHE_READ_FAILED = "preparation_cache_read_failed"
+    PREPARATION_CACHE_WRITE_FAILED = "preparation_cache_write_failed"
+    DATASET_PREPARATION_FAILED = "dataset_preparation_failed"
+    PREPARATION_VERSION_MISMATCH = "preparation_version_mismatch"
+    PREPARATION_VALIDATION_FAILED = "preparation_validation_failed"
 
 
 class AnalysisIssue(BaseModel):

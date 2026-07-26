@@ -86,7 +86,7 @@ def analyze_rows(table: StructuredTable) -> RowFeatures:
             repeated_headers += 1
         if any(TOTAL_RE.search(value) for value in labels):
             total_rows += 1
-        if any(FOOTNOTE_RE.search(value) for value in labels):
+        if labels and FOOTNOTE_RE.search(" ".join(labels)):
             footnote_rows += 1
     return RowFeatures(
         duplicate_count=_duplicate_count(table.rows),

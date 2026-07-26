@@ -1,4 +1,4 @@
-"""Parent workflow for retrieval, profiling, requirements, and evidence readiness."""
+"""Parent workflow from retrieval through analysis-ready dataset preparation."""
 
 from .graph import build_data_analysis_graph, data_analysis_graph
 from .models import (
@@ -10,6 +10,8 @@ from .models import (
     EvidenceAssessment,
     EvidencePackage,
     HydratedDatasetReference,
+    NormalizationResult,
+    NormalizedDatasetReference,
     RetrievalResult,
 )
 from .state import (
@@ -32,6 +34,8 @@ __all__ = [
     "EvidenceAssessment",
     "EvidencePackage",
     "HydratedDatasetReference",
+    "NormalizationResult",
+    "NormalizedDatasetReference",
     "RetrievalResult",
     "analysis_thread_config",
     "build_data_analysis_graph",

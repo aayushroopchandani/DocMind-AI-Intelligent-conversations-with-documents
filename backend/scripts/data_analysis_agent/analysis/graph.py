@@ -14,6 +14,7 @@ from .nodes import (
     build_completion_node,
     build_hydration_node,
     build_profiling_node,
+    build_preparation_node,
     build_requirements_node,
     build_retrieval_node,
 )
@@ -28,9 +29,11 @@ from .repositories import (
     MongoDerivedDatasetRepository,
     MongoEvidenceRepository,
     MongoProfileCache,
+    MongoNormalizedDatasetRepository,
     MongoRequirementsCache,
     MongoTextExtractionCache,
     ProfileCache,
+    NormalizedDatasetRepository,
     RequirementsCache,
 )
 from .services import (
@@ -41,6 +44,7 @@ from .services import (
     DeterministicEvidenceMatcher,
     EvidenceAssessmentRunner,
     EvidenceCompletionRunner,
+    DatasetPreparationRunner,
     QdrantTargetedRepairRetriever,
     RequirementsExtractor,
     TextEvidenceCompletionService,
@@ -55,6 +59,7 @@ PROFILE_DATASETS_NODE = "profile_datasets"
 EXTRACT_REQUIREMENTS_NODE = "extract_requirements"
 ASSESS_EVIDENCE_NODE = "assess_evidence"
 COMPLETE_EVIDENCE_NODE = "complete_evidence"
+PREPARE_DATASETS_NODE = "prepare_datasets"
 ASSESSMENT_GATE_NODE = "assessment_gate"
 
 
@@ -76,19 +81,30 @@ def _assessment_gate(_state: DataAnalysisState) -> dict[str, Any]:
 
 def _after_assessment(
     state: DataAnalysisState,
-) -> Literal["complete", "end"]:
+) -> Literal["prepare", "complete", "end"]:
+    if state["phase"] == AnalysisPhase.FAILED:
+        return "end"
+    assessment = EvidenceAssessment.model_validate(state["evidence_assessment"])
+    if assessment.decision == ReadinessDecision.READY:
+        return "prepare"
+    if assessment.decision in {
+        ReadinessDecision.NEEDS_CLARIFICATION,
+        ReadinessDecision.UNANSWERABLE,
+    }:
+        return "end"
+    return "complete"
+
+
+def _after_completion(
+    state: DataAnalysisState,
+) -> Literal["prepare", "end"]:
     if state["phase"] == AnalysisPhase.FAILED:
         return "end"
     assessment = EvidenceAssessment.model_validate(state["evidence_assessment"])
     return (
-        "end"
-        if assessment.decision
-        in {
-            ReadinessDecision.READY,
-            ReadinessDecision.NEEDS_CLARIFICATION,
-            ReadinessDecision.UNANSWERABLE,
-        }
-        else "complete"
+        "prepare"
+        if assessment.decision == ReadinessDecision.READY
+        else "end"
     )
 
 
@@ -98,6 +114,7 @@ def build_data_analysis_graph(
     evidence_repository: EvidenceRepository | None = None,
     dataset_repository: DatasetRepository | None = None,
     profile_cache: ProfileCache | None = None,
+    normalized_dataset_repository: NormalizedDatasetRepository | None = None,
     dataset_profiler: DatasetProfiler | None = None,
     profile_concurrency: int | None = None,
     requirements_cache: RequirementsCache | None = None,
@@ -107,13 +124,16 @@ def build_data_analysis_graph(
     evidence_matcher: DeterministicEvidenceMatcher | None = None,
     ambiguity_resolver: AmbiguityResolver | None = None,
     completion_runner: EvidenceCompletionRunner | None = None,
+    preparation_runner: DatasetPreparationRunner | None = None,
+    preparation_concurrency: int | None = None,
 ) -> Any:
-    """Build retrieval, profiling, assessment, and bounded evidence completion."""
+    """Build the graph through final-ready dataset preparation."""
 
     selected_retrieval_graph = retrieval_graph or hybrid_retrieval_subgraph
     selected_repository = evidence_repository or MongoEvidenceRepository()
+    selected_dataset_repository = dataset_repository or MongoDatasetRepository()
     profiling_runner = DatasetProfilingRunner(
-        dataset_repository=dataset_repository or MongoDatasetRepository(),
+        dataset_repository=selected_dataset_repository,
         profile_cache=profile_cache or MongoProfileCache(),
         profiler=dataset_profiler,
         max_concurrency=profile_concurrency,
@@ -141,6 +161,13 @@ def build_data_analysis_graph(
         ),
         repair_retriever=QdrantTargetedRepairRetriever(),
     )
+    selected_preparation_runner = preparation_runner or DatasetPreparationRunner(
+        dataset_repository=selected_dataset_repository,
+        normalized_repository=(
+            normalized_dataset_repository or MongoNormalizedDatasetRepository()
+        ),
+        max_concurrency=preparation_concurrency,
+    )
 
     builder = StateGraph(DataAnalysisState)
     builder.add_node(
@@ -167,6 +194,10 @@ def build_data_analysis_graph(
         COMPLETE_EVIDENCE_NODE,
         build_completion_node(selected_completion_runner),
     )
+    builder.add_node(
+        PREPARE_DATASETS_NODE,
+        build_preparation_node(selected_preparation_runner),
+    )
     builder.add_node(ASSESSMENT_GATE_NODE, _assessment_gate)
     builder.add_edge(START, RETRIEVE_EVIDENCE_NODE)
     builder.add_edge(START, EXTRACT_REQUIREMENTS_NODE)
@@ -192,9 +223,18 @@ def build_data_analysis_graph(
     builder.add_conditional_edges(
         ASSESS_EVIDENCE_NODE,
         _after_assessment,
-        {"complete": COMPLETE_EVIDENCE_NODE, "end": END},
+        {
+            "prepare": PREPARE_DATASETS_NODE,
+            "complete": COMPLETE_EVIDENCE_NODE,
+            "end": END,
+        },
     )
-    builder.add_edge(COMPLETE_EVIDENCE_NODE, END)
+    builder.add_conditional_edges(
+        COMPLETE_EVIDENCE_NODE,
+        _after_completion,
+        {"prepare": PREPARE_DATASETS_NODE, "end": END},
+    )
+    builder.add_edge(PREPARE_DATASETS_NODE, END)
     return builder.compile()
 
 
