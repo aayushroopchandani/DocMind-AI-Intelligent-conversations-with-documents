@@ -1,6 +1,6 @@
 # DocMind AI
 
-**A document workspace for research agents, data-analysis agents, cross-document reasoning, and quantitative analysis — grounded in your PDFs, tables, and citations.**
+**Not just chat-with-PDF.** DocMind is a document intelligence workspace for research agents, data-analysis agents, cross-document reasoning, charts/dashboards, and quantitative analysis — grounded in your PDFs, tables, and citations.
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
@@ -26,7 +26,7 @@
 
 ## What DocMind Does
 
-DocMind is built for **analysts and researchers who need more than chat-with-PDF**. Upload reports, filings, and papers, then work across four tightly connected capabilities:
+Upload reports, filings, and papers, then work across four tightly connected capabilities:
 
 | Pillar | What it means in DocMind |
 | --- | --- |
@@ -190,7 +190,7 @@ flowchart TD
 
 | Capability | Description |
 | --- | --- |
-| **Multi-document workspace** | Up to 4 PDFs in one chat with per-user, per-document Qdrant filters |
+| **Multi-document workspace** | Up to 4 PDFs in one workspace with per-user, per-document Qdrant filters |
 | **Context balancing** | Deduplicate chunks, cap per-document contribution, enforce token budget |
 | **Compare & conflict** | Prompt contract asks the model to surface agreement, gaps, and conflicts across sources |
 | **Broad retrieval scope** | Analysis retrieval can classify requests as `broad` when evidence must span many docs / periods / metrics |
@@ -791,7 +791,7 @@ This project is available under the **MIT License** — free to use, modify, and
 ---
 
 <p align="center">
-  Built for researchers and analysts who need <strong>research agents, data-analysis agents, cross-document reasoning, and quantitative insights</strong> from their PDFs.
+  Built for researchers and analysts — <strong>research, data analysis, charts, and cross-document reasoning</strong> — not just chat-with-PDF.
   <br />
   <a href="https://aayushroopchandani.github.io/DocMind-AI-Intelligent-conversations-with-documents/">Open Interactive Architecture →</a>
 </p>
