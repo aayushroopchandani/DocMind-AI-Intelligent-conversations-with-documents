@@ -31,8 +31,9 @@ export function SiteFooter() {
               DocMind
             </Link>
             <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-              Chat with your documents intelligently. Upload a PDF, ask
-              questions, and get context-aware answers with source citations.
+              An AI data-analysis workspace for documents. Open PDFs,
+              spreadsheets and datasets together, run the analysis, and keep
+              every result cited back to its source.
             </p>
           </div>
 
@@ -41,11 +42,23 @@ export function SiteFooter() {
               <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground/70">
                 Product
               </span>
+              <Link
+                href="/data-analysis"
+                className="text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Analysis Workspace
+              </Link>
+              <Link
+                href="/chat"
+                className="text-muted-foreground transition-colors hover:text-foreground"
+              >
+                Document Chat
+              </Link>
               <a
                 href="#features"
                 className="text-muted-foreground transition-colors hover:text-foreground"
               >
-                Features
+                Capabilities
               </a>
               <a
                 href="#how-it-works"
@@ -53,12 +66,6 @@ export function SiteFooter() {
               >
                 How It Works
               </a>
-              <Link
-                href="/chat"
-                className="text-muted-foreground transition-colors hover:text-foreground"
-              >
-                Chat with PDF
-              </Link>
             </div>
 
             <div className="flex flex-col gap-3 text-sm">

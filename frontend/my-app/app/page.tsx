@@ -1,14 +1,16 @@
 import { Navbar } from "@/components/navbar";
 import { HeroSection } from "@/components/home/hero-section";
-import { FeaturesSection } from "@/components/home/features-section";
-import { HowItWorks } from "@/components/home/how-it-works";
-import { ProductPreview } from "@/components/home/product-preview";
+import { FormatsStrip } from "@/components/home/formats-strip";
+import { CapabilitiesSection } from "@/components/home/capabilities/capabilities-section";
+import { WorkflowSection } from "@/components/home/workflow-section";
+import { SurfacesSection } from "@/components/home/surfaces-section";
 import { FinalCta } from "@/components/home/final-cta";
 import { SiteFooter } from "@/components/home/site-footer";
 
 /**
- * Marketing homepage. Static sections are server components; only the
- * interactive/animated pieces (navbar, hero, reveal wrappers) are client.
+ * Marketing homepage. Static sections are server components; only the pieces
+ * that actually animate (navbar, hero, agent console, reveal wrappers) ship
+ * client JavaScript.
  */
 export default function Home() {
   return (
@@ -16,9 +18,10 @@ export default function Home() {
       <Navbar />
       <main className="flex-1">
         <HeroSection />
-        <FeaturesSection />
-        <HowItWorks />
-        <ProductPreview />
+        <FormatsStrip />
+        <CapabilitiesSection />
+        <WorkflowSection />
+        <SurfacesSection />
         <FinalCta />
       </main>
       <SiteFooter />

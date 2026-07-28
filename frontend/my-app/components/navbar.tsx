@@ -9,8 +9,9 @@ import { AuthenticatedUserMenu } from "@/components/auth/authenticated-user-menu
 import { cn } from "@/lib/utils";
 
 const NAV_LINKS = [
-  { label: "Features", href: "#features" },
+  { label: "Capabilities", href: "#features" },
   { label: "How It Works", href: "#how-it-works" },
+  { label: "Document Chat", href: "#surfaces" },
 ] as const;
 
 /**
@@ -82,11 +83,11 @@ export function Navbar() {
             <Button
               size="sm"
               nativeButton={false}
-              render={<Link href="/chat" />}
+              render={<Link href="/data-analysis" />}
               className="gap-1.5"
               data-icon="inline-end"
             >
-              Chat with PDF
+              Open Workspace
               <ArrowRight className="size-3.5" />
             </Button>
 

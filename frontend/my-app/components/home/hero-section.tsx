@@ -1,29 +1,26 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, PlayCircle } from "lucide-react";
+import { ArrowRight, MessageSquareText, Search } from "lucide-react";
 import Prism from "@/components/Prism";
 import SplitText from "@/components/SplitText";
 import { Button } from "@/components/ui/button";
-import { ProductMockup } from "@/components/home/product-mockup";
+import { AgentConsole } from "@/components/home/agent-demo/agent-console";
+import { RotatingPrompt } from "@/components/home/lib/rotating-prompt";
+import { HERO_PROMPTS } from "@/components/home/data/homepage-content";
 
 /**
- * Landing hero: a full-colour Prism spectrum background (React Bits),
- * a SplitText animated heading, supporting copy, CTAs, and a product mockup.
+ * Landing hero.
+ *
+ * The Prism spectrum (React Bits, WebGL) is the only GPU-backed effect on the
+ * page — everything below it is CSS and SVG — which keeps the homepage to a
+ * single canvas and well clear of the context limits that make multi-shader
+ * landing pages tab-crashers.
  */
 export function HeroSection() {
   return (
     <section className="relative isolate overflow-hidden pb-20 pt-36 sm:pb-28 sm:pt-44">
-      {/*
-       * Prism WebGL background — full spectrum, matching the React Bits demo.
-       * The two overlay divs keep the text readable:
-       *   1. A radial vignette dims the centre where copy lives.
-       *   2. A bottom-fade merges the prism into the page background.
-       */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 -z-10"
-      >
+      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">
         <Prism
           animationType="rotate"
           timeScale={0.5}
@@ -46,7 +43,7 @@ export function HeroSection() {
         className="pointer-events-none absolute inset-0 -z-10"
         style={{
           background:
-            "radial-gradient(ellipse 80% 55% at 50% 35%, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.10) 60%, transparent 100%)",
+            "radial-gradient(ellipse 80% 55% at 50% 35%, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.14) 60%, transparent 100%)",
         }}
       />
 
@@ -59,12 +56,12 @@ export function HeroSection() {
       <div className="mx-auto max-w-6xl px-4">
         <div className="mx-auto flex max-w-3xl flex-col items-center text-center">
           <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-card/50 px-3 py-1 text-xs text-muted-foreground backdrop-blur">
-            <span className="size-1.5 rounded-full bg-foreground/70" />
-            AI-powered document intelligence
+            <span className="size-1.5 animate-pulse rounded-full bg-[var(--accent-cyan)]" />
+            AI data-analysis agent · multi-document workspace
           </span>
 
           <SplitText
-            text="Chat with your documents, intelligently."
+            text="An AI analyst for your documents and data."
             tag="h1"
             className="text-balance text-4xl font-semibold leading-[1.05] tracking-tight text-foreground sm:text-6xl"
             splitType="words"
@@ -76,38 +73,50 @@ export function HeroSection() {
             threshold={0.2}
           />
 
-          <p className="mt-6 max-w-xl text-balance text-base leading-relaxed text-muted-foreground sm:text-lg">
-            Upload a PDF, ask questions, explore key ideas, and receive
-            context-aware answers with source citations.
+          <p className="mt-6 max-w-2xl text-balance text-base leading-relaxed text-muted-foreground sm:text-lg">
+            DocMind opens PDFs, spreadsheets and CSVs in one workspace — then
+            cleans the data, writes the formulas, builds the charts, and cites
+            every number back to the page or cell it came from.
           </p>
 
-          <div className="mt-9 flex flex-col items-center gap-3 sm:flex-row">
+          {/* Rotating example prompt, styled as the analyst composer. */}
+          <div className="mt-8 flex w-full max-w-lg items-center gap-2.5 rounded-xl border border-border bg-card/60 px-3.5 py-2.5 text-left backdrop-blur">
+            <Search className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-h-[1.25rem] min-w-0 flex-1 truncate text-sm text-foreground/80">
+              <RotatingPrompt prompts={HERO_PROMPTS} />
+            </span>
+            <kbd className="hidden shrink-0 rounded border border-border bg-background/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">
+              ⏎
+            </kbd>
+          </div>
+
+          <div className="mt-7 flex flex-col items-center gap-3 sm:flex-row">
             <Button
               size="lg"
               nativeButton={false}
-              render={<Link href="/chat" />}
+              render={<Link href="/data-analysis" />}
               className="h-11 gap-2 px-6 text-sm"
               data-icon="inline-end"
             >
-              Chat with a PDF
+              Open Analysis Workspace
               <ArrowRight className="size-4" />
             </Button>
             <Button
               size="lg"
               variant="outline"
               nativeButton={false}
-              render={<a href="#how-it-works" />}
+              render={<Link href="/chat" />}
               className="h-11 gap-2 px-6 text-sm"
               data-icon="inline-start"
             >
-              <PlayCircle className="size-4" />
-              See How It Works
+              <MessageSquareText className="size-4" />
+              Chat with a PDF
             </Button>
           </div>
         </div>
 
         <div className="animate-float relative mx-auto mt-16 max-w-4xl sm:mt-20">
-          <ProductMockup />
+          <AgentConsole />
         </div>
       </div>
     </section>

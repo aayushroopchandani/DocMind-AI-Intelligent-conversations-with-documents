@@ -15,9 +15,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DocMind — Chat with your documents, intelligently.",
+  title: "DocMind — An AI analyst for your documents and data.",
   description:
-    "Upload a PDF, ask questions, explore key ideas, and receive context-aware answers with source citations.",
+    "Open PDFs, spreadsheets and CSVs in one workspace. DocMind cleans the data, writes the formulas, builds the charts, and cites every number back to the page or cell it came from.",
 };
 
 export default function RootLayout({
