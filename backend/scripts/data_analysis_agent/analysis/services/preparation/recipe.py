@@ -13,6 +13,7 @@ from ...models import (
     NormalizedColumn,
     NormalizedDataType,
     ProfiledDataType,
+    SemanticRole,
     TableOrientation,
     TransformationOperation,
     TransformationSummary,
@@ -121,9 +122,16 @@ def _source_columns(
                     == ProfiledDataType.MIXED
                     and profiles[column.key].declared_type == "number"
                 )
+                else NormalizedDataType.STRING
+                if (
+                    profiles[column.key].inferred_type
+                    == ProfiledDataType.MIXED
+                    and profiles[column.key].declared_type == "string"
+                )
                 else _normalized_type(profiles[column.key].inferred_type)
             ),
-            unit=profiles[column.key].detected_unit or column.unit,
+            unit=profiles[column.key].detected_unit,
+            semantic_role=profiles[column.key].semantic_role,
             source_column_keys=(column.key,),
         )
         for column in dataset.columns
@@ -151,6 +159,7 @@ def _long_output_columns(
                 key=row_type_key,
                 label="Row type",
                 data_type=NormalizedDataType.STRING,
+                semantic_role=SemanticRole.DIMENSION,
             )
         )
     series_key = _unique_output_key(
@@ -169,18 +178,25 @@ def _long_output_columns(
                     if period_keys
                     else NormalizedDataType.STRING
                 ),
+                semantic_role=(
+                    SemanticRole.TIME_PERIOD
+                    if period_keys
+                    else SemanticRole.DIMENSION
+                ),
                 source_column_keys=period_keys or value_keys,
             ),
             NormalizedColumn(
                 key=value_key,
                 label="Value",
                 data_type=value_data_type,
+                semantic_role=SemanticRole.METRIC,
                 source_column_keys=value_keys,
             ),
             NormalizedColumn(
                 key=unit_key,
                 label="Unit",
                 data_type=NormalizedDataType.STRING,
+                semantic_role=SemanticRole.DIMENSION,
                 source_column_keys=value_keys,
             ),
         )

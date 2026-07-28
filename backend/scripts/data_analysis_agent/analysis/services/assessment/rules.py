@@ -19,8 +19,11 @@ _STOP_WORDS = frozenset(
         "in",
         "of",
         "on",
+        "or",
         "the",
         "to",
+        "number",
+        "count",
     }
 )
 _SAFE_EQUIVALENCE_GROUPS = (
@@ -51,6 +54,7 @@ def normalized_phrase(value: object) -> str:
         "expense",
         normalized,
     )
+    normalized = re.sub(r"\bpercent(?:age)?s?\b", "percent", normalized)
     normalized = re.sub(r"\brevenues\b", "revenue", normalized)
     return normalized
 

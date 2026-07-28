@@ -1,5 +1,6 @@
 from .candidates import CandidateRescueSelector, RescueSelection
 from .derived import build_derived_dataset_writes
+from .deterministic import extract_labeled_numeric_facts
 from .extractor import (
     AsyncTextEvidenceGenerator,
     StructuredTextEvidenceExtractor,
@@ -42,6 +43,7 @@ __all__ = [
     "build_derived_dataset_writes",
     "build_repair_queries",
     "build_text_extraction_tasks",
+    "extract_labeled_numeric_facts",
     "get_text_evidence_llm",
     "text_evidence_model_name",
     "text_extraction_cache_key",

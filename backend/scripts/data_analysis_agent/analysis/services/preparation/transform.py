@@ -20,6 +20,7 @@ from ...models import (
 )
 from ..profiling.inference import is_missing, normalize_text, parse_period
 from ..profiling.rules import FOOTNOTE_RE, TOTAL_RE
+from ..units import resolved_row_unit, table_unit_hint
 from .recipe import CleaningRecipe
 
 
@@ -251,6 +252,10 @@ class DeterministicDatasetTransformer:
             raise ValueError("source column keys are not unique")
         profiles_by_key = {item.key: item for item in profile.columns}
         columns_by_key = {item.key: item for item in table.columns}
+        inferred_table_unit = table_unit_hint(
+            table.title,
+            *(column.label for column in table.columns),
+        )
         retained: list[tuple[int, dict[str, Any], str]] = []
         excluded: list[ExcludedSourceRow] = []
         footnotes: list[SeparatedFootnote] = []
@@ -379,6 +384,7 @@ class DeterministicDatasetTransformer:
                     key: normalized_value(key, row.get(key))
                     for key in dimension_keys
                 }
+                row_context = _row_text(row, dimension_keys)
                 for source_column_key in value_keys:
                     source_column = columns_by_key[source_column_key]
                     source_profile = profiles_by_key[source_column_key]
@@ -402,9 +408,13 @@ class DeterministicDatasetTransformer:
                             source_column_key,
                             row.get(source_column_key),
                         ),
-                        unit_key: (
-                            source_profile.detected_unit
-                            or source_column.unit
+                        unit_key: resolved_row_unit(
+                            column_unit=(
+                                source_profile.detected_unit
+                                or source_column.unit
+                            ),
+                            table_hint=inferred_table_unit,
+                            row_text=row_context,
                         ),
                     }
                     if recipe.row_type_column_key:

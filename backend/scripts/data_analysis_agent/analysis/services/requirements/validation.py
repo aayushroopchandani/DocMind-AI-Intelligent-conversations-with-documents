@@ -22,6 +22,7 @@ from ...models.requirements import (
 )
 from ...models.request import AnalysisRequest
 from .explicit import (
+    ExplicitCategoryConstraint,
     explicit_category_constraints,
     semantically_grounded_in_query,
 )
@@ -32,6 +33,11 @@ _EXPLICIT_PERIOD_RE = re.compile(
     r"|\b(?:19|20)\d{2}\s*[-–/]\s*(?:\d{2}|(?:19|20)\d{2})\b"
     r"|\bQ[1-4]\s*(?:19|20)\d{2}\b"
     r"|\b(?:19|20)\d{2}\s*Q[1-4]\b",
+    re.IGNORECASE,
+)
+_YEAR_SPAN_RE = re.compile(
+    r"\b(?P<start>(?:19|20)\d{2})\s+(?:through|to)\s+"
+    r"(?P<end>(?:19|20)\d{2})\b",
     re.IGNORECASE,
 )
 _COMPARISON_RE = re.compile(
@@ -92,6 +98,16 @@ _SAFE_ALIAS_GROUPS = (
     frozenset({"income from operations", "operating income"}),
     frozenset({"fiscal year", "fy"}),
     frozenset({"year over year", "yoy"}),
+)
+_GENERIC_PERIOD_NAMES = frozenset(
+    {"year", "years", "period", "periods", "fiscal year", "fiscal years"}
+)
+_GENERIC_TOPIC_TOKENS = frozenset(
+    {"schedule", "table", "data", "details", "information", "overview", "summary"}
+)
+_ENTITY_SCOPE_SPLIT_RE = re.compile(
+    r"\b(?:with|versus|vs\.?|compared\s+(?:with|to))\b",
+    re.IGNORECASE,
 )
 
 
@@ -213,7 +229,190 @@ def _explicit_periods(query: str) -> tuple[str, ...]:
         if canonical not in seen:
             seen.add(canonical)
             output.append(value)
+    for match in _YEAR_SPAN_RE.finditer(query):
+        start = int(match.group("start"))
+        end = int(match.group("end"))
+        if end < start or end - start > 50:
+            continue
+        for year in range(start, end + 1):
+            value = str(year)
+            if value not in seen:
+                seen.add(value)
+                output.append(value)
     return tuple(output)
+
+
+def _requirement_tokens(value: str) -> frozenset[str]:
+    return frozenset(re.findall(r"[a-z0-9]+", canonical_requirement_text(value)))
+
+
+def _drop_redundant_generic_requirements(
+    items: list[ExtractedRequirement],
+    *,
+    explicit_periods: tuple[str, ...],
+    adjustments: list[str],
+) -> list[ExtractedRequirement]:
+    metrics = tuple(
+        _requirement_tokens(item.name)
+        for item in items
+        if item.kind == RequirementKind.METRIC
+    )
+    output: list[ExtractedRequirement] = []
+    explicit_period_names = {
+        canonical_requirement_text(period) for period in explicit_periods
+    }
+    for item in items:
+        canonical_name = canonical_requirement_text(item.name)
+        if (
+            explicit_periods
+            and item.kind == RequirementKind.PERIOD
+            and canonical_name in _GENERIC_PERIOD_NAMES
+        ):
+            adjustments.append(f"dropped_redundant_period:{canonical_name}")
+            continue
+        period_span = (
+            _YEAR_SPAN_RE.fullmatch(canonical_name)
+            if item.kind == RequirementKind.PERIOD
+            else None
+        )
+        if period_span is not None:
+            start = int(period_span.group("start"))
+            end = int(period_span.group("end"))
+            expanded = {str(year) for year in range(start, end + 1)}
+            if expanded and expanded <= explicit_period_names:
+                adjustments.append(
+                    f"dropped_redundant_period_range:{canonical_name}"
+                )
+                continue
+        if item.kind == RequirementKind.TOPIC and metrics:
+            topic_tokens = _requirement_tokens(item.name) - _GENERIC_TOPIC_TOKENS
+            if topic_tokens and any(
+                topic_tokens <= metric_tokens for metric_tokens in metrics
+            ):
+                adjustments.append(f"dropped_redundant_topic:{canonical_name}")
+                continue
+        output.append(item)
+    return output
+
+
+def _remove_category_entity_scopes(
+    items: list[ExtractedRequirement],
+    *,
+    constraints: tuple[ExplicitCategoryConstraint, ...],
+    adjustments: list[str],
+) -> list[ExtractedRequirement]:
+    category_entities = {
+        canonical_requirement_text(value)
+        for constraint in constraints
+        for value in (
+            *constraint.values,
+            *(
+                f"{constraint.name} {category_value}"
+                for category_value in constraint.values
+            ),
+        )
+    }
+    if not category_entities:
+        return items
+    output: list[ExtractedRequirement] = []
+    for item in items:
+        if not item.entity_names:
+            output.append(item)
+            continue
+        retained = tuple(
+            entity
+            for entity in item.entity_names
+            if canonical_requirement_text(entity) not in category_entities
+        )
+        if retained != item.entity_names:
+            adjustments.append(
+                "removed_category_entity_scope:"
+                f"{canonical_requirement_text(item.name)}"
+            )
+            item = item.model_copy(update={"entity_names": retained})
+        output.append(item)
+    return output
+
+
+def _entity_candidates(
+    items: list[ExtractedRequirement],
+) -> tuple[str, ...]:
+    metrics = tuple(
+        item.name for item in items if item.kind == RequirementKind.METRIC
+    )
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        values = (
+            (item.name,)
+            if item.kind == RequirementKind.ENTITY
+            else item.entity_names
+        )
+        for entity in values:
+            normalized_entity = normalize_requirement_text(entity)
+            candidate = normalized_entity
+            for metric in sorted(metrics, key=len, reverse=True):
+                normalized_metric = normalize_requirement_text(metric)
+                entity_tokens = normalized_entity.split()
+                metric_tokens = normalized_metric.split()
+                if (
+                    len(entity_tokens) > len(metric_tokens)
+                    and entity_tokens[-len(metric_tokens) :] == metric_tokens
+                ):
+                    candidate = " ".join(
+                        entity.split()[: -len(metric_tokens)]
+                    ).strip()
+                    break
+            canonical_candidate = canonical_requirement_text(candidate)
+            if candidate and canonical_candidate not in seen:
+                seen.add(canonical_candidate)
+                output.append(candidate)
+    return tuple(output)
+
+
+def _repair_metric_entity_scopes(
+    items: list[ExtractedRequirement],
+    *,
+    query: str,
+    adjustments: list[str],
+) -> list[ExtractedRequirement]:
+    """Correct cross-document metric scopes using explicit query segments."""
+
+    candidates = _entity_candidates(items)
+    segments = tuple(
+        segment.strip(" ,.;:")
+        for segment in _ENTITY_SCOPE_SPLIT_RE.split(query)
+        if segment.strip(" ,.;:")
+    )
+    if len(candidates) < 2 or len(segments) < 2:
+        return items
+    output: list[ExtractedRequirement] = []
+    for item in items:
+        if item.kind != RequirementKind.METRIC:
+            output.append(item)
+            continue
+        terms = (item.name, *item.aliases)
+        metric_segments = tuple(
+            segment
+            for segment in segments
+            if any(_mentioned(segment, term) for term in terms)
+        )
+        scoped = tuple(
+            candidate
+            for candidate in candidates
+            if any(
+                _mentioned(segment, candidate)
+                for segment in metric_segments
+            )
+        )
+        if scoped and scoped != item.entity_names:
+            adjustments.append(
+                "repaired_metric_entity_scope:"
+                f"{canonical_requirement_text(item.name)}"
+            )
+            item = item.model_copy(update={"entity_names": scoped})
+        output.append(item)
+    return output
 
 
 def _explicit_units(query: str) -> tuple[str, ...]:
@@ -516,12 +715,13 @@ def validate_requirements_extraction(
                 f"{canonical_requirement_text(item.name)}"
             )
 
+    explicit_periods = _explicit_periods(query)
     existing_periods = {
         canonical_requirement_text(item.name)
         for item in grounded
         if item.kind == RequirementKind.PERIOD
     }
-    for period in _explicit_periods(query):
+    for period in explicit_periods:
         if canonical_requirement_text(period) not in existing_periods:
             grounded.append(
                 ExtractedRequirement(
@@ -613,6 +813,12 @@ def validate_requirements_extraction(
         )
         adjustments.append(f"restored_explicit_metric:{canonical}")
 
+    grounded = _drop_redundant_generic_requirements(
+        grounded,
+        explicit_periods=explicit_periods,
+        adjustments=adjustments,
+    )
+
     existing_filters = {
         (
             canonical_requirement_text(item.name),
@@ -622,7 +828,8 @@ def validate_requirements_extraction(
         if item.kind == RequirementKind.FILTER
     }
     explicit_category_names: list[str] = []
-    for constraint in explicit_category_constraints(query):
+    category_constraints = explicit_category_constraints(query)
+    for constraint in category_constraints:
         key = (
             canonical_requirement_text(constraint.name),
             tuple(
@@ -651,6 +858,17 @@ def validate_requirements_extraction(
                 for value in constraint.values
             )
         )
+
+    grounded = _remove_category_entity_scopes(
+        grounded,
+        constraints=category_constraints,
+        adjustments=adjustments,
+    )
+    grounded = _repair_metric_entity_scopes(
+        grounded,
+        query=query,
+        adjustments=adjustments,
+    )
 
     grouping_names = {
         canonical_requirement_text(item.name)

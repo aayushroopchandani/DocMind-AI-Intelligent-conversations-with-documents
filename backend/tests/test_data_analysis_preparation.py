@@ -520,6 +520,185 @@ class DatasetPreparationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(value_column.data_type, NormalizedDataType.UNKNOWN)
 
+    async def test_wide_mixed_unit_rows_preserve_scale_and_percentage(self) -> None:
+        raw = _raw_table(
+            "rd-mixed-unit-table",
+            title="Research and development by 2024, 2023, 2022",
+            columns=[
+                {
+                    "key": "metric",
+                    "label": "(Dollars in thousands)",
+                    "type": "string",
+                    "unit": "%",
+                },
+                {
+                    "key": "y2024",
+                    "label": "Year Ended December 31, 2024",
+                    "type": "number",
+                    "unit": "USD",
+                },
+                {
+                    "key": "y2023",
+                    "label": "Year Ended December 31, 2023",
+                    "type": "number",
+                    "unit": "USD",
+                },
+                {
+                    "key": "y2022",
+                    "label": "Year Ended December 31, 2022",
+                    "type": "number",
+                    "unit": "USD",
+                },
+            ],
+            rows=[
+                {"metric": "Research and development", "y2024": 53566, "y2023": 50736, "y2022": 56126},
+                {"metric": "As a percentage of total revenues", "y2024": 30, "y2023": 31, "y2022": 38},
+            ],
+        )
+        dataset, profile = _dataset_and_profile(raw)
+        repository = _NormalizedRepository()
+
+        outcome = await DatasetPreparationRunner(
+            dataset_repository=_DatasetRepository(raw),
+            normalized_repository=repository,
+        ).run(
+            run_id="run-rd-mixed-units",
+            user_id="user-1",
+            document_ids=(DOCUMENT_ID,),
+            requirements=_requirements(with_period=True),
+            assessment=_assessment(dataset, with_period=True),
+            evidence=_evidence(dataset),
+            profiles=_profiles(profile),
+        )
+
+        rows = repository.writes[0].rows
+        amount_units = {
+            row["__unit"]
+            for row in rows
+            if row["metric"] == "Research and development"
+        }
+        percentage_units = {
+            row["__unit"]
+            for row in rows
+            if row["metric"] == "As a percentage of total revenues"
+        }
+        self.assertEqual(amount_units, {"USD thousand"})
+        self.assertEqual(percentage_units, {"percent"})
+        self.assertEqual(
+            next(
+                item
+                for item in outcome.artifact.datasets[0].columns
+                if item.key == "metric"
+            ).unit,
+            None,
+        )
+
+    async def test_scale_only_table_header_enriches_declared_currency(
+        self,
+    ) -> None:
+        raw = _raw_table(
+            "segment-income-table",
+            title=(
+                "Segment total revenues, gross profit, and net income "
+                "(loss) for the periods presented (in thousands)"
+            ),
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {
+                    "key": "y2024",
+                    "label": "2024",
+                    "type": "number",
+                    "unit": "USD",
+                },
+                {
+                    "key": "y2023",
+                    "label": "2023",
+                    "type": "number",
+                    "unit": "USD",
+                },
+            ],
+            rows=[
+                {
+                    "metric": "Net income (loss)",
+                    "y2024": 4057,
+                    "y2023": 3105,
+                }
+            ],
+        )
+        dataset, profile = _dataset_and_profile(raw)
+        repository = _NormalizedRepository()
+
+        await DatasetPreparationRunner(
+            dataset_repository=_DatasetRepository(raw),
+            normalized_repository=repository,
+        ).run(
+            run_id="run-scale-only-header",
+            user_id="user-1",
+            document_ids=(DOCUMENT_ID,),
+            requirements=_requirements(with_period=True),
+            assessment=_assessment(dataset, with_period=True),
+            evidence=_evidence(dataset),
+            profiles=_profiles(profile),
+        )
+
+        self.assertEqual(
+            {row["__unit"] for row in repository.writes[0].rows},
+            {"USD thousand"},
+        )
+
+    async def test_partially_temporal_dimension_is_typed_string_with_time_role(
+        self,
+    ) -> None:
+        raw = _raw_table(
+            "future-amortization",
+            title="Year Ending December 31,",
+            columns=[
+                {
+                    "key": "period",
+                    "label": "Year Ending December 31,",
+                    "type": "string",
+                },
+                {
+                    "key": "amount",
+                    "label": "Amount",
+                    "type": "number",
+                    "unit": "USD",
+                },
+            ],
+            rows=[
+                {"period": 2025, "amount": 3061},
+                {"period": 2026, "amount": 2891},
+                {"period": 2027, "amount": 2738},
+                {"period": 2028, "amount": 2432},
+                {"period": 2029, "amount": 747},
+                {"period": "2030 and thereafter", "amount": 438},
+                {"period": "Total future amortization expense", "amount": 12307},
+            ],
+        )
+        dataset, profile = _dataset_and_profile(raw)
+        repository = _NormalizedRepository()
+
+        outcome = await DatasetPreparationRunner(
+            dataset_repository=_DatasetRepository(raw),
+            normalized_repository=repository,
+        ).run(
+            run_id="run-partial-period",
+            user_id="user-1",
+            document_ids=(DOCUMENT_ID,),
+            requirements=_requirements(),
+            assessment=_assessment(dataset),
+            evidence=_evidence(dataset),
+            profiles=_profiles(profile),
+        )
+
+        period_column = next(
+            item
+            for item in outcome.artifact.datasets[0].columns
+            if item.key == "period"
+        )
+        self.assertEqual(period_column.data_type, NormalizedDataType.STRING)
+        self.assertEqual(period_column.semantic_role, "time_period")
+
     async def test_source_version_change_returns_structured_failure(self) -> None:
         raw = _raw_table(
             "versioned-table",

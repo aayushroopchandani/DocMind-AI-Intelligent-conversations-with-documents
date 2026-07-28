@@ -23,7 +23,7 @@ from .query_cache import (
 
 
 logger = logging.getLogger(__name__)
-QUERY_GENERATION_VERSION = "1.0.0"
+QUERY_GENERATION_VERSION = "1.1.0"
 QUERY_GENERATION_PROMPT_VERSION = "1.0.0"
 
 QUERY_GENERATION_SYSTEM_PROMPT = """You generate concise semantic-search queries

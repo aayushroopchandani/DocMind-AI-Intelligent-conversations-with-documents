@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 from langchain_core.exceptions import OutputParserException
@@ -26,7 +28,8 @@ Return only facts needed for the target requirements. Copy each raw value and su
 source span from one supplied chunk. Do not calculate, aggregate, convert, compare, infer,
 or fill missing values. Do not combine values from different spans into a new value.
 Attach the closest metric requirement ID to each fact. If no target value is explicitly
-stated, return status "absent" and no facts."""
+stated, return status "absent" and no facts. Check every target requirement independently
+and return every explicit matching value found in the supplied chunks."""
 
 TEXT_EVIDENCE_JSON_INSTRUCTIONS = """Return one JSON object:
 {
@@ -83,7 +86,115 @@ def get_text_evidence_llm() -> AsyncTextEvidenceGenerator:
     return llm.with_structured_output(
         TextExtractionResponse,
         method="json_mode",
+        include_raw=True,
     )
+
+
+def _json_payload(value: object) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        parsed = value.get("parsed")
+        if isinstance(parsed, TextExtractionResponse):
+            return parsed.model_dump(mode="python")
+        if isinstance(parsed, Mapping):
+            return parsed
+        raw = value.get("raw")
+        if raw is not None:
+            return _json_payload(getattr(raw, "content", raw))
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return decoded if isinstance(decoded, Mapping) else None
+    if isinstance(value, list):
+        text = "".join(
+            str(item.get("text") or "")
+            for item in value
+            if isinstance(item, Mapping)
+        )
+        return _json_payload(text)
+    return None
+
+
+def _source_span_for_value(text: str, raw_value: str) -> str | None:
+    match = re.search(re.escape(raw_value.strip()), text, re.IGNORECASE)
+    if match is None:
+        return None
+    start = max(0, match.start() - 180)
+    end = min(len(text), match.end() + 180)
+    line_start = text.rfind("\n", start, match.start())
+    if line_start >= start:
+        start = line_start + 1
+    line_end = text.find("\n", match.end(), end)
+    if line_end >= 0:
+        end = line_end
+    return text[start:end].strip()[:600]
+
+
+def _recover_response(
+    value: object,
+    *,
+    task: TextExtractionTask,
+) -> TextExtractionResponse | None:
+    """Fill only provenance fields derivable unambiguously from supplied chunks."""
+
+    payload = _json_payload(value)
+    if payload is None:
+        return None
+    if payload.get("status") == "absent":
+        try:
+            return TextExtractionResponse.model_validate(payload)
+        except ValidationError:
+            return None
+    facts = payload.get("facts")
+    if not isinstance(facts, list):
+        return None
+    chunks_by_id = {item.chunk_id: item for item in task.chunks}
+    recovered: list[dict[str, Any]] = []
+    for raw_fact in facts:
+        if not isinstance(raw_fact, Mapping):
+            return None
+        fact = dict(raw_fact)
+        raw_value = str(fact.get("raw_value") or "").strip()
+        if not raw_value:
+            return None
+        supplied_chunk = chunks_by_id.get(str(fact.get("chunk_id") or ""))
+        candidates = (
+            (supplied_chunk,)
+            if supplied_chunk is not None
+            else tuple(
+                chunk
+                for chunk in task.chunks
+                if re.search(
+                    re.escape(raw_value),
+                    chunk.text,
+                    re.IGNORECASE,
+                )
+            )
+        )
+        if len(candidates) != 1:
+            return None
+        chunk = candidates[0]
+        source_span = str(fact.get("source_span") or "").strip()
+        if not source_span:
+            source_span = _source_span_for_value(chunk.text, raw_value) or ""
+        if not source_span:
+            return None
+        fact.setdefault("document_id", task.document_id)
+        fact.setdefault("chunk_id", chunk.chunk_id)
+        fact.setdefault("source_span", source_span)
+        fact.setdefault("confidence", 0.80)
+        fact.setdefault("period", None)
+        fact.setdefault("unit", None)
+        fact.setdefault("dimensions", [])
+        recovered.append(fact)
+    try:
+        return TextExtractionResponse.model_validate(
+            {"status": payload.get("status"), "facts": recovered}
+        )
+    except ValidationError:
+        return None
 
 
 class StructuredTextEvidenceExtractor:
@@ -147,11 +258,20 @@ class StructuredTextEvidenceExtractor:
         for attempt in range(1, attempts + 1):
             try:
                 response = await generator.ainvoke(messages)
-                parsed = (
-                    response
-                    if isinstance(response, TextExtractionResponse)
-                    else TextExtractionResponse.model_validate(response)
-                )
+                if isinstance(response, TextExtractionResponse):
+                    parsed = response
+                elif (
+                    isinstance(response, Mapping)
+                    and isinstance(
+                        response.get("parsed"),
+                        TextExtractionResponse,
+                    )
+                ):
+                    parsed = response["parsed"]
+                else:
+                    parsed = _recover_response(response, task=task)
+                    if parsed is None:
+                        parsed = TextExtractionResponse.model_validate(response)
                 return parsed, attempt
             except (
                 OutputParserException,
@@ -159,6 +279,12 @@ class StructuredTextEvidenceExtractor:
                 ValueError,
                 TypeError,
             ) as exc:
+                recovered = _recover_response(
+                    getattr(exc, "llm_output", None),
+                    task=task,
+                )
+                if recovered is not None:
+                    return recovered, attempt
                 last_error = exc
                 if attempt < attempts:
                     messages.append(

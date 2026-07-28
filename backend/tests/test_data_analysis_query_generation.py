@@ -130,6 +130,40 @@ class QueryGenerationSubgraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(warm["query_generation_attempts"], 0)
         self.assertEqual(warm["table_queries"], cold["table_queries"])
 
+    async def test_cache_normalizes_oxford_commas_and_terminal_punctuation(
+        self,
+    ) -> None:
+        generator = _FakeQueryGenerator()
+        graph = build_query_generation_subgraph(
+            query_generator=generator,
+            query_cache=_QueryCache(),
+        )
+        first = create_retrieval_state(
+            user_id="user-1",
+            chat_id="chat-cache-normalization",
+            query=(
+                "Compare revenue concentration percentages for Customers "
+                "A, B, C for 2022, 2023, 2024."
+            ),
+            document_ids=["doc-1"],
+        )
+        equivalent = create_retrieval_state(
+            user_id="user-1",
+            chat_id="chat-cache-normalization",
+            query=(
+                "Compare revenue concentration percentages for Customers "
+                "A, B, and C for 2022, 2023, and 2024"
+            ),
+            document_ids=["doc-1"],
+        )
+
+        cold = await graph.ainvoke(first)
+        warm = await graph.ainvoke(equivalent)
+
+        self.assertFalse(cold["query_generation_cache_hit"])
+        self.assertTrue(warm["query_generation_cache_hit"])
+        self.assertEqual(generator.calls, 1)
+
     def test_thread_id_is_the_chat_id(self) -> None:
         config = retrieval_thread_config(chat_id="chat-123", user_id="user-1")
 

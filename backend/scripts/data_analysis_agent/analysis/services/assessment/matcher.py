@@ -30,11 +30,13 @@ from ...models.requirements import (
 )
 from ...repositories.assessment_metadata import TableAssessmentMetadata
 from ..profiling.inference import parse_period
+from ..units import units_compatible
 from .rules import (
     contains_phrase,
     document_display_name,
     lexical_score,
     normalized_phrase,
+    phrase_tokens,
     safe_equivalent,
 )
 
@@ -53,6 +55,18 @@ _TEMPORAL_TYPES = frozenset(
 )
 _MAX_EVIDENCE_PER_REQUIREMENT = 12
 _MAX_AMBIGUITIES = 20
+_COMPOSABLE_METRIC_MODIFIERS = frozenset(
+    {"concentration", "percent", "percentage", "share", "rate", "ratio"}
+)
+
+
+def _is_numeric_column(column: ColumnProfile) -> bool:
+    """Treat mixed PDF columns with parsed numbers as analytical measures."""
+
+    return (
+        column.inferred_type in _NUMERIC_TYPES
+        or column.numeric_statistics is not None
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,7 +235,7 @@ def _compatible_column(
     column: ColumnProfile,
 ) -> bool:
     if requirement.expected_data_type == ExpectedDataType.NUMBER:
-        return column.inferred_type in _NUMERIC_TYPES
+        return _is_numeric_column(column)
     if requirement.expected_data_type == ExpectedDataType.DATE:
         return (
             column.inferred_type in _TEMPORAL_TYPES
@@ -242,7 +256,7 @@ def _column_role_compatible(
     if requirement.kind == RequirementKind.METRIC:
         return (
             column.semantic_role in {SemanticRole.METRIC, SemanticRole.UNKNOWN}
-            or column.inferred_type in _NUMERIC_TYPES
+            or _is_numeric_column(column)
         )
     if requirement.kind in {RequirementKind.DIMENSION, RequirementKind.FILTER}:
         return column.semantic_role in {
@@ -328,11 +342,7 @@ def _column_matches(
         )
         if requirement.unit:
             if column.detected_unit:
-                unit_score = lexical_score(
-                    requirement.unit,
-                    column.detected_unit,
-                )
-                if unit_score >= 0.80:
+                if units_compatible(requirement.unit, column.detected_unit):
                     # In wide/transposed tables the metric is commonly stored
                     # in a row label while the unit belongs to a year column.
                     verified_unit = True
@@ -394,7 +404,7 @@ def _summary_matches(
     if (
         requirement.expected_data_type == ExpectedDataType.NUMBER
         and not any(
-            column.inferred_type in _NUMERIC_TYPES
+            _is_numeric_column(column)
             for column in context.profile.columns
         )
     ):
@@ -437,6 +447,40 @@ def _summary_matches(
                 label=context.profile.title,
             )
         ]
+    if requirement.kind == RequirementKind.METRIC:
+        available_tokens = phrase_tokens(combined)
+        available_units = tuple(
+            column.detected_unit
+            for column in context.profile.columns
+            if column.detected_unit
+        )
+        for term in terms:
+            required_tokens = phrase_tokens(term)
+            modifiers = required_tokens & _COMPOSABLE_METRIC_MODIFIERS
+            core_tokens = required_tokens - _COMPOSABLE_METRIC_MODIFIERS
+            expected_unit = requirement.unit or (
+                "percent" if "percent" in modifiers else None
+            )
+            if (
+                modifiers
+                and core_tokens
+                and core_tokens <= available_tokens
+                and (
+                    expected_unit is None
+                    or any(
+                        units_compatible(expected_unit, unit)
+                        for unit in available_units
+                    )
+                )
+            ):
+                return [
+                    _dataset_reference(
+                        context,
+                        confidence=0.83,
+                        method=MatchMethod.TABLE_SUMMARY,
+                        label=context.profile.title,
+                    )
+                ]
     return []
 
 
@@ -456,7 +500,7 @@ def _row_label_matches(
     if (
         requirement.kind == RequirementKind.METRIC
         and not any(
-            column.inferred_type in _NUMERIC_TYPES
+            _is_numeric_column(column)
             for column in context.profile.columns
         )
     ):
@@ -595,11 +639,7 @@ def _unit_matches(
         unit = column.detected_unit
         if not unit:
             continue
-        if (
-            lexical_score(requirement.name, unit) >= 0.80
-            or contains_phrase(unit, requirement.name)
-            or contains_phrase(requirement.name, unit)
-        ):
+        if units_compatible(requirement.name, unit):
             matches.append(
                 _dataset_reference(
                     context,
@@ -718,8 +758,7 @@ def _fact_matches(
             matched = bool(
                 fact.unit
                 and any(
-                    safe_equivalent(term, fact.unit)
-                    or lexical_score(term, fact.unit) >= 0.80
+                    units_compatible(term, fact.unit)
                     for term in terms
                 )
             )
@@ -964,6 +1003,7 @@ class DeterministicEvidenceMatcher:
                     RequirementKind.FILTER,
                     RequirementKind.TOPIC,
                 }:
+                    match_start = len(dataset_matches)
                     (
                         matches,
                         candidates,
@@ -980,6 +1020,19 @@ class DeterministicEvidenceMatcher:
                         _row_label_matches(requirement, context)
                     )
                     dataset_matches.extend(_summary_matches(requirement, context))
+                    if requirement.unit and len(dataset_matches) > match_start:
+                        context_units = tuple(
+                            column.detected_unit
+                            for column in context.profile.columns
+                            if column.detected_unit
+                        )
+                        if any(
+                            units_compatible(requirement.unit, unit)
+                            for unit in context_units
+                        ):
+                            verified_unit_match = True
+                        elif context_units:
+                            unit_conflict = True
 
             text_matches = _text_matches(
                 requirement,
@@ -994,10 +1047,7 @@ class DeterministicEvidenceMatcher:
             dataset_matches.extend(fact_matches)
             if requirement.unit and any(
                 fact.unit
-                and (
-                    safe_equivalent(requirement.unit, fact.unit)
-                    or lexical_score(requirement.unit, fact.unit) >= 0.80
-                )
+                and units_compatible(requirement.unit, fact.unit)
                 for fact in facts
                 if not required_documents
                 or fact.document_id in required_documents

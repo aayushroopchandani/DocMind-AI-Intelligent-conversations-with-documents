@@ -56,6 +56,10 @@ _SUBSTANTIVE_KINDS = frozenset(
         RequirementKind.TOPIC,
     }
 )
+_METRIC_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_METRIC_TOKEN_STOP_WORDS = frozenset(
+    {"a", "an", "and", "count", "number", "of", "or", "the", "to", "under"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +150,19 @@ def _unit_semantically_compatible(
         return True
     terms = " ".join((requirement.name, *requirement.aliases))
     return bool(_AREA_METRIC_RE.search(terms))
+
+
+def _measurement_unit_near_value(
+    text: str,
+    raw_value: str,
+) -> str | None:
+    occurrences = _raw_value_occurrences(text, raw_value)
+    if not occurrences:
+        return None
+    start = occurrences[0][1]
+    nearby = text[start : min(len(text), start + 100)]
+    area_match = _AREA_UNIT_RE.search(nearby)
+    return area_match.group(0) if area_match is not None else None
 
 
 def _flexible_span(
@@ -281,7 +298,26 @@ def _metric_supported(
     return any(
         contains_phrase(context, term)
         or lexical_score(term, context) >= 0.76
+        or (
+            _metric_tokens(term)
+            and _metric_tokens(term) <= _metric_tokens(context)
+        )
         for term in terms
+    )
+
+
+def _metric_tokens(value: object) -> frozenset[str]:
+    def singular(token: str) -> str:
+        if token.endswith("ies") and len(token) > 4:
+            return token[:-3] + "y"
+        if token.endswith("s") and not token.endswith("ss") and len(token) > 3:
+            return token[:-1]
+        return token
+
+    return frozenset(
+        singular(token)
+        for token in _METRIC_TOKEN_RE.findall(str(value or "").casefold())
+        if token not in _METRIC_TOKEN_STOP_WORDS
     )
 
 
@@ -367,7 +403,23 @@ def validate_text_extraction(
         ):
             reject(proposed, "The extracted value is the period label, not a metric.")
             continue
-        unit = _normalized_unit(proposed.unit, proposed.raw_value)
+        nearby_measurement_unit = _measurement_unit_near_value(
+            source_span,
+            proposed.raw_value,
+        )
+        proposed_unit = proposed.unit
+        if (
+            nearby_measurement_unit
+            and (
+                not proposed_unit
+                or (
+                    _MAGNITUDE_RE.search(proposed_unit)
+                    and not _AREA_UNIT_RE.search(proposed_unit)
+                )
+            )
+        ):
+            proposed_unit = nearby_measurement_unit
+        unit = _normalized_unit(proposed_unit, proposed.raw_value)
         if not _unit_supported(unit, context):
             reject(proposed, "Unit or scale is not supported by the source context.")
             continue

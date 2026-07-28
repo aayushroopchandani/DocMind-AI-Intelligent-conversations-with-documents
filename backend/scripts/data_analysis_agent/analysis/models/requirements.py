@@ -8,8 +8,9 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ...cache_normalization import canonical_query_cache_text
 
-ANALYSIS_REQUIREMENTS_VERSION = "1.4.0"
+ANALYSIS_REQUIREMENTS_VERSION = "1.6.0"
 REQUIREMENTS_PROMPT_VERSION = "1.3.0"
 
 _SPACE_RE = re.compile(r"\s+")
@@ -299,7 +300,7 @@ def requirements_cache_key(
     model: str,
 ) -> str:
     payload: dict[str, Any] = {
-        "query": canonical_requirement_text(query),
+        "query": canonical_query_cache_text(query),
         "document_ids": sorted(document_ids),
         "prompt_version": prompt_version,
         "model": model,

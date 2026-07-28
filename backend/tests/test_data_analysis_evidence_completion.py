@@ -59,6 +59,7 @@ from scripts.data_analysis_agent.analysis.services.completion import (
     build_derived_dataset_writes,
     build_repair_queries,
     build_text_extraction_tasks,
+    extract_labeled_numeric_facts,
     validate_text_extraction,
 )
 
@@ -380,6 +381,102 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 2)
         self.assertEqual(generator.calls, 2)
 
+    async def test_missing_provenance_fields_are_recovered_from_one_chunk(
+        self,
+    ) -> None:
+        class IncompleteProvenanceGenerator:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def ainvoke(self, _input: Any, **_kwargs: Any) -> Any:
+                self.calls += 1
+                return {
+                    "status": "evidence",
+                    "facts": [
+                        {
+                            "requirement_id": "req_metric_total_revenue",
+                            "entity": "PDF Solutions",
+                            "metric": "total revenue",
+                            "raw_value": "$165.8",
+                            "unit": "USD million",
+                            "period": "2023",
+                        }
+                    ],
+                }
+
+        generator = IncompleteProvenanceGenerator()
+        extractor = StructuredTextEvidenceExtractor(
+            generator,
+            model="test-extractor",
+        )
+        task = TextExtractionTask(
+            document_id=DOCUMENT_ID,
+            target_requirement_ids=("req_metric_total_revenue",),
+            requirements=_requirements().requirements,
+            chunks=(_chunk(),),
+        )
+
+        response, attempts = await extractor.extract(task)
+        validated = validate_text_extraction(
+            response=response,
+            requirements=task.requirements,
+            chunks=task.chunks,
+            model="test-extractor",
+        )
+
+        self.assertEqual(attempts, 1)
+        self.assertEqual(generator.calls, 1)
+        self.assertEqual(len(validated.facts), 1)
+        self.assertEqual(validated.facts[0].normalized_value, "165.8")
+
+    async def test_valid_include_raw_parsed_response_is_used_directly(
+        self,
+    ) -> None:
+        parsed = TextExtractionResponse(
+            status="evidence",
+            facts=(
+                ProposedEvidenceFact(
+                    requirement_id="req_metric_total_revenue",
+                    entity="PDF Solutions",
+                    metric="total revenue",
+                    raw_value="$165.8",
+                    unit="USD million",
+                    period="2023",
+                    document_id=DOCUMENT_ID,
+                    chunk_id="chunk-1",
+                    source_span=(
+                        "PDF Solutions reported total revenue of "
+                        "$165.8 million in 2023."
+                    ),
+                    confidence=0.95,
+                ),
+            ),
+        )
+
+        class IncludeRawGenerator:
+            async def ainvoke(self, _input: Any, **_kwargs: Any) -> Any:
+                return {
+                    "raw": object(),
+                    "parsed": parsed,
+                    "parsing_error": None,
+                }
+
+        extractor = StructuredTextEvidenceExtractor(
+            IncludeRawGenerator(),
+            model="test-extractor",
+        )
+        response, attempts = await extractor.extract(
+            TextExtractionTask(
+                document_id=DOCUMENT_ID,
+                target_requirement_ids=("req_metric_total_revenue",),
+                requirements=_requirements().requirements,
+                chunks=(_chunk(),),
+            )
+        )
+
+        self.assertEqual(attempts, 1)
+        self.assertEqual(response, parsed)
+
     def test_parent_retrieval_keeps_compact_prefusion_candidates(self) -> None:
         result = RetrievalResult.from_retrieval_state(
             {
@@ -683,6 +780,77 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.facts[0].unit, "million acres")
         self.assertEqual(result.facts[0].period, "2023")
 
+    def test_labeled_numeric_fallback_recovers_impact_summary(self) -> None:
+        task = TextExtractionTask(
+            document_id=DOCUMENT_ID,
+            target_requirement_ids=(
+                "req_metric_new_indigenous_reserves",
+                "req_metric_reserve_expansions",
+                "req_metric_managed_acres",
+                "req_period_2023",
+            ),
+            requirements=(
+                RequirementItem(
+                    requirement_id="req_metric_new_indigenous_reserves",
+                    kind=RequirementKind.METRIC,
+                    name="new Indigenous reserves",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+                RequirementItem(
+                    requirement_id="req_metric_reserve_expansions",
+                    kind=RequirementKind.METRIC,
+                    name="reserve expansions",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+                RequirementItem(
+                    requirement_id="req_metric_managed_acres",
+                    kind=RequirementKind.METRIC,
+                    name="acres under improved management",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                ),
+                RequirementItem(
+                    requirement_id="req_period_2023",
+                    kind=RequirementKind.PERIOD,
+                    name="2023",
+                    expected_data_type=ExpectedDataType.DATE,
+                ),
+            ),
+            chunks=(
+                TextEvidenceReference(
+                    chunk_id="impact-summary",
+                    document_id=DOCUMENT_ID,
+                    document_name="amazon-conservation-team_2023.pdf",
+                    page_number=9,
+                    text=(
+                        "33 NEW INDIGENOUS RESERVES\n"
+                        "23 EXPANSIONS OF EXISTING INDIGENOUS RESERVES\n"
+                        "9,9 MILLION ACRES UNDER IMPROVED SUSTAINABLE\n"
+                        "MANAGEMENT"
+                    ),
+                ),
+            ),
+        )
+
+        response = extract_labeled_numeric_facts(task)
+        validated = validate_text_extraction(
+            response=response,
+            requirements=task.requirements,
+            chunks=task.chunks,
+            model="deterministic-fallback",
+        )
+
+        self.assertEqual(
+            {
+                (fact.requirement_id, fact.normalized_value, fact.unit)
+                for fact in validated.facts
+            },
+            {
+                ("req_metric_new_indigenous_reserves", "33", None),
+                ("req_metric_reserve_expansions", "23", None),
+                ("req_metric_managed_acres", "9.9", "million acres"),
+            },
+        )
+
     def test_area_measure_cannot_satisfy_a_count_metric(self) -> None:
         chunk = TextEvidenceReference(
             chunk_id="reserve-chunk",
@@ -718,7 +886,7 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
                         entity="Amazon Conservation Team",
                         metric="new Indigenous reserves",
                         raw_value="2,7 MILLION",
-                        unit="acres",
+                        unit="million",
                         period=None,
                         document_id=DOCUMENT_ID,
                         chunk_id="reserve-chunk",
@@ -1002,6 +1170,47 @@ class EvidenceCompletionUnitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(tables.states), 1)
         self.assertTrue(cached.cache_hit)
         self.assertEqual(cached.table_candidates, result.table_candidates)
+
+    async def test_targeted_repair_bounds_text_results_before_caching(
+        self,
+    ) -> None:
+        class LargeTextRetriever:
+            async def retrieve(self, state: Any) -> list[dict[str, Any]]:
+                return [
+                    {
+                        "chunk_id": f"repair-chunk-{index}",
+                        "text": f"Revenue evidence {index}.",
+                        "metadata": {
+                            "doc_id": DOCUMENT_ID,
+                            "source": "report.pdf",
+                            "page_number": index + 1,
+                        },
+                        "rrf_score": 1 / (index + 1),
+                        "matched_queries": [state["query"]],
+                        "retrieval_modes": ["dense"],
+                    }
+                    for index in range(31)
+                ]
+
+        retriever = QdrantTargetedRepairRetriever(
+            text_retriever=LargeTextRetriever(),
+            table_retriever=_CapturingTableRetriever(),
+            cache=_RepairCache(),
+        )
+        result = await retriever.retrieve(
+            request=AnalysisRequest(
+                user_id="user-1",
+                chat_id="chat-1",
+                query="original question",
+                document_ids=(DOCUMENT_ID,),
+            ),
+            requirements=_requirements(),
+            assessment=_assessment(),
+            attempted_queries=set(),
+            attempt=1,
+        )
+
+        self.assertEqual(len(result.text_evidence), 30)
 
 
 class EvidenceFactAssessmentTests(unittest.IsolatedAsyncioTestCase):

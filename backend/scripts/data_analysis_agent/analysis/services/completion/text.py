@@ -26,6 +26,7 @@ from ...models import (
     RequirementKind,
     TextEvidenceReference,
     TextExtractionCacheEntry,
+    TextExtractionResponse,
     TEXT_EVIDENCE_EXTRACTOR_VERSION,
     TEXT_EVIDENCE_PROMPT_VERSION,
 )
@@ -37,8 +38,12 @@ from ...repositories import (
 )
 from ..assessment.rules import contains_phrase, lexical_score
 from .derived import build_derived_dataset_writes
+from .deterministic import extract_labeled_numeric_facts
 from .extractor import StructuredTextEvidenceExtractor, TextExtractionTask
-from .validation import validate_text_extraction
+from .validation import (
+    TextExtractionValidationResult,
+    validate_text_extraction,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -434,27 +439,20 @@ class TextEvidenceCompletionService:
             response, _attempt_count = await self._extractor.extract(task)
         except Exception:
             logger.exception("Structured text evidence extraction failed")
-            warning = AnalysisIssue(
-                code=IssueCode.TEXT_EXTRACTION_FAILED,
-                severity=IssueSeverity.WARNING,
-                stage=IssueStage.COMPLETION,
-                message="Text evidence extraction failed for one document.",
-                retryable=True,
-                document_id=task.document_id,
-            )
-            return TextCompletionOutcome(
-                warnings=(*warnings, warning),
-                attempts=(
-                    CompletionAttempt(
-                        attempt_id=attempt_id,
-                        stage=stage,
-                        outcome=CompletionAttemptOutcome.FAILED,
-                        requirement_ids=task.target_requirement_ids,
-                        document_ids=(task.document_id,),
-                        reason="The structured extraction call failed.",
+            warnings.append(
+                AnalysisIssue(
+                    code=IssueCode.TEXT_EXTRACTION_FAILED,
+                    severity=IssueSeverity.WARNING,
+                    stage=IssueStage.COMPLETION,
+                    message=(
+                        "The extraction model failed; explicit labeled values "
+                        "were checked deterministically."
                     ),
-                ),
+                    retryable=True,
+                    document_id=task.document_id,
+                )
             )
+            response = TextExtractionResponse(status="absent")
 
         validation = validate_text_extraction(
             response=response,
@@ -462,6 +460,35 @@ class TextEvidenceCompletionService:
             chunks=task.chunks,
             model=self._extractor.model,
             stage=stage,
+        )
+        deterministic_validation = validate_text_extraction(
+            response=extract_labeled_numeric_facts(task),
+            requirements=task.requirements,
+            chunks=task.chunks,
+            model=self._extractor.model,
+            stage=stage,
+        )
+        combined_facts = {
+            fact.fact_id: fact
+            for fact in (*validation.facts, *deterministic_validation.facts)
+        }
+        combined_rejected = tuple(
+            {
+                (
+                    item.requirement_id,
+                    item.document_id,
+                    item.chunk_id,
+                    item.reason,
+                ): item
+                for item in (
+                    *validation.rejected,
+                    *deterministic_validation.rejected,
+                )
+            }.values()
+        )
+        validation = TextExtractionValidationResult(
+            facts=tuple(combined_facts.values())[:30],
+            rejected=combined_rejected[:30],
         )
         derived: list[DerivedDatasetReference] = []
         for value in build_derived_dataset_writes(validation.facts):

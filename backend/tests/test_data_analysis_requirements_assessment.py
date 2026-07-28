@@ -53,6 +53,7 @@ from scripts.data_analysis_agent.analysis.services import (
 from scripts.data_analysis_agent.analysis.services.profiling import (
     DeterministicDatasetProfiler,
 )
+from scripts.data_analysis_agent.analysis.services.units import units_compatible
 from scripts.data_analysis_agent.analysis.services.versioning import (
     raw_dataset_id,
     source_version,
@@ -313,6 +314,10 @@ def _requirements(
 
 
 class RequirementsValidationTests(unittest.TestCase):
+    def test_scaled_area_unit_satisfies_unscaled_area_requirement(self) -> None:
+        self.assertTrue(units_compatible("acres", "million acres"))
+        self.assertFalse(units_compatible("count", "million acres"))
+
     def test_llm_output_is_grounded_and_explicit_constraints_are_restored(self) -> None:
         request = _request(
             "Compare revenue for PDF Solutions in 2022 and optionally include "
@@ -502,6 +507,58 @@ class RequirementsValidationTests(unittest.TestCase):
         self.assertIn("program services", names)
         self.assertIn("fundraising expenses", names)
 
+    def test_explicit_year_range_replaces_redundant_generic_period_and_topic(
+        self,
+    ) -> None:
+        query = (
+            "List PDF Solutions future amortization expense for each year "
+            "from 2025 through 2029."
+        )
+        artifact = validate_requirements_extraction(
+            request=_request(query),
+            extraction=RequirementsExtraction(
+                operation=AnalysisOperation.LOOKUP,
+                requirements=(
+                    ExtractedRequirement(
+                        kind=RequirementKind.METRIC,
+                        name="future amortization expense",
+                        expected_data_type=ExpectedDataType.NUMBER,
+                    ),
+                    ExtractedRequirement(
+                        kind=RequirementKind.PERIOD,
+                        name="year",
+                        expected_data_type=ExpectedDataType.DATE,
+                    ),
+                    ExtractedRequirement(
+                        kind=RequirementKind.PERIOD,
+                        name="2025 through 2029",
+                        expected_data_type=ExpectedDataType.DATE,
+                    ),
+                    ExtractedRequirement(
+                        kind=RequirementKind.TOPIC,
+                        name="future amortization expense schedule",
+                    ),
+                ),
+                table_evidence_required=True,
+            ),
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        periods = {
+            item.name
+            for item in artifact.requirements
+            if item.kind == RequirementKind.PERIOD
+        }
+        self.assertEqual(periods, {"2025", "2026", "2027", "2028", "2029"})
+        self.assertFalse(
+            any(
+                item.kind == RequirementKind.TOPIC
+                and item.name == "future amortization expense schedule"
+                for item in artifact.requirements
+            )
+        )
+
     def test_explicit_category_values_are_preserved_as_required_filter(self) -> None:
         request = _request(
             "How did revenue concentration for Customers A, B, and C change "
@@ -534,6 +591,90 @@ class RequirementsValidationTests(unittest.TestCase):
         self.assertEqual(customer_filter.filter_operator, FilterOperator.IN)
         self.assertEqual(customer_filter.filter_values, ("A", "B", "C"))
         self.assertTrue(customer_filter.required)
+
+    def test_category_values_are_not_retained_as_document_entity_scope(
+        self,
+    ) -> None:
+        query = (
+            "Compare revenue concentration percentages for Customers "
+            "A, B, and C for 2022, 2023, and 2024."
+        )
+        artifact = validate_requirements_extraction(
+            request=_request(query),
+            extraction=RequirementsExtraction(
+                operation=AnalysisOperation.COMPARISON,
+                requirements=(
+                    ExtractedRequirement(
+                        kind=RequirementKind.METRIC,
+                        name="revenue concentration percentage",
+                        entity_names=("Customer A", "Customer B", "Customer C"),
+                        expected_data_type=ExpectedDataType.NUMBER,
+                        unit="percent",
+                    ),
+                ),
+                table_evidence_required=True,
+            ),
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        metric = next(
+            item
+            for item in artifact.requirements
+            if item.kind == RequirementKind.METRIC
+        )
+        self.assertEqual(metric.entity_names, ())
+
+    def test_cross_document_metric_scopes_are_repaired_from_query_segments(
+        self,
+    ) -> None:
+        query = (
+            "Compare Amazon Conservation Team Support with PDF Solutions "
+            "total revenues for 2023."
+        )
+        artifact = validate_requirements_extraction(
+            request=_request(
+                query,
+                document_ids=(DOCUMENT_A, DOCUMENT_B),
+            ),
+            extraction=RequirementsExtraction(
+                operation=AnalysisOperation.COMPARISON,
+                requirements=(
+                    ExtractedRequirement(
+                        kind=RequirementKind.METRIC,
+                        name="total revenues",
+                        entity_names=(
+                            "Amazon Conservation Team Support",
+                            "PDF Solutions",
+                        ),
+                        expected_data_type=ExpectedDataType.NUMBER,
+                    ),
+                    ExtractedRequirement(
+                        kind=RequirementKind.METRIC,
+                        name="Support",
+                        expected_data_type=ExpectedDataType.NUMBER,
+                    ),
+                ),
+                requires_all_selected_documents=True,
+                table_evidence_required=True,
+            ),
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+        metrics = {
+            item.name.casefold(): item
+            for item in artifact.requirements
+            if item.kind == RequirementKind.METRIC
+        }
+        self.assertEqual(
+            metrics["support"].entity_names,
+            ("Amazon Conservation Team",),
+        )
+        self.assertEqual(
+            metrics["total revenues"].entity_names,
+            ("PDF Solutions",),
+        )
 
     def test_cross_document_entity_scopes_enforce_all_selected_documents(
         self,
@@ -669,6 +810,43 @@ class RequirementsRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second.artifact.diagnostics.cache_hit)
         self.assertEqual(generator.calls, 1)
         self.assertEqual(cache.saves, 1)
+
+    async def test_semantically_equivalent_list_punctuation_reuses_cache(
+        self,
+    ) -> None:
+        extraction = RequirementsExtraction(
+            operation=AnalysisOperation.COMPARISON,
+            requirements=(
+                ExtractedRequirement(
+                    kind=RequirementKind.METRIC,
+                    name="revenue concentration percentage",
+                    expected_data_type=ExpectedDataType.NUMBER,
+                    unit="percent",
+                ),
+            ),
+            table_evidence_required=True,
+        )
+        generator = _RequirementsGenerator(extraction)
+        runner = AnalysisRequirementsRunner(
+            cache=_ArtifactCache(),
+            extractor=RequirementsExtractor(generator, model="test-model"),
+        )
+        first = await runner.run(
+            _request(
+                "Compare revenue concentration percentages for Customers "
+                "A, B, C for 2022, 2023, 2024."
+            )
+        )
+        second = await runner.run(
+            _request(
+                "Compare revenue concentration percentages for Customers "
+                "A, B, and C for 2022, 2023, and 2024"
+            )
+        )
+
+        self.assertFalse(first.artifact.diagnostics.cache_hit)
+        self.assertTrue(second.artifact.diagnostics.cache_hit)
+        self.assertEqual(generator.calls, 1)
 
     async def test_llm_failure_produces_a_structured_conservative_fallback(self) -> None:
         cache = _ArtifactCache()
@@ -837,6 +1015,67 @@ class EvidenceAssessmentTests(unittest.IsolatedAsyncioTestCase):
             CoverageStatus.SUPPORTED,
         )
         self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+
+    async def test_percent_symbol_satisfies_percent_metric_unit(self) -> None:
+        item = _raw_table(
+            table_id="customer-concentration",
+            document_id=DOCUMENT_A,
+            title="Customer",
+            document_name="PDF Solutions Annual Report.pdf",
+            columns=[
+                {"key": "customer", "label": "Customer", "type": "string"},
+                {
+                    "key": "year_2024",
+                    "label": "Year Ended December 31, 2024",
+                    "type": "string",
+                    "unit": "%",
+                },
+            ],
+            rows=[
+                {"customer": "A", "year_2024": 19},
+                {"customer": "B", "year_2024": "* %"},
+                {"customer": "C", "year_2024": 10},
+            ],
+            summary="Revenue concentration percentages for Customers A, B, and C.",
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(_AmbiguityGenerator(), model="test-model"),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_revenue_concentration_percentage",
+                kind=RequirementKind.METRIC,
+                name="revenue concentration percentage",
+                unit="percent",
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2024",
+                kind=RequirementKind.PERIOD,
+                name="2024",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+        )
+
+        outcome = await runner.run(
+            request=_request("Compare revenue concentration percentages in 2024"),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+        self.assertTrue(
+            all(
+                item.status == CoverageStatus.SUPPORTED
+                for item in outcome.artifact.coverage
+            )
+        )
+
     async def test_exact_profile_matches_do_not_call_the_ambiguity_llm(self) -> None:
         item = _raw_table(
             table_id="revenue-table",
@@ -1065,6 +1304,202 @@ class EvidenceAssessmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             outcome.artifact.coverage[0].evidence[0].label,
             "Revenue and Expenses Trends: Expenses",
+        )
+
+    async def test_parenthetical_loss_row_matches_or_loss_requirement(self) -> None:
+        item = _raw_table(
+            table_id="segment-results",
+            document_id=DOCUMENT_A,
+            title="Segment total revenues, gross profit, and net income (loss)",
+            document_name="PDF Solutions Annual Report.pdf",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "year_2024", "label": "2024", "type": "number"},
+            ],
+            rows=[
+                {"metric": "Total revenues", "year_2024": 179465},
+                {"metric": "Gross profit", "year_2024": 125321},
+                {"metric": "Net income (loss)", "year_2024": 4057},
+            ],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(_AmbiguityGenerator(), model="test-model"),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_net_income_or_loss",
+                kind=RequirementKind.METRIC,
+                name="net income or loss",
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2024",
+                kind=RequirementKind.PERIOD,
+                name="2024",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+        )
+
+        outcome = await runner.run(
+            request=_request("Show net income or loss for 2024"),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+        self.assertEqual(outcome.artifact.coverage[0].status, CoverageStatus.SUPPORTED)
+
+    async def test_metric_and_period_need_joint_dataset_coverage(self) -> None:
+        metric_item = _raw_table(
+            table_id="revenue-only",
+            document_id=DOCUMENT_A,
+            title="Revenue",
+            document_name="annual-report.pdf",
+            columns=[
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[{"revenue": 100}],
+        )
+        period_item = _raw_table(
+            table_id="headcount-by-year",
+            document_id=DOCUMENT_A,
+            title="Headcount by year",
+            document_name="annual-report.pdf",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "year_2024", "label": "2024", "type": "number"},
+            ],
+            rows=[{"metric": "Employees", "year_2024": 50}],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(
+            metric_item,
+            period_item,
+        )
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(_AmbiguityGenerator(), model="test-model"),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_revenue",
+                kind=RequirementKind.METRIC,
+                name="revenue",
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2024",
+                kind=RequirementKind.PERIOD,
+                name="2024",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+        )
+
+        outcome = await runner.run(
+            request=_request("Show revenue in 2024"),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        metric_coverage = next(
+            item
+            for item in outcome.artifact.coverage
+            if item.requirement_id == "req_metric_revenue"
+        )
+        self.assertEqual(metric_coverage.status, CoverageStatus.PARTIAL)
+        self.assertNotEqual(outcome.artifact.decision, ReadinessDecision.READY)
+        self.assertEqual(len(outcome.artifact.combination_coverage), 1)
+        self.assertEqual(
+            outcome.artifact.combination_coverage[0].status,
+            CoverageStatus.MISSING,
+        )
+
+    async def test_entity_scoped_metrics_are_not_required_from_other_documents(
+        self,
+    ) -> None:
+        act = _raw_table(
+            table_id="act-support",
+            document_id=DOCUMENT_A,
+            title="Support",
+            document_name="Amazon Conservation Team 2023.pdf",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "year_2023", "label": "2023", "type": "number"},
+            ],
+            rows=[{"metric": "Support", "year_2023": 100}],
+        )
+        pdf = _raw_table(
+            table_id="pdf-revenue",
+            document_id=DOCUMENT_B,
+            title="Total revenues",
+            document_name="PDF Solutions 2024 Annual Report.pdf",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "year_2023", "label": "2023", "type": "number"},
+            ],
+            rows=[{"metric": "Total revenues", "year_2023": 200}],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(act, pdf)
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_support",
+                kind=RequirementKind.METRIC,
+                name="support",
+                entity_names=("Amazon Conservation Team",),
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_metric_total_revenues",
+                kind=RequirementKind.METRIC,
+                name="total revenues",
+                entity_names=("PDF Solutions",),
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_period_2023",
+                kind=RequirementKind.PERIOD,
+                name="2023",
+                expected_data_type=ExpectedDataType.DATE,
+            ),
+            document_ids=(DOCUMENT_A, DOCUMENT_B),
+            requires_all=True,
+        )
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(_AmbiguityGenerator(), model="test-model"),
+        )
+
+        outcome = await runner.run(
+            request=_request(
+                "Compare ACT support with PDF Solutions total revenues in 2023",
+                document_ids=(DOCUMENT_A, DOCUMENT_B),
+            ),
+            requirements=requirements,
+            retrieval=RetrievalResult(
+                retrieval_scope="normal",
+                table_intent="required",
+                signals=RetrievalSignals(
+                    entities=("Amazon Conservation Team", "PDF Solutions")
+                ),
+            ),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+        self.assertTrue(
+            all(
+                item.status == CoverageStatus.SUPPORTED
+                for item in outcome.artifact.coverage
+            )
         )
 
     async def test_metric_with_conflicting_unit_is_not_marked_supported(self) -> None:

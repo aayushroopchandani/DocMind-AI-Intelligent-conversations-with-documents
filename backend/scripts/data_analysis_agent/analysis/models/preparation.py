@@ -6,8 +6,9 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .profile import SemanticRole
 
-DATASET_NORMALIZER_VERSION = "1.0.0"
+DATASET_NORMALIZER_VERSION = "1.2.0"
 
 
 def preparation_utc_now() -> datetime:
@@ -63,6 +64,7 @@ class NormalizedColumn(BaseModel):
     label: str = Field(min_length=1, max_length=160)
     data_type: NormalizedDataType
     unit: str | None = Field(default=None, max_length=100)
+    semantic_role: SemanticRole = SemanticRole.UNKNOWN
     source_column_keys: tuple[str, ...] = Field(default=(), max_length=64)
 
     model_config = ConfigDict(frozen=True, extra="forbid")

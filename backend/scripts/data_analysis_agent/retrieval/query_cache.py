@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from db.mongodb import get_db
 
+from ..cache_normalization import canonical_query_cache_text
+
 
 class QueryGenerationCacheError(RuntimeError):
     """Raised when generated retrieval queries cannot be cached."""
@@ -41,7 +43,7 @@ def query_generation_cache_key(
     """Return a tenant-independent content key for deterministic cache reuse."""
 
     payload = {
-        "query": " ".join(query.casefold().split()),
+        "query": canonical_query_cache_text(query),
         "document_ids": sorted(set(document_ids)),
         "model": model,
         "prompt_version": prompt_version,

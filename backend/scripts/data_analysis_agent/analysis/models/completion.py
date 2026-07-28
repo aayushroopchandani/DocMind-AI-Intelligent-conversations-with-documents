@@ -13,10 +13,10 @@ from .profile import DatasetProfiles
 from .retrieval import TableCandidateReference, TextEvidenceReference
 
 
-EVIDENCE_COMPLETION_VERSION = "1.2.0"
-TEXT_EVIDENCE_EXTRACTOR_VERSION = "1.2.0"
-TEXT_EVIDENCE_PROMPT_VERSION = "1.0.0"
-REPAIR_RETRIEVAL_CACHE_VERSION = "1.0.0"
+EVIDENCE_COMPLETION_VERSION = "1.5.0"
+TEXT_EVIDENCE_EXTRACTOR_VERSION = "1.5.0"
+TEXT_EVIDENCE_PROMPT_VERSION = "1.1.0"
+REPAIR_RETRIEVAL_CACHE_VERSION = "1.1.0"
 
 
 def completion_utc_now() -> datetime:

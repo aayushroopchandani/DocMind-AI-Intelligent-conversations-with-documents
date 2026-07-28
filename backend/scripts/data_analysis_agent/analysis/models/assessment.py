@@ -14,7 +14,7 @@ from .requirements import AnalysisRequirements
 from .retrieval import RetrievalResult
 
 
-EVIDENCE_ASSESSOR_VERSION = "1.7.0"
+EVIDENCE_ASSESSOR_VERSION = "1.10.0"
 AMBIGUITY_PROMPT_VERSION = "1.0.0"
 
 
@@ -98,6 +98,20 @@ class RequirementCoverage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
+class RequirementCombinationCoverage(BaseModel):
+    """Evidence shared by requirements that must hold for one observation."""
+
+    combination_id: str = Field(pattern=r"^coverage_[a-f0-9]{16}$")
+    requirement_ids: tuple[str, ...] = Field(min_length=2, max_length=16)
+    document_id: str | None = None
+    status: CoverageStatus
+    confidence: float = Field(ge=0, le=1)
+    reason: str = Field(min_length=1, max_length=500)
+    evidence: tuple[EvidenceReference, ...] = Field(default=(), max_length=12)
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
 class DocumentCoverage(BaseModel):
     document_id: str = Field(min_length=1)
     document_name: str = ""
@@ -128,6 +142,10 @@ class EvidenceAssessment(BaseModel):
     ambiguity_model: str = Field(min_length=1)
     decision: ReadinessDecision
     coverage: tuple[RequirementCoverage, ...]
+    combination_coverage: tuple[RequirementCombinationCoverage, ...] = Field(
+        default=(),
+        max_length=192,
+    )
     document_coverage: tuple[DocumentCoverage, ...]
     required_count: int = Field(ge=0)
     supported_count: int = Field(ge=0)
@@ -147,6 +165,11 @@ class EvidenceAssessment(BaseModel):
         document_ids = [item.document_id for item in self.document_coverage]
         if len(document_ids) != len(set(document_ids)):
             raise ValueError("document coverage must contain unique document IDs")
+        combination_ids = [
+            item.combination_id for item in self.combination_coverage
+        ]
+        if len(combination_ids) != len(set(combination_ids)):
+            raise ValueError("combination coverage IDs must be unique")
         if self.required_count > len(self.coverage):
             raise ValueError("required_count cannot exceed total coverage")
         counts = {

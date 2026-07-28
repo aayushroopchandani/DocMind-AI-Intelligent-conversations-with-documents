@@ -15,6 +15,7 @@ from ...models import (
     EvidencePackage,
     HydratedDatasetReference,
     RequirementKind,
+    RequirementItem,
 )
 
 
@@ -82,9 +83,16 @@ def _effective_profiles(
 def _requirement_obligations(
     *,
     requirements: AnalysisRequirements,
-    requirement_id: str,
-    kind: RequirementKind,
+    requirement: RequirementItem,
+    evidence_document_ids: tuple[str, ...] = (),
 ) -> frozenset[tuple[str, str | None]]:
+    requirement_id = requirement.requirement_id
+    kind = requirement.kind
+    if requirement.entity_names and evidence_document_ids:
+        return frozenset(
+            (requirement_id, document_id)
+            for document_id in evidence_document_ids
+        )
     if (
         requirements.requires_all_selected_documents
         and kind != RequirementKind.TOPIC
@@ -131,8 +139,12 @@ def select_preparation_evidence(
             continue
         obligations = _requirement_obligations(
             requirements=requirements,
-            requirement_id=requirement.requirement_id,
-            kind=requirement.kind,
+            requirement=requirement,
+            evidence_document_ids=tuple(
+                dict.fromkeys(
+                    reference.document_id for reference in coverage.evidence
+                )
+            ),
         )
         universe.update(obligations)
         for reference in coverage.evidence:
@@ -205,8 +217,8 @@ def select_preparation_evidence(
                 continue
             for obligation in _requirement_obligations(
                 requirements=requirements,
-                requirement_id=requirement_id,
-                kind=requirement.kind,
+                requirement=requirement,
+                evidence_document_ids=(derived.document_id,),
             ):
                 if obligation[1] is None or obligation[1] == derived.document_id:
                     obligations.add(obligation)

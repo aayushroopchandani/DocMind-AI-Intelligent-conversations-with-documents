@@ -45,6 +45,7 @@ from ...repositories import (
 
 
 logger = logging.getLogger(__name__)
+_MAX_REPAIR_TEXT_EVIDENCE = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,7 +360,7 @@ class QdrantTargetedRepairRetriever:
             queries=queries,
             document_ids=tuple(target_documents),
             table_candidates=adapted.table_candidates,
-            text_evidence=adapted.text_evidence,
+            text_evidence=adapted.text_evidence[:_MAX_REPAIR_TEXT_EVIDENCE],
         )
         if self._cache is not None:
             has_evidence = bool(result.table_candidates or result.text_evidence)

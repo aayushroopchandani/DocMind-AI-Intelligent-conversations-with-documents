@@ -27,6 +27,7 @@ from ...models.assessment import (
     EvidenceKind,
     MatchMethod,
     ReadinessDecision,
+    RequirementCombinationCoverage,
     RequirementCoverage,
     assessment_cache_key,
 )
@@ -142,6 +143,7 @@ def _apply_ambiguity_resolutions(
         required_documents = (
             set(requirements.selected_document_ids)
             if requirements.requires_all_selected_documents
+            and not requirement.entity_names
             and requirement.kind
             in {
                 RequirementKind.METRIC,
@@ -193,6 +195,194 @@ def _apply_ambiguity_resolutions(
         else:
             output.append(item)
     return tuple(output), resolved_count
+
+
+def _evidence_identity(reference: object) -> tuple[str, str] | None:
+    dataset_id = getattr(reference, "dataset_id", None)
+    if dataset_id:
+        return ("dataset", str(dataset_id))
+    fact_id = getattr(reference, "fact_id", None)
+    if fact_id:
+        return ("fact", str(fact_id))
+    return None
+
+
+def _combination_document_ids(
+    *,
+    metric: object,
+    metric_coverage: RequirementCoverage,
+    requirements: AnalysisRequirements,
+) -> tuple[str | None, ...]:
+    if getattr(metric, "entity_names", ()):
+        document_ids = tuple(
+            dict.fromkeys(
+                reference.document_id
+                for reference in metric_coverage.evidence
+                if _evidence_identity(reference) is not None
+            )
+        )
+        return document_ids or (None,)
+    if (
+        requirements.requires_all_selected_documents
+        or len(requirements.selected_document_ids) == 1
+    ):
+        return tuple(requirements.selected_document_ids)
+    return (None,)
+
+
+def _joint_requirement_coverage(
+    *,
+    requirements: AnalysisRequirements,
+    coverage: tuple[RequirementCoverage, ...],
+) -> tuple[
+    tuple[RequirementCoverage, ...],
+    tuple[RequirementCombinationCoverage, ...],
+]:
+    """Require metrics, periods and filters to share one dataset or fact."""
+
+    required_items = tuple(
+        item for item in requirements.requirements if item.required
+    )
+    metrics = tuple(
+        item for item in required_items if item.kind == RequirementKind.METRIC
+    )
+    periods = tuple(
+        item for item in required_items if item.kind == RequirementKind.PERIOD
+    )
+    constraints = tuple(
+        item for item in required_items if item.kind == RequirementKind.FILTER
+    )
+    if not metrics or not periods:
+        return coverage, ()
+
+    coverage_by_id = {item.requirement_id: item for item in coverage}
+    combinations: list[RequirementCombinationCoverage] = []
+    incomplete_metric_ids: set[str] = set()
+    for metric in metrics:
+        metric_coverage = coverage_by_id.get(metric.requirement_id)
+        if metric_coverage is None:
+            continue
+        for period in periods:
+            period_coverage = coverage_by_id.get(period.requirement_id)
+            if period_coverage is None:
+                continue
+            component_ids = (
+                metric.requirement_id,
+                period.requirement_id,
+                *(item.requirement_id for item in constraints),
+            )
+            components = tuple(
+                coverage_by_id[item_id]
+                for item_id in component_ids
+                if item_id in coverage_by_id
+            )
+            for document_id in _combination_document_ids(
+                metric=metric,
+                metric_coverage=metric_coverage,
+                requirements=requirements,
+            ):
+                identities_by_component: list[set[tuple[str, str]]] = []
+                references_by_identity: dict[
+                    tuple[str, str],
+                    list[object],
+                ] = {}
+                for component in components:
+                    identities: set[tuple[str, str]] = set()
+                    for reference in component.evidence:
+                        if document_id and reference.document_id != document_id:
+                            continue
+                        identity = _evidence_identity(reference)
+                        if identity is None:
+                            continue
+                        identities.add(identity)
+                        references_by_identity.setdefault(identity, []).append(
+                            reference
+                        )
+                    identities_by_component.append(identities)
+                shared = (
+                    set.intersection(*identities_by_component)
+                    if identities_by_component
+                    and all(identities_by_component)
+                    else set()
+                )
+                shared_references = tuple(
+                    sorted(
+                        (
+                            max(
+                                references_by_identity[identity],
+                                key=lambda item: item.confidence,
+                            )
+                            for identity in shared
+                        ),
+                        key=lambda item: (
+                            -item.confidence,
+                            item.document_id,
+                            item.dataset_id or "",
+                            item.fact_id or "",
+                        ),
+                    )[:12]
+                )
+                status = (
+                    CoverageStatus.SUPPORTED
+                    if shared_references
+                    else CoverageStatus.MISSING
+                )
+                if status != CoverageStatus.SUPPORTED:
+                    incomplete_metric_ids.add(metric.requirement_id)
+                payload = "\x1f".join(
+                    (
+                        *component_ids,
+                        document_id or "",
+                    )
+                )
+                combination_id = (
+                    "coverage_"
+                    + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+                )
+                combinations.append(
+                    RequirementCombinationCoverage(
+                        combination_id=combination_id,
+                        requirement_ids=component_ids,
+                        document_id=document_id,
+                        status=status,
+                        confidence=(
+                            min(item.confidence for item in shared_references)
+                            if shared_references
+                            else 0.0
+                        ),
+                        reason=(
+                            "One source jointly supports the metric, period and "
+                            "required filters."
+                            if shared_references
+                            else (
+                                "Requirements are individually supported, but no "
+                                "single dataset or fact supports their combination."
+                            )
+                        ),
+                        evidence=shared_references,
+                    )
+                )
+
+    adjusted: list[RequirementCoverage] = []
+    for item in coverage:
+        if (
+            item.requirement_id in incomplete_metric_ids
+            and item.status == CoverageStatus.SUPPORTED
+        ):
+            adjusted.append(
+                item.model_copy(
+                    update={
+                        "status": CoverageStatus.PARTIAL,
+                        "reason": (
+                            "Metric evidence exists, but at least one required "
+                            "metric-period combination is unsupported."
+                        ),
+                    }
+                )
+            )
+        else:
+            adjusted.append(item)
+    return tuple(adjusted), tuple(combinations)
 
 
 def _document_coverage(
@@ -344,6 +534,7 @@ def _readiness(
     document_coverage: tuple[DocumentCoverage, ...],
     evidence: EvidencePackage,
     profiles: DatasetProfiles,
+    combination_coverage: tuple[RequirementCombinationCoverage, ...] = (),
 ) -> ReadinessDecision:
     if requirements.diagnostics.validation_conflicts:
         return ReadinessDecision.NEEDS_CLARIFICATION
@@ -372,6 +563,24 @@ def _readiness(
         for item in required_coverage
         if item.status != CoverageStatus.SUPPORTED
     ]
+    if any(
+        item.status != CoverageStatus.SUPPORTED
+        for item in combination_coverage
+    ):
+        incomplete = [
+            *incomplete,
+            *(
+                item
+                for item in coverage
+                if item.requirement_id
+                in {
+                    requirement_id
+                    for combination in combination_coverage
+                    if combination.status != CoverageStatus.SUPPORTED
+                    for requirement_id in combination.requirement_ids
+                }
+            ),
+        ]
     if incomplete or incomplete_documents:
         if any(item.text_evidence_available for item in incomplete) or any(
             item.status == CoverageStatus.PARTIAL and item.text_chunk_ids
@@ -404,6 +613,10 @@ def _build_artifact(
     ambiguity_llm_used: bool,
     facts: tuple[EvidenceFact, ...] = (),
 ) -> EvidenceAssessment:
+    coverage, combination_coverage = _joint_requirement_coverage(
+        requirements=requirements,
+        coverage=coverage,
+    )
     document_coverage = _document_coverage(
         requirements=requirements,
         evidence=evidence,
@@ -417,11 +630,13 @@ def _build_artifact(
         document_coverage=document_coverage,
         evidence=evidence,
         profiles=profiles,
+        combination_coverage=combination_coverage,
     )
     return EvidenceAssessment(
         ambiguity_model=ambiguity_model,
         decision=decision,
         coverage=coverage,
+        combination_coverage=combination_coverage,
         document_coverage=document_coverage,
         required_count=sum(item.required for item in requirements.requirements),
         supported_count=sum(

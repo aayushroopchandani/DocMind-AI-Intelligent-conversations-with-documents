@@ -7,7 +7,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-DATASET_PROFILER_VERSION = "1.1.0"
+DATASET_PROFILER_VERSION = "1.3.0"
 
 
 class ProfiledDataType(str, Enum):

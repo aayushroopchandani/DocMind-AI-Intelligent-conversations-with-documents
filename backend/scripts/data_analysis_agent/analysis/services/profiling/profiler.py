@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -26,6 +27,13 @@ from .statistics import (
     string_statistics,
     time_statistics,
 )
+from ..units import resolved_column_unit, table_unit_hint
+
+
+_TIME_DIMENSION_LABEL_RE = re.compile(
+    r"\b(?:date|year|fiscal|period|quarter|month|fy)\b",
+    re.IGNORECASE,
+)
 
 
 def _semantic_role(
@@ -35,6 +43,7 @@ def _semantic_role(
     non_null_count: int,
     cardinality_ratio: float,
     string_profile: StringColumnStatistics | None,
+    temporal_share: float,
 ) -> SemanticRole:
     label = f"{column.key} {column.label}"
     if inferred == ProfiledDataType.EMPTY:
@@ -42,6 +51,8 @@ def _semantic_role(
     if inferred == ProfiledDataType.BOOLEAN:
         return SemanticRole.BOOLEAN_FLAG
     if inferred in TEMPORAL_TYPES:
+        return SemanticRole.TIME_PERIOD
+    if temporal_share >= 0.50 and _TIME_DIMENSION_LABEL_RE.search(label):
         return SemanticRole.TIME_PERIOD
     if ID_LABEL_RE.search(label):
         return SemanticRole.IDENTIFIER
@@ -64,6 +75,8 @@ def _semantic_role(
 def _column_profile(
     column: TableColumn,
     rows: Sequence[dict[str, Any]],
+    *,
+    table_unit: str | None,
 ) -> ColumnProfile:
     observations: list[ValueObservation] = []
     examples: list[str] = []
@@ -115,6 +128,27 @@ def _column_profile(
         non_null_count=non_null_count,
         cardinality_ratio=cardinality_ratio,
         string_profile=string_profile,
+        temporal_share=temporal_share,
+    )
+    detected_unit = resolved_column_unit(
+        declared=column.unit,
+        detected=detect_unit(
+            column.label,
+            *(item.display for item in observations[:5]),
+        ),
+        table_hint=table_unit,
+        is_measure=(
+            role == SemanticRole.METRIC
+            or (
+                numeric_share > 0
+                and role
+                not in {
+                    SemanticRole.TIME_PERIOD,
+                    SemanticRole.IDENTIFIER,
+                    SemanticRole.BOOLEAN_FLAG,
+                }
+            )
+        ),
     )
     return ColumnProfile(
         key=column.key,
@@ -129,10 +163,7 @@ def _column_profile(
         unique_count=unique_count,
         cardinality_ratio=rounded(cardinality_ratio),
         example_values=tuple(examples),
-        detected_unit=column.unit or detect_unit(
-            column.label,
-            *(item.display for item in observations[:5]),
-        ),
+        detected_unit=detected_unit,
         type_confidence=rounded(confidence),
         parsing_warnings=tuple(parsing_warnings),
         numeric_statistics=numeric_statistics(numeric_values),
@@ -151,8 +182,17 @@ class DeterministicDatasetProfiler:
         dataset: HydratedDatasetReference,
         table: StructuredTable,
     ) -> DatasetProfile:
+        inferred_table_unit = table_unit_hint(
+            table.title,
+            *(column.label for column in table.columns),
+        )
         columns = tuple(
-            _column_profile(column, table.rows) for column in table.columns
+            _column_profile(
+                column,
+                table.rows,
+                table_unit=inferred_table_unit,
+            )
+            for column in table.columns
         )
         row_features = analyze_rows(table)
         orientation, periods_in_headers = infer_orientation(

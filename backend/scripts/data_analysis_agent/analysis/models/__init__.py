@@ -9,6 +9,7 @@ from .assessment import (
     EvidenceReference,
     MatchMethod,
     ReadinessDecision,
+    RequirementCombinationCoverage,
     RequirementCoverage,
     assessment_cache_key,
 )
@@ -166,6 +167,7 @@ __all__ = [
     "ProposedEvidenceFact",
     "ReadinessDecision",
     "RequirementCoverage",
+    "RequirementCombinationCoverage",
     "RequirementItem",
     "RequirementKind",
     "RequirementOrigin",
