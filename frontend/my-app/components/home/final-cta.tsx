@@ -14,7 +14,7 @@ export function FinalCta() {
               className="bg-grid pointer-events-none absolute inset-0 opacity-25"
             />
             <div className="relative">
-              <h2 className="prism-text text-balance text-3xl font-semibold tracking-tight sm:text-5xl">
+              <h2 className="dm-headline text-balance text-3xl font-semibold tracking-tight sm:text-5xl">
                 Stop reading reports. Start querying them.
               </h2>
               <p className="mx-auto mt-5 max-w-xl text-balance text-muted-foreground">

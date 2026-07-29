@@ -601,20 +601,6 @@
       );
   }
 
-  /* Gradient headline treatment for section titles. */
-  .prism-text {
-    background: linear-gradient(
-      100deg,
-      var(--foreground) 10%,
-      color-mix(in oklch, var(--accent-violet) 70%, var(--foreground)) 40%,
-      color-mix(in oklch, var(--accent-cyan) 70%, var(--foreground)) 62%,
-      var(--foreground) 90%
-    );
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-  }
-
   /* ---------------------------------------------------------------- */
   /* Homepage — format marquee                                        */
   /* ---------------------------------------------------------------- */

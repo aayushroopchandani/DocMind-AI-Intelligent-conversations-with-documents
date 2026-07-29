@@ -55,9 +55,18 @@ export function HeroSection() {
 
       <div className="mx-auto max-w-6xl px-4">
         <div className="mx-auto flex max-w-3xl flex-col items-center text-center">
-          <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-card/50 px-3 py-1 text-xs text-muted-foreground backdrop-blur">
-            <span className="size-1.5 animate-pulse rounded-full bg-[var(--accent-cyan)]" />
-            AI data-analysis agent · multi-document workspace
+          {/*
+           * Positioning pill. A tag plus a plain-language clause reads as a
+           * product descriptor; the blinking status dot it replaces read as a
+           * service-health badge, which is not what this is.
+           */}
+          <span className="dm-badge mb-6 inline-flex items-center gap-2.5 rounded-full py-1 pl-1 pr-3.5 text-xs">
+            <span className="dm-badge-tag rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-foreground/85">
+              Analysis agent
+            </span>
+            <span className="text-muted-foreground">
+              PDFs, spreadsheets and CSVs in one workspace
+            </span>
           </span>
 
           <SplitText

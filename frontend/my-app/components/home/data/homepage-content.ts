@@ -6,41 +6,28 @@ import {
   History,
   LayoutDashboard,
   MessageSquareText,
-  MousePointerClick,
-  Quote,
   Sheet,
-  Sigma,
   SlidersHorizontal,
   Sparkles,
   Table2,
-  Upload,
-  Wand2,
   type LucideIcon,
 } from "lucide-react";
 
 /**
  * All homepage copy in one place.
  *
- * Sections import from here rather than inlining strings, so the product
- * story can be rewritten without touching a single piece of layout.
+ * Sections import from here rather than inlining strings, so the product story
+ * can be rewritten without touching a single piece of layout. Anything with a
+ * matching illustration references it by `id`; the id-to-component mapping
+ * lives next to the illustrations, not here.
  */
 
-/** The six accents the homepage draws from, mapped to CSS custom properties. */
-export type AccentKey =
-  | "violet"
-  | "cyan"
-  | "amber"
-  | "emerald"
-  | "rose"
-  | "blue";
+/** Accents still used by the two-surface section. */
+export type AccentKey = "violet" | "cyan";
 
 export const ACCENT_VAR: Record<AccentKey, string> = {
   violet: "var(--accent-violet)",
   cyan: "var(--accent-cyan)",
-  amber: "var(--accent-amber)",
-  emerald: "var(--accent-emerald)",
-  rose: "var(--accent-rose)",
-  blue: "var(--accent-blue)",
 };
 
 /* ------------------------------------------------------------------ */
@@ -76,134 +63,155 @@ export const FORMATS: readonly FormatChip[] = [
 ] as const;
 
 /* ------------------------------------------------------------------ */
-/* Capabilities (bento grid)                                           */
+/* Journey — the three-step story                                      */
 /* ------------------------------------------------------------------ */
 
-export interface Capability {
-  icon: LucideIcon;
+export type JourneyId = "connect" | "analyse" | "share";
+
+export interface JourneyStep {
+  id: JourneyId;
   title: string;
   description: string;
-  accent: AccentKey;
-  /** Tailwind column span at the `lg` breakpoint, out of 12. */
-  span: string;
-  /** Optional visual keyed by id in `capability-visuals.tsx`. */
-  visual?: "sheet" | "chart" | "citation";
 }
 
-export const CAPABILITIES: readonly Capability[] = [
+export const JOURNEY: readonly JourneyStep[] = [
   {
-    icon: Sigma,
-    title: "It edits the spreadsheet, not just the chat",
+    id: "connect",
+    title: "Connect your data",
     description:
-      "The agent writes formulas, adds columns and worksheets, and reshapes ranges in place — results arrive as editable artifacts you can keep working in.",
-    accent: "emerald",
-    span: "lg:col-span-7",
-    visual: "sheet",
+      "Bring in PDFs, workbooks, CSVs and extracted tables — your evidence and your numbers, side by side in one workspace.",
   },
   {
-    icon: LayoutDashboard,
-    title: "Charts and dashboards on request",
+    id: "analyse",
+    title: "The analyst does the work",
     description:
-      "From a one-line bar chart to a multi-series breakdown with trend overlays — described in plain language, rendered into the workspace.",
-    accent: "cyan",
-    span: "lg:col-span-5",
-    visual: "chart",
+      "Ask in plain language. DocMind plans the steps, writes the Python and the formulas, and runs them against what you selected.",
   },
   {
-    icon: Wand2,
-    title: "Cleaning and profiling built in",
+    id: "share",
+    title: "Keep results you can reuse",
     description:
-      "Missing values, duplicates, type drift, anomalies and outliers are surfaced before the analysis runs, not after you ship the number.",
-    accent: "amber",
-    span: "lg:col-span-4",
-  },
-  {
-    icon: Braces,
-    title: "Python in a secure sandbox",
-    description:
-      "pandas, Polars, NumPy, SciPy, scikit-learn and Matplotlib — generated, executed and returned as artifacts you can inspect.",
-    accent: "violet",
-    span: "lg:col-span-4",
-  },
-  {
-    icon: MousePointerClick,
-    title: "Preview every change before it lands",
-    description:
-      "Proposed edits arrive as a diff. Apply them, adjust them, or throw them away — nothing touches your data unattended.",
-    accent: "blue",
-    span: "lg:col-span-4",
-  },
-  {
-    icon: Quote,
-    title: "Every number traced to its source",
-    description:
-      "Answers cite the exact PDF page, sheet or cell range, and clicking a citation jumps you straight to the highlighted source.",
-    accent: "rose",
-    span: "lg:col-span-7",
-    visual: "citation",
-  },
-  {
-    icon: History,
-    title: "Run history and undo",
-    description:
-      "Every operation the agent performs is recorded. Step back through the run and restore any earlier state of the analysis.",
-    accent: "violet",
-    span: "lg:col-span-5",
+      "Charts, cleaned sheets and cited findings stay in the workspace — repeatable, inspectable and ready to hand over.",
   },
 ] as const;
 
 /* ------------------------------------------------------------------ */
-/* Workflow                                                            */
+/* Features — the illustrated grid                                     */
 /* ------------------------------------------------------------------ */
 
-export interface WorkflowStep {
-  step: string;
+export type FeatureId =
+  | "charts"
+  | "transform"
+  | "code"
+  | "context"
+  | "sheet"
+  | "citations";
+
+export interface Feature {
+  id: FeatureId;
   title: string;
   description: string;
-  icon: LucideIcon;
-  accent: AccentKey;
 }
 
-export const WORKFLOW: readonly WorkflowStep[] = [
+export const FEATURES: readonly Feature[] = [
   {
-    step: "01",
-    icon: Upload,
-    title: "Open your files",
+    id: "charts",
+    title: "Charts and dashboards on request",
     description:
-      "Load PDFs, workbooks and CSVs into one workspace and view them side by side.",
-    accent: "blue",
+      "Describe the breakdown you want and it is built in the workspace — from a single bar chart to a multi-series view with trend overlays.",
   },
   {
-    step: "02",
-    icon: MousePointerClick,
-    title: "Select your context",
+    id: "transform",
+    title: "Messy data in, analysis-ready out",
     description:
-      "Highlight a PDF page, a table, or a range of cells — that selection becomes the agent's context.",
-    accent: "cyan",
+      "Mixed formats, stray text and duplicate rows are cleaned, typed and reshaped into a table you can actually compute on.",
   },
   {
-    step: "03",
-    icon: MessageSquareText,
-    title: "Ask the analyst",
+    id: "code",
+    title: "See the code behind every result",
     description:
-      "Describe the analysis in plain language. The agent reads the data and plans the operation.",
-    accent: "violet",
+      "Each run shows the Python it executed, the formulas it wrote and the chart spec it built. Verify it, learn from it, or take it with you.",
   },
   {
-    step: "04",
+    id: "context",
+    title: "You decide what it reads",
+    description:
+      "Select the documents, sheets and cell ranges for a run. Everything outside that selection stays out of the answer.",
+  },
+  {
+    id: "sheet",
+    title: "It edits the spreadsheet, not just the chat",
+    description:
+      "Formulas, new columns and whole worksheets are written into the live artifact, so you keep working inside the result.",
+  },
+  {
+    id: "citations",
+    title: "Every number traced to its source",
+    description:
+      "Answers cite the exact page, sheet and cell range, and one click jumps you to the highlighted source.",
+  },
+] as const;
+
+/** Secondary capabilities, listed rather than illustrated. */
+export interface Highlight {
+  icon: LucideIcon;
+  title: string;
+  description: string;
+}
+
+export const HIGHLIGHTS: readonly Highlight[] = [
+  {
     icon: SlidersHorizontal,
-    title: "Preview and apply",
-    description:
-      "Inspect the proposed changes as a diff, then apply them to the live artifact.",
-    accent: "amber",
+    title: "Preview before apply",
+    description: "Proposed edits arrive as a diff you accept or discard.",
   },
   {
-    step: "05",
     icon: History,
-    title: "Keep the trail",
+    title: "Run history and undo",
+    description: "Step back through any run and restore an earlier state.",
+  },
+  {
+    icon: Braces,
+    title: "Sandboxed Python",
+    description: "pandas, NumPy, SciPy and Matplotlib, executed in isolation.",
+  },
+  {
+    icon: Table2,
+    title: "Tables out of PDFs",
+    description: "Structured extraction with units and types preserved.",
+  },
+] as const;
+
+/* ------------------------------------------------------------------ */
+/* Security                                                            */
+/* ------------------------------------------------------------------ */
+
+export type SecurityId = "ownership" | "encryption" | "sandbox";
+
+export interface SecurityCard {
+  id: SecurityId;
+  title: string;
+  description: string;
+}
+
+export const SECURITY: readonly SecurityCard[] = [
+  {
+    id: "ownership",
+    title: "Your data stays yours",
     description:
-      "The result opens in the workspace with citations attached, and the run is stored in history.",
-    accent: "emerald",
+      "Files, datasets and conversations stay inside your workspace and are never used to train models.",
+  },
+  {
+    id: "encryption",
+    title: "Encrypted in transit and at rest",
+    description:
+      "Documents travel over TLS and are stored encrypted, reachable only through signed, expiring URLs.",
+  },
+  {
+    id: "sandbox",
+    title: "Every run is sandboxed",
+    description:
+      "Generated code executes in an isolated environment scoped to the files you picked for that run — nothing else is reachable.",
   },
 ] as const;
 

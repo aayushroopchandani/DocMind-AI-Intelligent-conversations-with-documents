@@ -1,0 +1,526 @@
+/*
+ * Homepage presentation layer.
+ *
+ * Imported once by `app/page.tsx` so the marketing styles never load on the
+ * product routes. Everything is prefixed `dm-` and plain CSS — no `@apply` —
+ * which keeps it independent of Tailwind's layer ordering in `globals.css`.
+ *
+ * Two rules hold the whole file together:
+ *
+ *  1. Illustrations never hard-code a colour. They read the `--illus-*` and
+ *     `--paper-*` tokens declared on `.dm-home`, so the entire page re-themes
+ *     from one declaration.
+ *  2. Entrance animations are declarative. A `[data-inview]` wrapper (see
+ *     `lib/in-view.tsx`) is the only JavaScript involved; the transitions
+ *     themselves are pure CSS on `transform` and `opacity`, which keeps them
+ *     on the compositor and off the main thread.
+ */
+
+.dm-home {
+  /* One accent drives every illustration — the same cyan the agent console
+     already uses, so the page reads as a single system rather than a swatch
+     library. */
+  --illus: var(--accent-cyan);
+
+  /* Three faces of a lit solid: top catches the light, right falls away. */
+  --illus-top: color-mix(in oklch, var(--illus) 84%, white);
+  --illus-left: color-mix(in oklch, var(--illus) 74%, black);
+  --illus-right: color-mix(in oklch, var(--illus) 46%, black);
+
+  --illus-soft: color-mix(in oklch, var(--illus) 30%, var(--background));
+  --illus-faint: color-mix(in oklch, var(--illus) 14%, transparent);
+  --illus-line: color-mix(in oklch, var(--foreground) 24%, transparent);
+
+  /* Light "paper" surfaces — code windows, tables, servers. The contrast
+     against the near-black card is what makes these read as objects. */
+  --paper: oklch(0.96 0.002 240);
+  --paper-dim: oklch(0.89 0.003 240);
+  --paper-edge: oklch(0.8 0.004 240);
+  --ink: oklch(0.32 0.012 240);
+  --ink-soft: oklch(0.52 0.01 240);
+}
+
+/* ------------------------------------------------------------------ */
+/* Typography                                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Section headline. A vertical white-to-grey wash instead of a rainbow
+ * gradient: it still has depth, but it reads as typography rather than
+ * decoration.
+ */
+.dm-headline {
+  background: linear-gradient(
+    180deg,
+    var(--foreground) 28%,
+    color-mix(in oklch, var(--foreground) 68%, var(--background)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.dm-eyebrow {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: color-mix(in oklch, var(--muted-foreground) 82%, transparent);
+}
+
+/* ------------------------------------------------------------------ */
+/* Surfaces                                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The one card treatment used by features, journey steps and security.
+ * The hover wash sits on a pseudo-element so hovering animates `opacity`
+ * alone — the card contents are never repainted.
+ */
+.dm-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--card) 85%, var(--background)),
+    color-mix(in oklch, var(--card) 55%, var(--background))
+  );
+  transition:
+    border-color 0.45s ease,
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dm-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  background: radial-gradient(
+    110% 80% at 50% 0%,
+    var(--illus-faint),
+    transparent 65%
+  );
+}
+
+.dm-card:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in oklch, var(--illus) 24%, var(--border));
+}
+
+.dm-card:hover::before {
+  opacity: 1;
+}
+
+/* Illustration stage: fixed height so a row of cards stays aligned no matter
+   how long the copy runs. */
+.dm-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.dm-stage > svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Panel behind the three-step journey. */
+.dm-panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 28px;
+  background:
+    radial-gradient(80% 60% at 12% 0%, var(--illus-faint), transparent 62%),
+    radial-gradient(
+      70% 55% at 88% 100%,
+      color-mix(in oklch, var(--accent-violet) 9%, transparent),
+      transparent 62%
+    ),
+    color-mix(in oklch, var(--card) 45%, var(--background));
+}
+
+/* Hero eyebrow pill. */
+.dm-badge {
+  border: 1px solid color-mix(in oklch, var(--foreground) 12%, transparent);
+  background: color-mix(in oklch, var(--card) 55%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.dm-badge-tag {
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+/* ------------------------------------------------------------------ */
+/* Entrance primitives                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Solids rising out of the ground plane. The parent clips at the baseline,
+ * so a column translated below it is simply invisible and appears to grow.
+ */
+.dm-rise {
+  transform: translateY(var(--rise, 60px));
+  transition: transform 900ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: calc(var(--i, 0) * 130ms);
+}
+
+[data-inview="true"] .dm-rise {
+  transform: translateY(0);
+}
+
+/* Generic staggered fade-up for rows, chips and panels. */
+.dm-in {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 620ms ease,
+    transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: calc(var(--i, 0) * 90ms + var(--lead, 0ms));
+}
+
+[data-inview="true"] .dm-in {
+  opacity: 1;
+  transform: none;
+}
+
+/*
+ * Scattered source chips settling into place. The resting rotation is the
+ * card's design, so it lives in the *end* state and the animation travels
+ * from an unrotated, offset copy of it.
+ */
+.dm-chip-in {
+  opacity: 0;
+  transform: translate(var(--fx, -12px), var(--fy, 10px)) scale(0.9);
+  transition:
+    opacity 600ms ease,
+    transform 820ms cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: calc(var(--i, 0) * 110ms);
+}
+
+[data-inview="true"] .dm-chip-in {
+  opacity: 1;
+  transform: rotate(var(--rot, 0deg));
+}
+
+/*
+ * A stroke that draws itself. Paired with `pathLength="1"` on the path so the
+ * dash maths is resolution-independent — no measuring, no magic length
+ * constants that break when the geometry is nudged.
+ */
+.dm-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 900ms ease-out;
+  transition-delay: calc(var(--i, 0) * 170ms + 300ms);
+}
+
+[data-inview="true"] .dm-draw {
+  stroke-dashoffset: 0;
+}
+
+/* Dashed connector that draws itself left to right. */
+.dm-dash {
+  stroke-dasharray: 4 7;
+  stroke-dashoffset: 80;
+  opacity: 0;
+  transition:
+    stroke-dashoffset 1.2s ease-out,
+    opacity 500ms ease;
+  transition-delay: calc(var(--i, 0) * 200ms + 320ms);
+}
+
+[data-inview="true"] .dm-dash {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Solid geometry — shared by every 3D illustration                    */
+/* ------------------------------------------------------------------ */
+
+.dm-solid .f-top {
+  fill: var(--illus-top);
+}
+.dm-solid .f-left {
+  fill: var(--illus-left);
+}
+.dm-solid .f-right {
+  fill: var(--illus-right);
+}
+
+/* A paler block, used to break up a stack so it reads as segmented data. */
+.dm-solid--soft .f-top {
+  fill: color-mix(in oklch, var(--illus) 22%, var(--paper));
+}
+.dm-solid--soft .f-left {
+  fill: color-mix(in oklch, var(--illus) 26%, var(--paper-dim));
+}
+.dm-solid--soft .f-right {
+  fill: color-mix(in oklch, var(--illus) 34%, var(--paper-edge));
+}
+
+/* The deepest block, anchoring the base of a stack. */
+.dm-solid--deep .f-top {
+  fill: color-mix(in oklch, var(--illus) 66%, black);
+}
+.dm-solid--deep .f-left {
+  fill: color-mix(in oklch, var(--illus) 52%, black);
+}
+.dm-solid--deep .f-right {
+  fill: color-mix(in oklch, var(--illus) 34%, black);
+}
+
+/* A neutral paper solid — the document satellites and servers. */
+.dm-solid--paper .f-top {
+  fill: var(--paper);
+}
+.dm-solid--paper .f-left {
+  fill: var(--paper-dim);
+}
+.dm-solid--paper .f-right {
+  fill: var(--paper-edge);
+}
+
+.dm-solid polygon {
+  stroke: color-mix(in oklch, black 45%, transparent);
+  stroke-width: 0.75;
+  stroke-linejoin: round;
+}
+
+.dm-ground {
+  stroke: var(--illus-line);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+}
+
+.dm-guide {
+  stroke: color-mix(in oklch, var(--foreground) 15%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+  transition: opacity 500ms ease;
+}
+
+/* ------------------------------------------------------------------ */
+/* Context card — satellites absorb into the core on hover             */
+/* ------------------------------------------------------------------ */
+
+.dm-sat {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition:
+    transform 750ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 500ms ease 120ms;
+}
+
+.dm-core {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 750ms cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/*
+ * `--mx`/`--my` are per-satellite vectors pointing at the core. These hang off
+ * `.dm-card` rather than the illustration so the merge fires from anywhere on
+ * the tile — the copy explains the gesture, so hovering the words should show
+ * it — and `:focus-within` gives keyboard users the same reveal.
+ */
+.dm-card:hover .dm-sat,
+.dm-card:focus-within .dm-sat {
+  transform: translate(var(--mx, 0), var(--my, 0)) scale(0.3);
+  opacity: 0;
+}
+
+.dm-card:hover .dm-core,
+.dm-card:focus-within .dm-core {
+  transform: scale(1.06);
+}
+
+.dm-card:hover .dm-guide,
+.dm-card:focus-within .dm-guide {
+  opacity: 0;
+}
+
+.dm-context-hint {
+  opacity: 0;
+  transition: opacity 400ms ease 300ms;
+}
+
+.dm-card:hover .dm-context-hint,
+.dm-card:focus-within .dm-context-hint {
+  opacity: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Code card — the window stack fans out on hover                      */
+/* ------------------------------------------------------------------ */
+
+.dm-window {
+  border-radius: 9px;
+  background: var(--paper);
+  border: 1px solid var(--paper-edge);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.4),
+    0 12px 28px -12px rgb(0 0 0 / 0.65);
+  transition: transform 650ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dm-stack:hover .dm-window {
+  transform: translate(var(--hx, 0), var(--hy, 0));
+}
+
+.dm-window-bar {
+  border-bottom: 1px solid color-mix(in oklch, var(--paper-edge) 70%, white);
+  color: var(--ink-soft);
+}
+
+.dm-code {
+  color: var(--ink);
+}
+.dm-code .k {
+  color: color-mix(in oklch, var(--accent-violet) 70%, black);
+}
+.dm-code .s {
+  color: color-mix(in oklch, var(--accent-emerald) 55%, black);
+}
+.dm-code .n {
+  color: color-mix(in oklch, var(--accent-blue) 62%, black);
+}
+.dm-code .c {
+  color: color-mix(in oklch, var(--ink-soft) 80%, white);
+}
+.dm-gutter {
+  color: color-mix(in oklch, var(--ink-soft) 45%, white);
+}
+
+/* ------------------------------------------------------------------ */
+/* Transform card — messy input, clean output                          */
+/* ------------------------------------------------------------------ */
+
+.dm-tag {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--illus) 62%, var(--paper)),
+    color-mix(in oklch, var(--illus) 78%, var(--paper-dim))
+  );
+  color: color-mix(in oklch, var(--ink) 88%, black);
+  border: 1px solid color-mix(in oklch, black 28%, transparent);
+  border-radius: 5px;
+  box-shadow: 0 4px 10px -4px rgb(0 0 0 / 0.6);
+}
+
+/* The month key on a raw value chip, lifted off the tag behind it. */
+.dm-tag-key {
+  border-radius: 3px;
+  padding: 0 3px;
+  background: color-mix(in oklch, white 55%, transparent);
+}
+
+.dm-table {
+  background: var(--paper);
+  border: 1px solid var(--paper-edge);
+  border-radius: 8px;
+  box-shadow: 0 12px 26px -14px rgb(0 0 0 / 0.7);
+  color: var(--ink);
+}
+
+.dm-table-head {
+  background: color-mix(in oklch, var(--illus) 34%, var(--paper-dim));
+  color: color-mix(in oklch, var(--ink) 90%, black);
+}
+
+.dm-table-row + .dm-table-row {
+  border-top: 1px solid color-mix(in oklch, var(--paper-edge) 60%, white);
+}
+
+.dm-table-row--hit {
+  background: color-mix(in oklch, var(--illus) 16%, var(--paper));
+}
+
+/* ------------------------------------------------------------------ */
+/* Sheet + citation cards                                              */
+/* ------------------------------------------------------------------ */
+
+.dm-sheet {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in oklch, var(--background) 80%, var(--card));
+  overflow: hidden;
+}
+
+.dm-sheet-cell {
+  border: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+.dm-sheet-cell--written {
+  background: color-mix(in oklch, var(--illus) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--illus) 42%, transparent);
+  color: var(--illus);
+}
+
+.dm-source {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--card) 80%, var(--background));
+}
+
+.dm-highlight {
+  background: color-mix(in oklch, var(--illus) 38%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--illus) 14%, transparent);
+}
+
+/* ------------------------------------------------------------------ */
+/* Reduced motion — every entrance collapses to its finished frame     */
+/* ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .dm-rise,
+  .dm-in,
+  .dm-chip-in,
+  .dm-draw,
+  .dm-dash,
+  .dm-sat,
+  .dm-core,
+  .dm-window,
+  .dm-card,
+  .dm-guide,
+  .dm-context-hint {
+    transition: none;
+  }
+
+  .dm-rise {
+    transform: none;
+  }
+  .dm-in {
+    opacity: 1;
+    transform: none;
+  }
+  .dm-chip-in {
+    opacity: 1;
+    transform: rotate(var(--rot, 0deg));
+  }
+  .dm-draw,
+  .dm-dash {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+  .dm-card:hover {
+    transform: none;
+  }
+  .dm-card:hover .dm-sat,
+  .dm-card:focus-within .dm-sat,
+  .dm-card:hover .dm-core,
+  .dm-card:focus-within .dm-core,
+  .dm-stack:hover .dm-window {
+    transform: none;
+    opacity: 1;
+  }
+}
