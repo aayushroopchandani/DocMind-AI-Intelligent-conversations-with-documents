@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from config.settings import Settings, settings
+from db.mongodb import get_db
+
+from .repositories import MongoArtifactRepository, MongoAnalysisRunStore
+from .repositories.datasets import MongoDatasetCatalogRepository
+from .services.artifacts import (
+    ArtifactServiceConfig,
+    ArtifactVersionService,
+)
+from .services.artifact_reconciler import ArtifactUploadReconciler
+from .services.run_service import AnalysisRunService
+from .services.state_machine import AnalysisRunStateMachine
+from .services.worker import (
+    AnalysisWorkerConfig,
+    DurableAnalysisWorker,
+)
+from .services.workbook_context import (
+    WorkbookContextLimits,
+    WorkbookContextService,
+)
+from .storage.cloudinary import (
+    CloudinaryArtifactBlobStore,
+    CloudinaryBlobStoreConfig,
+)
+from .storage.validation import ArtifactValidationLimits
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisRuntime:
+    run_service: AnalysisRunService
+    worker: DurableAnalysisWorker
+    artifact_service: ArtifactVersionService | None
+    artifact_reconciler: ArtifactUploadReconciler | None = None
+
+    async def start(self) -> None:
+        if self.artifact_reconciler is not None:
+            await self.artifact_reconciler.start()
+        try:
+            await self.worker.start()
+        except BaseException:
+            if self.artifact_reconciler is not None:
+                await self.artifact_reconciler.stop()
+            raise
+
+    async def stop(self) -> None:
+        try:
+            await self.worker.stop()
+        finally:
+            if self.artifact_reconciler is not None:
+                await self.artifact_reconciler.stop()
+
+
+def build_analysis_runtime(
+    active_settings: Settings = settings,
+) -> AnalysisRuntime:
+    """Assemble one process runtime after MongoDB has been initialized."""
+
+    database = get_db()
+    run_store = MongoAnalysisRunStore(database)
+    state_machine = AnalysisRunStateMachine(
+        run_store,
+        maximum_lease_seconds=max(
+            3600,
+            active_settings.analysis_worker_lease_seconds,
+        ),
+    )
+    dataset_catalog = MongoDatasetCatalogRepository()
+
+    artifact_service: ArtifactVersionService | None = None
+    artifact_reconciler: ArtifactUploadReconciler | None = None
+    workbook_context: WorkbookContextService | None = None
+    if active_settings.cloudinary_is_configured:
+        blob_store = CloudinaryArtifactBlobStore(
+            CloudinaryBlobStoreConfig(
+                cloud_name=active_settings.cloudinary_cloud_name,
+                api_key=active_settings.cloudinary_api_key,
+                api_secret=active_settings.cloudinary_api_secret,
+                max_download_bytes=max(
+                    active_settings.analysis_max_artifact_bytes,
+                    active_settings.analysis_max_xlsx_uncompressed_bytes,
+                ),
+            )
+        )
+        artifact_service = ArtifactVersionService(
+            repository=MongoArtifactRepository(),
+            blob_store=blob_store,
+            config=ArtifactServiceConfig(
+                validation_limits=ArtifactValidationLimits(
+                    max_upload_bytes=(
+                        active_settings.analysis_max_artifact_bytes
+                    ),
+                    max_archive_members=(
+                        active_settings.analysis_max_xlsx_entries
+                    ),
+                    max_archive_member_bytes=(
+                        active_settings.analysis_max_xlsx_uncompressed_bytes
+                    ),
+                    max_archive_uncompressed_bytes=(
+                        active_settings.analysis_max_xlsx_uncompressed_bytes
+                    ),
+                    max_compression_ratio=(
+                        active_settings.analysis_max_xlsx_compression_ratio
+                    ),
+                )
+            ),
+        )
+        artifact_reconciler = ArtifactUploadReconciler(
+            service=artifact_service,
+        )
+        workbook_context = WorkbookContextService(
+            artifact_service=artifact_service,
+            dataset_catalog=dataset_catalog,
+            limits=WorkbookContextLimits(
+                max_inline_cells=(
+                    active_settings.analysis_max_inline_cells
+                ),
+                max_inline_bytes=(
+                    active_settings.analysis_max_inline_bytes
+                ),
+                max_uploaded_cells=(
+                    active_settings.analysis_max_uploaded_snapshot_cells
+                ),
+                max_uploaded_bytes=(
+                    active_settings.analysis_max_uploaded_snapshot_bytes
+                ),
+                max_uploaded_blob_bytes=(
+                    active_settings.analysis_max_artifact_bytes
+                ),
+                max_columns=(
+                    active_settings.analysis_max_dataset_columns
+                ),
+                max_datasets=(
+                    active_settings.analysis_max_datasets_per_workbook
+                ),
+            ),
+        )
+
+    run_service = AnalysisRunService(
+        store=run_store,
+        state_machine=state_machine,
+        workbook_context=workbook_context,
+        run_deadline_seconds=(
+            active_settings.analysis_run_deadline_seconds
+        ),
+        input_initialization_timeout_seconds=(
+            active_settings.analysis_input_initialization_timeout_seconds
+        ),
+    )
+    worker = DurableAnalysisWorker(
+        state_machine=state_machine,
+        dataset_catalog=dataset_catalog,
+        config=AnalysisWorkerConfig(
+            concurrency=active_settings.analysis_worker_concurrency,
+            poll_seconds=active_settings.analysis_worker_poll_seconds,
+            lease_seconds=active_settings.analysis_worker_lease_seconds,
+            renew_seconds=active_settings.analysis_worker_renew_seconds,
+        ),
+    )
+    return AnalysisRuntime(
+        run_service=run_service,
+        worker=worker,
+        artifact_service=artifact_service,
+        artifact_reconciler=artifact_reconciler,
+    )
+
+
+__all__ = [
+    "AnalysisRuntime",
+    "build_analysis_runtime",
+]

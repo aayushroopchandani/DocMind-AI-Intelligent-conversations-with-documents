@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
+
 from fastapi import Header, HTTPException
 
 from config.settings import settings
@@ -14,13 +16,18 @@ async def verify_internal_secret(
     Guard endpoints that are only meant to be called by our Next.js server.
 
     The Next.js route handlers verify the Clerk session, then forward requests
-    with this shared secret. If `INTERNAL_API_SECRET` is unset (local dev), the
-    check is skipped.
+    with this shared secret. The backend must fail closed when the trust secret
+    is absent: otherwise an internet client could choose any ``X-User-ID`` and
+    cross the tenant boundary.
     """
     expected = settings.internal_api_secret
     if not expected:
-        return
-    if x_internal_secret != expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Internal API authentication is not configured",
+        )
+    supplied = x_internal_secret or ""
+    if not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid internal secret")
 
 

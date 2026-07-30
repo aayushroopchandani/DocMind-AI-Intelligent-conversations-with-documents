@@ -29,9 +29,8 @@ class Settings:
     # Max PDFs allowed per chat (matches the frontend limit).
     max_pdfs_per_chat: int = int(os.getenv("MAX_PDFS_PER_CHAT", "4"))
 
-    # Shared secret between the Next.js server (proxy) and this API. When set,
-    # requests must include it in the `X-Internal-Secret` header. Leave empty in
-    # local dev to disable the check.
+    # Shared secret between the Next.js server (proxy) and this API. The API
+    # fails closed when it is missing, including in local development.
     internal_api_secret: str = os.getenv("INTERNAL_API_SECRET", "")
 
     # ------------------------------------------------------------------ #
@@ -49,6 +48,230 @@ class Settings:
     retrieval_max_per_doc: int = int(os.getenv("RETRIEVAL_MAX_PER_DOC", "4"))
     # Approximate token budget for the document context block.
     retrieval_max_context_tokens: int = int(os.getenv("RETRIEVAL_MAX_CONTEXT_TOKENS", "6000"))
+
+    # ------------------------------------------------------------------ #
+    # Durable data-analysis runtime (Phase 8)
+    # ------------------------------------------------------------------ #
+    # Inline workbook snapshots are intentionally bounded. Larger workbook
+    # contexts must be synchronized as immutable artifacts instead of being
+    # copied into an analysis-run document.
+    analysis_max_inline_cells: int = int(
+        os.getenv("ANALYSIS_MAX_INLINE_CELLS", "25000")
+    )
+    analysis_max_inline_bytes: int = int(
+        os.getenv("ANALYSIS_MAX_INLINE_BYTES", str(5 * 1024 * 1024))
+    )
+    # Enforced by an ASGI receive wrapper before FastAPI/Pydantic materialize
+    # the four workbook matrices. Keep a small allowance over the canonical
+    # snapshot cap for the request envelope and JSON field names.
+    analysis_max_run_request_bytes: int = int(
+        os.getenv("ANALYSIS_MAX_RUN_REQUEST_BYTES", str(6 * 1024 * 1024))
+    )
+    analysis_max_uploaded_snapshot_cells: int = int(
+        os.getenv("ANALYSIS_MAX_UPLOADED_SNAPSHOT_CELLS", "250000")
+    )
+    analysis_max_uploaded_snapshot_bytes: int = int(
+        os.getenv(
+            "ANALYSIS_MAX_UPLOADED_SNAPSHOT_BYTES",
+            str(25 * 1024 * 1024),
+        )
+    )
+    analysis_max_dataset_columns: int = int(
+        os.getenv("ANALYSIS_MAX_DATASET_COLUMNS", "500")
+    )
+    analysis_max_datasets_per_workbook: int = int(
+        os.getenv("ANALYSIS_MAX_DATASETS_PER_WORKBOOK", "50")
+    )
+
+    # Artifact uploads are provider-neutral at the domain boundary. These
+    # limits apply before a payload reaches Cloudinary and also guard XLSX
+    # decompression.
+    analysis_max_artifact_bytes: int = int(
+        os.getenv("ANALYSIS_MAX_ARTIFACT_BYTES", str(50 * 1024 * 1024))
+    )
+    # Multipart framing and bounded metadata sit outside the file bytes. This
+    # transport cap prevents Starlette from parsing/spooling an unbounded body
+    # while retaining enough headroom for a maximum-sized valid artifact.
+    analysis_max_artifact_request_bytes: int = int(
+        os.getenv(
+            "ANALYSIS_MAX_ARTIFACT_REQUEST_BYTES",
+            str(51 * 1024 * 1024),
+        )
+    )
+    analysis_max_xlsx_uncompressed_bytes: int = int(
+        os.getenv(
+            "ANALYSIS_MAX_XLSX_UNCOMPRESSED_BYTES",
+            str(100 * 1024 * 1024),
+        )
+    )
+    analysis_max_xlsx_entries: int = int(
+        os.getenv("ANALYSIS_MAX_XLSX_ENTRIES", "10000")
+    )
+    analysis_max_xlsx_compression_ratio: float = float(
+        os.getenv("ANALYSIS_MAX_XLSX_COMPRESSION_RATIO", "100")
+    )
+
+    # SSE is backed by durable MongoDB events. Polling is deliberately modest
+    # until the deployment is ready to use MongoDB change streams.
+    analysis_sse_poll_seconds: float = float(
+        os.getenv("ANALYSIS_SSE_POLL_SECONDS", "0.75")
+    )
+    analysis_sse_heartbeat_seconds: float = float(
+        os.getenv("ANALYSIS_SSE_HEARTBEAT_SECONDS", "15")
+    )
+    analysis_sse_batch_size: int = int(
+        os.getenv("ANALYSIS_SSE_BATCH_SIZE", "100")
+    )
+    analysis_sse_max_connections: int = int(
+        os.getenv("ANALYSIS_SSE_MAX_CONNECTIONS", "200")
+    )
+    analysis_sse_max_connections_per_user: int = int(
+        os.getenv("ANALYSIS_SSE_MAX_CONNECTIONS_PER_USER", "8")
+    )
+    analysis_sse_max_connections_per_run: int = int(
+        os.getenv("ANALYSIS_SSE_MAX_CONNECTIONS_PER_RUN", "2")
+    )
+
+    # Database-backed execution leases prevent multiple API workers from
+    # processing the same durable run. A worker that disappears can be safely
+    # replaced once its lease expires.
+    analysis_run_deadline_seconds: int = int(
+        os.getenv("ANALYSIS_RUN_DEADLINE_SECONDS", str(2 * 60 * 60))
+    )
+    analysis_input_initialization_timeout_seconds: int = int(
+        os.getenv(
+            "ANALYSIS_INPUT_INITIALIZATION_TIMEOUT_SECONDS",
+            str(15 * 60),
+        )
+    )
+    analysis_worker_concurrency: int = int(
+        os.getenv("ANALYSIS_WORKER_CONCURRENCY", "2")
+    )
+    analysis_worker_poll_seconds: float = float(
+        os.getenv("ANALYSIS_WORKER_POLL_SECONDS", "0.75")
+    )
+    analysis_worker_lease_seconds: int = int(
+        os.getenv("ANALYSIS_WORKER_LEASE_SECONDS", "60")
+    )
+    analysis_worker_renew_seconds: int = int(
+        os.getenv("ANALYSIS_WORKER_RENEW_SECONDS", "20")
+    )
+
+    def __post_init__(self) -> None:
+        phase8_positive = {
+            "ANALYSIS_MAX_INLINE_CELLS": self.analysis_max_inline_cells,
+            "ANALYSIS_MAX_INLINE_BYTES": self.analysis_max_inline_bytes,
+            "ANALYSIS_MAX_RUN_REQUEST_BYTES": (
+                self.analysis_max_run_request_bytes
+            ),
+            "ANALYSIS_MAX_UPLOADED_SNAPSHOT_CELLS": (
+                self.analysis_max_uploaded_snapshot_cells
+            ),
+            "ANALYSIS_MAX_UPLOADED_SNAPSHOT_BYTES": (
+                self.analysis_max_uploaded_snapshot_bytes
+            ),
+            "ANALYSIS_MAX_DATASET_COLUMNS": self.analysis_max_dataset_columns,
+            "ANALYSIS_MAX_DATASETS_PER_WORKBOOK": (
+                self.analysis_max_datasets_per_workbook
+            ),
+            "ANALYSIS_MAX_ARTIFACT_BYTES": self.analysis_max_artifact_bytes,
+            "ANALYSIS_MAX_ARTIFACT_REQUEST_BYTES": (
+                self.analysis_max_artifact_request_bytes
+            ),
+            "ANALYSIS_MAX_XLSX_UNCOMPRESSED_BYTES": (
+                self.analysis_max_xlsx_uncompressed_bytes
+            ),
+            "ANALYSIS_MAX_XLSX_ENTRIES": self.analysis_max_xlsx_entries,
+            "ANALYSIS_SSE_POLL_SECONDS": self.analysis_sse_poll_seconds,
+            "ANALYSIS_SSE_HEARTBEAT_SECONDS": (
+                self.analysis_sse_heartbeat_seconds
+            ),
+            "ANALYSIS_SSE_BATCH_SIZE": self.analysis_sse_batch_size,
+            "ANALYSIS_SSE_MAX_CONNECTIONS": (
+                self.analysis_sse_max_connections
+            ),
+            "ANALYSIS_SSE_MAX_CONNECTIONS_PER_USER": (
+                self.analysis_sse_max_connections_per_user
+            ),
+            "ANALYSIS_SSE_MAX_CONNECTIONS_PER_RUN": (
+                self.analysis_sse_max_connections_per_run
+            ),
+            "ANALYSIS_WORKER_CONCURRENCY": self.analysis_worker_concurrency,
+            "ANALYSIS_RUN_DEADLINE_SECONDS": (
+                self.analysis_run_deadline_seconds
+            ),
+            "ANALYSIS_INPUT_INITIALIZATION_TIMEOUT_SECONDS": (
+                self.analysis_input_initialization_timeout_seconds
+            ),
+            "ANALYSIS_WORKER_POLL_SECONDS": self.analysis_worker_poll_seconds,
+            "ANALYSIS_WORKER_LEASE_SECONDS": self.analysis_worker_lease_seconds,
+            "ANALYSIS_WORKER_RENEW_SECONDS": self.analysis_worker_renew_seconds,
+        }
+        invalid = [name for name, value in phase8_positive.items() if value <= 0]
+        if invalid:
+            raise ValueError(
+                "Phase 8 settings must be positive: " + ", ".join(invalid)
+            )
+        if self.analysis_max_run_request_bytes <= self.analysis_max_inline_bytes:
+            raise ValueError(
+                "ANALYSIS_MAX_RUN_REQUEST_BYTES must exceed "
+                "ANALYSIS_MAX_INLINE_BYTES"
+            )
+        if (
+            self.analysis_max_artifact_request_bytes
+            <= self.analysis_max_artifact_bytes
+        ):
+            raise ValueError(
+                "ANALYSIS_MAX_ARTIFACT_REQUEST_BYTES must exceed "
+                "ANALYSIS_MAX_ARTIFACT_BYTES"
+            )
+        if not 1 <= self.analysis_max_dataset_columns <= 500:
+            raise ValueError(
+                "ANALYSIS_MAX_DATASET_COLUMNS must be between 1 and 500"
+            )
+        if self.analysis_sse_heartbeat_seconds < self.analysis_sse_poll_seconds:
+            raise ValueError(
+                "ANALYSIS_SSE_HEARTBEAT_SECONDS cannot be shorter than polling"
+            )
+        if not 1 <= self.analysis_sse_batch_size <= 500:
+            raise ValueError("ANALYSIS_SSE_BATCH_SIZE must be between 1 and 500")
+        if not (
+            self.analysis_sse_max_connections_per_run
+            <= self.analysis_sse_max_connections_per_user
+            <= self.analysis_sse_max_connections
+        ):
+            raise ValueError(
+                "SSE connection limits must satisfy per-run <= per-user "
+                "<= total"
+            )
+        if self.analysis_worker_lease_seconds < 3:
+            raise ValueError("ANALYSIS_WORKER_LEASE_SECONDS must be at least 3")
+        if not 60 <= self.analysis_run_deadline_seconds <= 7 * 24 * 60 * 60:
+            raise ValueError(
+                "ANALYSIS_RUN_DEADLINE_SECONDS must be between 60 and 604800"
+            )
+        if not (
+            30
+            <= self.analysis_input_initialization_timeout_seconds
+            <= self.analysis_run_deadline_seconds
+        ):
+            raise ValueError(
+                "ANALYSIS_INPUT_INITIALIZATION_TIMEOUT_SECONDS must be "
+                "between 30 and ANALYSIS_RUN_DEADLINE_SECONDS"
+            )
+        if not (
+            1
+            <= self.analysis_worker_renew_seconds
+            < self.analysis_worker_lease_seconds
+        ):
+            raise ValueError(
+                "ANALYSIS_WORKER_RENEW_SECONDS must be positive and shorter "
+                "than the lease"
+            )
+        if self.analysis_max_xlsx_compression_ratio <= 1:
+            raise ValueError(
+                "ANALYSIS_MAX_XLSX_COMPRESSION_RATIO must exceed 1"
+            )
 
     @property
     def mongodb_is_configured(self) -> bool:
