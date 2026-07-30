@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from config.settings import settings
+from db.indexes import ensure_analysis_indexes
 
 logger = logging.getLogger(__name__)
 
@@ -171,3 +172,4 @@ async def ensure_indexes() -> None:
         partialFilterExpression={"submission_id": {"$type": "string"}},
     )
     await db.quiz_attempts.create_index("weak_topics.main_topic")
+    await ensure_analysis_indexes(db)
