@@ -29,7 +29,7 @@ def build_preparation_node(runner: DatasetPreparationRunner) -> Any:
         outcome = await runner.run(
             run_id=state["run_id"],
             user_id=request.user_id,
-            document_ids=request.document_ids,
+            document_ids=request.selected_source_ids,
             requirements=AnalysisRequirements.model_validate(
                 state["analysis_requirements"]
             ),

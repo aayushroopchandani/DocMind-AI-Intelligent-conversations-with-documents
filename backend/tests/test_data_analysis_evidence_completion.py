@@ -62,6 +62,7 @@ from scripts.data_analysis_agent.analysis.services.completion import (
     extract_labeled_numeric_facts,
     validate_text_extraction,
 )
+from tests.test_data_analysis_phase7_runtime_adapter import _dataset_handle
 
 
 DOCUMENT_ID = "a" * 64
@@ -1369,6 +1370,112 @@ class EvidenceCompletionRunnerTests(unittest.IsolatedAsyncioTestCase):
             ),
             text_service=text_service,
             repair_retriever=repair,
+        )
+
+    async def test_spreadsheet_only_gap_skips_pdf_completion_capabilities(
+        self,
+    ) -> None:
+        handle = _dataset_handle()
+        repair = _RepairRetriever()
+        text_service = _FactTextService(None)
+        runner = self._runner(text_service=text_service, repair=repair)
+        requirements = _requirements().model_copy(
+            update={"selected_document_ids": ("workbook-1",)}
+        )
+        assessment = _assessment(
+            decision=ReadinessDecision.NEEDS_RETRIEVAL_REPAIR
+        )
+
+        outcome = await runner.run(
+            run_id="run-1",
+            request=AnalysisRequest(
+                user_id=handle.user_id,
+                workspace_id=handle.workspace_id,
+                chat_id="chat-1",
+                query="What was total revenue in 2023?",
+                pinned_datasets=(handle,),
+            ),
+            requirements=requirements,
+            retrieval=RetrievalResult(
+                retrieval_scope="normal",
+                table_intent="required",
+                signals=RetrievalSignals(),
+            ),
+            evidence=EvidencePackage(
+                run_id="run-1",
+                status="empty",
+                retrieved_table_count=0,
+                hydrated_table_count=0,
+            ),
+            profiles=DatasetProfiles(
+                profiler_version="test-profiler",
+                status="empty",
+                requested_count=0,
+                profiled_count=0,
+                cache_hit_count=0,
+                generated_count=0,
+            ),
+            assessment=assessment,
+        )
+
+        self.assertEqual(
+            outcome.assessment.decision,
+            ReadinessDecision.NEEDS_CLARIFICATION,
+        )
+        self.assertEqual(outcome.artifact.status, CompletionStatus.SKIPPED)
+        self.assertEqual(
+            outcome.artifact.final_decision,
+            ReadinessDecision.NEEDS_CLARIFICATION.value,
+        )
+        self.assertEqual(outcome.artifact.attempts, ())
+        self.assertEqual(text_service.calls, 0)
+        self.assertEqual(repair.calls, 0)
+
+    async def test_mixed_sources_keep_pdf_targeted_repair_enabled(self) -> None:
+        handle = _dataset_handle()
+        repair = _RepairRetriever()
+        text_service = _FactTextService(None)
+        runner = self._runner(text_service=text_service, repair=repair)
+
+        outcome = await runner.run(
+            run_id="run-1",
+            request=AnalysisRequest(
+                user_id=handle.user_id,
+                workspace_id=handle.workspace_id,
+                chat_id="chat-1",
+                query="What was total revenue in 2023?",
+                document_ids=(DOCUMENT_ID,),
+                pinned_datasets=(handle,),
+            ),
+            requirements=_requirements(),
+            retrieval=RetrievalResult(
+                retrieval_scope="normal",
+                table_intent="required",
+                signals=RetrievalSignals(),
+            ),
+            evidence=EvidencePackage(
+                run_id="run-1",
+                status="empty",
+                retrieved_table_count=0,
+                hydrated_table_count=0,
+            ),
+            profiles=DatasetProfiles(
+                profiler_version="test-profiler",
+                status="empty",
+                requested_count=0,
+                profiled_count=0,
+                cache_hit_count=0,
+                generated_count=0,
+            ),
+            assessment=_assessment(
+                decision=ReadinessDecision.NEEDS_RETRIEVAL_REPAIR
+            ),
+        )
+
+        self.assertEqual(repair.calls, 2)
+        self.assertEqual(
+            outcome.assessment.decision,
+            ReadinessDecision.UNANSWERABLE,
         )
 
     async def test_existing_text_fact_stops_before_retrieval_repair(self) -> None:

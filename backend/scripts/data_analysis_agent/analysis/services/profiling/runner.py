@@ -6,9 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
-from pydantic import ValidationError
-
-from db.models.structured_table import StructuredTable
+from scripts.data_analysis_agent.runtime.models.datasets import TabularDataset
 
 from ...models import (
     DATASET_PROFILER_VERSION,
@@ -30,7 +28,7 @@ from ...repositories import (
     ProfileCache,
     ProfileCacheError,
 )
-from ..versioning import source_version
+from ...repositories.datasets import load_materialized_dataset_batch
 from .profiler import DeterministicDatasetProfiler
 
 
@@ -45,7 +43,7 @@ class DatasetProfiler(Protocol):
     def profile(
         self,
         dataset: HydratedDatasetReference,
-        table: StructuredTable,
+        table: TabularDataset,
     ) -> DatasetProfile: ...
 
 
@@ -175,10 +173,11 @@ class DatasetProfilingRunner:
             )
         )
         tables_task = asyncio.create_task(
-            self._dataset_repository.load_tables(
+            load_materialized_dataset_batch(
+                self._dataset_repository,
                 user_id=user_id,
                 document_ids=document_ids,
-                table_ids=tuple(dataset.table_id for dataset in datasets),
+                datasets=datasets,
             )
         )
         try:
@@ -211,7 +210,7 @@ class DatasetProfilingRunner:
         work_results: dict[str, _WorkResult] = {}
         generated_profiles: list[DatasetProfile] = []
         try:
-            raw_tables = await tables_task
+            materialized_batch = await tables_task
         except DatasetRepositoryError:
             logger.exception("Dataset materialization failed")
             errors.append(
@@ -233,9 +232,8 @@ class DatasetProfilingRunner:
                 )
         else:
             tables_by_id = {
-                table_id: table
-                for table in raw_tables
-                if (table_id := str(table.get("table_id") or "").strip())
+                table.dataset_id: table
+                for table in materialized_batch.datasets
             }
             semaphore = asyncio.Semaphore(self._max_concurrency)
             allowed_document_ids = set(document_ids)
@@ -249,8 +247,10 @@ class DatasetProfilingRunner:
                         user_id,
                         allowed_document_ids,
                         dataset,
-                        tables_by_id.get(dataset.table_id),
+                        tables_by_id.get(dataset.dataset_id),
                         cached_candidates.get(dataset.dataset_id),
+                        dataset.dataset_id
+                        in materialized_batch.invalid_dataset_ids,
                     )
 
             completed = await asyncio.gather(
@@ -316,10 +316,18 @@ class DatasetProfilingRunner:
         user_id: str,
         allowed_document_ids: set[str],
         dataset: HydratedDatasetReference,
-        raw_table: dict[str, Any] | None,
+        table: TabularDataset | None,
         cached_profile: DatasetProfile | None,
+        invalid_source: bool = False,
     ) -> _WorkResult:
-        if raw_table is None:
+        if invalid_source:
+            return _failure(
+                dataset,
+                reason=ProfileFailureReason.INVALID_TABLE,
+                message="The dataset failed schema validation during profiling.",
+                issue_code=IssueCode.DATASET_PROFILE_FAILED,
+            )
+        if table is None:
             return _failure(
                 dataset,
                 reason=ProfileFailureReason.NOT_AVAILABLE,
@@ -327,35 +335,18 @@ class DatasetProfilingRunner:
                 issue_code=IssueCode.DATASET_NOT_AVAILABLE,
                 retryable=True,
             )
-        try:
-            table = StructuredTable.model_validate(raw_table)
-        except ValidationError:
-            return _failure(
-                dataset,
-                reason=ProfileFailureReason.INVALID_TABLE,
-                message="The dataset failed schema validation during profiling.",
-                issue_code=IssueCode.DATASET_PROFILE_FAILED,
-            )
-        if table.user_id != user_id or table.document_id not in allowed_document_ids:
+        if (
+            table.user_id != user_id
+            or table.source_container_id not in allowed_document_ids
+            or table.dataset_id != dataset.dataset_id
+        ):
             return _failure(
                 dataset,
                 reason=ProfileFailureReason.NOT_AVAILABLE,
                 message="The dataset is outside the authorized document scope.",
                 issue_code=IssueCode.DATASET_NOT_AVAILABLE,
             )
-        try:
-            current_source_version = source_version(table)
-        except Exception:
-            logger.exception(
-                "Dataset source versioning failed for %s", dataset.dataset_id
-            )
-            return _failure(
-                dataset,
-                reason=ProfileFailureReason.PROFILING_FAILED,
-                message="The dataset source version could not be verified.",
-                issue_code=IssueCode.DATASET_PROFILE_FAILED,
-            )
-        if current_source_version != dataset.source_version:
+        if table.source_version != dataset.source_version:
             return _failure(
                 dataset,
                 reason=ProfileFailureReason.SOURCE_VERSION_MISMATCH,

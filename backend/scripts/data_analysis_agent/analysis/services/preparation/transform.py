@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from db.models.structured_table import StructuredTable
+from scripts.data_analysis_agent.runtime.models.datasets import TabularDataset
 
 from ...models import (
     DatasetProfile,
@@ -47,7 +47,7 @@ _NUMERIC_DECORATION_RE = re.compile(
 class PreparedRowLineage:
     output_row_index: int
     source_row_index: int
-    source_page: int
+    source_page: int | None
     source_column_key: str | None = None
 
 
@@ -61,7 +61,7 @@ class ExcludedSourceRow:
 @dataclass(frozen=True, slots=True)
 class SeparatedFootnote:
     source_row_index: int
-    page: int
+    page: int | None
     text: str
     note_type: str
 
@@ -144,7 +144,7 @@ def _row_text(row: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 def _is_repeated_header(
     row: dict[str, Any],
-    table: StructuredTable,
+    table: TabularDataset,
 ) -> bool:
     present = 0
     matched = 0
@@ -223,7 +223,7 @@ class DeterministicDatasetTransformer:
         *,
         dataset: HydratedDatasetReference,
         profile: DatasetProfile,
-        table: StructuredTable,
+        table: TabularDataset,
         recipe: CleaningRecipe,
     ) -> TransformOutput:
         if recipe.materialization == MaterializationType.SOURCE_PASSTHROUGH:

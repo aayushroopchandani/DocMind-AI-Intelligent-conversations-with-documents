@@ -13,7 +13,11 @@ from ..models import (
     IssueStage,
     RetrievalResult,
 )
-from ..repositories import EvidenceRepository, EvidenceRepositoryError
+from ..repositories import (
+    EvidenceRepository,
+    EvidenceRepositoryError,
+    HydrationSourceBatch,
+)
 from ..services import EvidenceHydrator, deduplicate_table_references
 from ..state import AnalysisPhase, DataAnalysisState
 
@@ -53,11 +57,22 @@ def build_hydration_node(
                 ),
             }
 
+        pdf_references = tuple(
+            reference
+            for reference in references
+            if reference.source_type == "pdf_table"
+        )
         try:
-            sources = await repository.load_sources(
-                user_id=request.user_id,
-                document_ids=request.document_ids,
-                table_ids=tuple(reference.table_id for reference in references),
+            sources = (
+                await repository.load_sources(
+                    user_id=request.user_id,
+                    document_ids=request.document_ids,
+                    table_ids=tuple(
+                        reference.table_id for reference in pdf_references
+                    ),
+                )
+                if pdf_references
+                else HydrationSourceBatch(tables=(), documents=())
             )
         except EvidenceRepositoryError:
             logger.exception("Evidence hydration failed for run %s", state["run_id"])
@@ -92,9 +107,11 @@ def build_hydration_node(
         outcome = selected_hydrator.hydrate(
             run_id=state["run_id"],
             user_id=request.user_id,
-            document_ids=request.document_ids,
+            document_ids=request.selected_source_ids,
             references=references,
             sources=sources,
+            pinned_datasets=request.pinned_datasets,
+            workspace_id=request.workspace_id,
         )
         record_analysis_trace(
             metrics={

@@ -7,6 +7,12 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from db.models.structured_table import StructuredTable
+from scripts.data_analysis_agent.runtime.models.datasets import (
+    BlobDatasetStorage,
+    DatasetHandle,
+    DatasetSourceType,
+    SpreadsheetRangeLocator,
+)
 
 from ..models import (
     AnalysisIssue,
@@ -116,11 +122,13 @@ def _dataset_reference(
     reference: RetrievedTableReference,
     document_name: str,
     usable: bool,
+    workspace_id: str | None = None,
 ) -> HydratedDatasetReference:
     version = source_version(table)
     return HydratedDatasetReference(
         dataset_id=raw_dataset_id(table, version),
         source_version=version,
+        workspace_id=workspace_id,
         table_id=table.table_id,
         document_id=table.document_id,
         document_name=document_name,
@@ -157,6 +165,75 @@ def _dataset_reference(
     )
 
 
+def _pinned_dataset_reference(
+    *,
+    handle: DatasetHandle,
+    reference: RetrievedTableReference,
+) -> HydratedDatasetReference:
+    if not isinstance(handle.storage, BlobDatasetStorage):
+        raise ValueError("pinned non-PDF datasets require immutable blob storage")
+    access = DatasetAccessReference(
+        provider="blob",
+        collection="dataset_catalog",
+        record_id=handle.dataset_id,
+        artifact_version_id=handle.storage.artifact_version_id,
+        blob=handle.storage.blob.model_dump(mode="json"),
+    )
+    common = {
+        "dataset_id": handle.dataset_id,
+        "source_version": handle.source_version,
+        "source_type": handle.source_type.value,
+        "workspace_id": handle.workspace_id,
+        "table_id": handle.dataset_id,
+        "document_id": handle.source_container_id,
+        "document_name": handle.title,
+        "title": handle.title,
+        "columns": tuple(
+            DatasetColumn(
+                key=column.key,
+                label=column.label,
+                type=column.type.value,
+                unit=column.unit,
+            )
+            for column in handle.columns
+        ),
+        "row_count": handle.row_count,
+        "access": access,
+        "usable_for_analysis": bool(handle.columns and handle.row_count),
+        "retrieval_score": (
+            reference.relevance_score
+            if reference.relevance_score is not None
+            else reference.rrf_score
+        ),
+        "matched_queries": reference.matched_queries,
+        "retrieval_modes": reference.retrieval_modes,
+    }
+    if (
+        handle.source_type == DatasetSourceType.SPREADSHEET_RANGE
+        and isinstance(handle.locator, SpreadsheetRangeLocator)
+    ):
+        locator = handle.locator
+        return HydratedDatasetReference(
+            **common,
+            extraction_method="spreadsheet",
+            artifact_id=locator.artifact_id,
+            artifact_version_id=locator.artifact_version_id,
+            worksheet_id=locator.worksheet_id,
+            worksheet_name=locator.worksheet_name,
+            range_a1=locator.range_a1,
+            workbook_revision=locator.workbook_revision,
+            snapshot_hash=locator.snapshot_hash,
+        )
+    method = (
+        "csv"
+        if handle.source_type == DatasetSourceType.UPLOADED_CSV
+        else "xlsx"
+        if handle.source_type == DatasetSourceType.UPLOADED_XLSX
+        else "generated"
+    )
+    return HydratedDatasetReference(**common, extraction_method=method)
+
+
 class EvidenceHydrator:
     """Convert authoritative source records into immutable evidence handles."""
 
@@ -168,6 +245,8 @@ class EvidenceHydrator:
         document_ids: Sequence[str],
         references: tuple[RetrievedTableReference, ...],
         sources: HydrationSourceBatch,
+        pinned_datasets: Sequence[DatasetHandle] = (),
+        workspace_id: str | None = None,
     ) -> HydrationOutcome:
         allowed_document_ids = set(document_ids)
         raw_tables = {
@@ -176,11 +255,68 @@ class EvidenceHydrator:
             if (table_id := str(table.get("table_id") or "").strip())
         }
         documents = _document_index(sources.documents)
+        pinned_by_id = {item.dataset_id: item for item in pinned_datasets}
         datasets: list[HydratedDatasetReference] = []
         unresolved: list[UnresolvedTableReference] = []
         warnings: list[AnalysisIssue] = []
 
         for reference in references:
+            if reference.source_type != "pdf_table":
+                handle = pinned_by_id.get(reference.table_id)
+                if (
+                    handle is None
+                    or handle.user_id != user_id
+                    or handle.source_container_id not in allowed_document_ids
+                    or reference.source_version != handle.source_version
+                ):
+                    unresolved.append(
+                        UnresolvedTableReference(
+                            table_id=reference.table_id,
+                            document_id=reference.document_id,
+                            reason="not_available",
+                        )
+                    )
+                    warnings.append(
+                        AnalysisIssue(
+                            code=IssueCode.TABLE_NOT_AVAILABLE,
+                            severity=IssueSeverity.WARNING,
+                            stage=IssueStage.HYDRATION,
+                            message=(
+                                "A pinned dataset is stale or outside the "
+                                "authorized workspace scope."
+                            ),
+                            table_id=reference.table_id,
+                            document_id=reference.document_id,
+                        )
+                    )
+                    continue
+                try:
+                    datasets.append(
+                        _pinned_dataset_reference(
+                            handle=handle,
+                            reference=reference,
+                        )
+                    )
+                except (TypeError, ValueError, ValidationError):
+                    unresolved.append(
+                        UnresolvedTableReference(
+                            table_id=reference.table_id,
+                            document_id=reference.document_id,
+                            reason="invalid",
+                        )
+                    )
+                    warnings.append(
+                        AnalysisIssue(
+                            code=IssueCode.INVALID_TABLE,
+                            severity=IssueSeverity.WARNING,
+                            stage=IssueStage.HYDRATION,
+                            message="A pinned dataset failed schema validation.",
+                            table_id=reference.table_id,
+                            document_id=reference.document_id,
+                        )
+                    )
+                continue
+
             raw_table = raw_tables.get(reference.table_id)
             if raw_table is None:
                 unresolved.append(
@@ -314,12 +450,13 @@ class EvidenceHydrator:
                     )
                 )
             datasets.append(
-                _dataset_reference(
-                    table=table,
-                    reference=reference,
-                    document_name=document_name,
-                    usable=usable,
-                )
+                    _dataset_reference(
+                        table=table,
+                        reference=reference,
+                        document_name=document_name,
+                        usable=usable,
+                        workspace_id=workspace_id,
+                    )
             )
 
         return HydrationOutcome(

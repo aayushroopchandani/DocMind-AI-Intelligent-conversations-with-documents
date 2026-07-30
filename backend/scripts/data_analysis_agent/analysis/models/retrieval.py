@@ -76,6 +76,18 @@ class TextEvidenceReference(BaseModel):
 class RetrievedTableReference(BaseModel):
     table_id: str = Field(min_length=1)
     document_id: str = Field(min_length=1)
+    source_type: Literal[
+        "pdf_table",
+        "spreadsheet_range",
+        "uploaded_csv",
+        "uploaded_xlsx",
+        "derived_dataset",
+        "generated_dataset",
+    ] = "pdf_table"
+    source_version: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
     title: str = Field(default="", max_length=240)
     page_start: int | None = Field(default=None, ge=1)
     page_end: int | None = Field(default=None, ge=1)
@@ -187,6 +199,13 @@ class RetrievalResult(BaseModel):
                 RetrievedTableReference(
                     table_id=str(candidate.get("table_id") or "").strip(),
                     document_id=str(candidate.get("document_id") or "").strip(),
+                    source_type=str(
+                        candidate.get("source_type") or "pdf_table"
+                    ),
+                    source_version=(
+                        str(candidate.get("source_version") or "").strip()
+                        or None
+                    ),
                     title=str(candidate.get("title") or "").strip()[:240],
                     page_start=_optional_positive_int(candidate.get("page_start")),
                     page_end=_optional_positive_int(candidate.get("page_end")),

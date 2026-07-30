@@ -942,7 +942,7 @@ def validate_requirements_extraction(
         for item in merged
     )
     operation = _resolved_operation(query, extraction.operation, adjustments)
-    multi_document = len(request.document_ids) > 1
+    multi_document = len(request.selected_source_ids) > 1
     scoped_entity_names = {
         canonical_requirement_text(entity)
         for item in items
@@ -987,7 +987,7 @@ def validate_requirements_extraction(
     artifact = AnalysisRequirements(
         model=model,
         operation=operation,
-        selected_document_ids=request.document_ids,
+        selected_document_ids=request.selected_source_ids,
         requirements=items,
         groupings=tuple(valid_groupings),
         expected_granularity=extraction.expected_granularity,
@@ -1031,7 +1031,7 @@ def fallback_extraction(request: AnalysisRequest) -> RequirementsExtraction:
             ),
         ),
         requires_all_selected_documents=(
-            len(request.document_ids) > 1
+            len(request.selected_source_ids) > 1
             and bool(_ALL_DOCUMENTS_RE.search(request.query))
         ),
         table_evidence_required=bool(_TABLE_REQUIRED_RE.search(request.query)),

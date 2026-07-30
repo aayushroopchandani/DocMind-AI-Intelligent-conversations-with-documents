@@ -18,6 +18,7 @@ from .models import (
     NormalizationResult,
     RetrievalResult,
 )
+from scripts.data_analysis_agent.runtime.models.datasets import DatasetHandle
 
 
 ANALYSIS_STATE_VERSION: Literal[5] = 5
@@ -66,7 +67,9 @@ def create_analysis_state(
     user_id: str,
     chat_id: str,
     query: str,
-    document_ids: list[str] | tuple[str, ...],
+    document_ids: list[str] | tuple[str, ...] = (),
+    workspace_id: str | None = None,
+    pinned_datasets: list[DatasetHandle] | tuple[DatasetHandle, ...] = (),
     run_id: str | None = None,
 ) -> DataAnalysisState:
     """Validate a request and create isolated state for one analysis run."""
@@ -78,8 +81,10 @@ def create_analysis_state(
         request=AnalysisRequest(
             user_id=user_id,
             chat_id=chat_id,
+            workspace_id=workspace_id or chat_id,
             query=query,
             document_ids=document_ids,
+            pinned_datasets=pinned_datasets,
         ),
         phase=AnalysisPhase.INITIALIZED,
         warnings=[],
@@ -103,8 +108,11 @@ def analysis_thread_config(state: DataAnalysisState) -> RunnableConfig:
             "agent": "data_analysis",
             "analysis_state_version": ANALYSIS_STATE_VERSION,
             "selected_document_count": len(request.document_ids),
+            "pinned_dataset_count": len(request.pinned_datasets),
+            "selected_source_count": len(request.selected_source_ids),
             "run_id": run_id,
             "chat_id": request.chat_id,
+            "workspace_id": request.workspace_id,
             "user_id": request.user_id,
         },
     }

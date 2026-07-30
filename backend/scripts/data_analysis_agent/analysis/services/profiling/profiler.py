@@ -4,7 +4,10 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from db.models.structured_table import StructuredTable, TableColumn
+from scripts.data_analysis_agent.runtime.models.datasets import (
+    DatasetColumn,
+    TabularDataset,
+)
 
 from ...models import (
     DATASET_PROFILER_VERSION,
@@ -38,7 +41,7 @@ _TIME_DIMENSION_LABEL_RE = re.compile(
 
 def _semantic_role(
     *,
-    column: TableColumn,
+    column: DatasetColumn,
     inferred: ProfiledDataType,
     non_null_count: int,
     cardinality_ratio: float,
@@ -180,7 +183,7 @@ class DeterministicDatasetProfiler:
     def profile(
         self,
         dataset: HydratedDatasetReference,
-        table: StructuredTable,
+        table: TabularDataset,
     ) -> DatasetProfile:
         inferred_table_unit = table_unit_hint(
             table.title,
@@ -210,8 +213,8 @@ class DeterministicDatasetProfiler:
             dataset_id=dataset.dataset_id,
             source_version=dataset.source_version,
             profiler_version=self.version,
-            table_id=table.table_id,
-            document_id=table.document_id,
+            table_id=dataset.table_id,
+            document_id=dataset.document_id,
             title=table.title,
             row_count=len(table.rows),
             column_count=len(table.columns),

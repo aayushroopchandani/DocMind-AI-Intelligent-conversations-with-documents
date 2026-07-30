@@ -9,9 +9,7 @@ from dataclasses import asdict, dataclass, replace
 from time import perf_counter
 from typing import Any, Sequence
 
-from pydantic import ValidationError
-
-from db.models.structured_table import StructuredTable
+from scripts.data_analysis_agent.runtime.models.datasets import TabularDataset
 
 from ...models import (
     DATASET_NORMALIZER_VERSION,
@@ -40,7 +38,7 @@ from ...repositories import (
     NormalizedDatasetRepositoryError,
     NormalizedDatasetWrite,
 )
-from ..versioning import source_version
+from ...repositories.datasets import load_materialized_dataset_batch
 from .recipe import (
     CleaningRecipe,
     build_cleaning_recipe,
@@ -152,6 +150,7 @@ def _cached_reference(
         or cached.source_versions != (dataset.source_version,)
         or cached.source_table_ids != (dataset.table_id,)
         or cached.document_id != dataset.document_id
+        or cached.source_type != dataset.source_type
         or cached.materialization != recipe.materialization
     ):
         return None
@@ -184,9 +183,15 @@ def _reference(
         source_dataset_ids=(dataset.dataset_id,),
         source_versions=(dataset.source_version,),
         source_table_ids=(dataset.table_id,),
+        source_type=dataset.source_type,
         document_id=dataset.document_id,
         source_page_start=dataset.page_start,
         source_page_end=dataset.page_end,
+        artifact_id=dataset.artifact_id,
+        artifact_version_id=dataset.artifact_version_id,
+        worksheet_id=dataset.worksheet_id,
+        range_a1=dataset.range_a1,
+        snapshot_hash=dataset.snapshot_hash,
         title=dataset.title,
         requirement_ids=selected.requirement_ids,
         columns=recipe.output_columns,
@@ -212,12 +217,27 @@ def _reference(
         transformations=transformed.transformations,
         validation_checks=transformed.validation_checks,
         access=PreparedDatasetAccessReference(
+            provider=(
+                dataset.access.provider
+                if passthrough
+                else "mongodb"
+            ),
             collection=(
-                "structured_tables"
+                dataset.access.collection
                 if passthrough
                 else "normalized_datasets"
             ),
-            record_id=dataset.table_id if passthrough else identifier,
+            record_id=(
+                dataset.access.record_id
+                or dataset.access.table_id
+                or dataset.table_id
+                if passthrough
+                else identifier
+            ),
+            artifact_version_id=(
+                dataset.access.artifact_version_id if passthrough else None
+            ),
+            blob=dataset.access.blob if passthrough else None,
         ),
     )
 
@@ -345,12 +365,11 @@ class DatasetPreparationRunner:
             )
         )
         source_task = asyncio.create_task(
-            self._dataset_repository.load_tables(
+            load_materialized_dataset_batch(
+                self._dataset_repository,
                 user_id=user_id,
                 document_ids=document_ids,
-                table_ids=tuple(
-                    item.dataset.table_id for item in selection.datasets
-                ),
+                datasets=tuple(item.dataset for item in selection.datasets),
             )
         )
         warnings: list[AnalysisIssue] = []
@@ -370,10 +389,10 @@ class DatasetPreparationRunner:
                 )
             )
         try:
-            raw_tables = await source_task
+            materialized_batch = await source_task
         except DatasetRepositoryError:
             logger.exception("Preparation source rows could not be loaded")
-            raw_tables = ()
+            materialized_batch = None
             errors.append(
                 AnalysisIssue(
                     code=IssueCode.PREPARATION_DATA_LOAD_FAILED,
@@ -384,10 +403,16 @@ class DatasetPreparationRunner:
                 )
             )
         tables_by_id = {
-            str(item.get("table_id") or ""): item
-            for item in raw_tables
-            if str(item.get("table_id") or "")
+            item.dataset_id: item
+            for item in (
+                materialized_batch.datasets if materialized_batch else ()
+            )
         }
+        invalid_dataset_ids = (
+            materialized_batch.invalid_dataset_ids
+            if materialized_batch
+            else frozenset()
+        )
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
         async def prepare_one_unmeasured(
@@ -397,9 +422,16 @@ class DatasetPreparationRunner:
             existing = preflight.get(dataset.dataset_id)
             if existing is not None:
                 return existing
+            if dataset.dataset_id in invalid_dataset_ids:
+                return _failure(
+                    selected,
+                    reason=PreparationFailureReason.INVALID_SOURCE,
+                    message="Selected source rows failed structural validation.",
+                    code=IssueCode.DATASET_PREPARATION_FAILED,
+                )
             recipe = recipes[dataset.dataset_id]
-            raw = tables_by_id.get(dataset.table_id)
-            if raw is None:
+            table = tables_by_id.get(dataset.dataset_id)
+            if table is None:
                 return _failure(
                     selected,
                     reason=PreparationFailureReason.NOT_AVAILABLE,
@@ -407,19 +439,10 @@ class DatasetPreparationRunner:
                     code=IssueCode.DATASET_PREPARATION_FAILED,
                     retryable=True,
                 )
-            try:
-                table = StructuredTable.model_validate(raw)
-            except ValidationError:
-                return _failure(
-                    selected,
-                    reason=PreparationFailureReason.INVALID_SOURCE,
-                    message="Selected source rows failed structural validation.",
-                    code=IssueCode.DATASET_PREPARATION_FAILED,
-                )
             if (
                 table.user_id != user_id
-                or table.document_id != dataset.document_id
-                or table.table_id != dataset.table_id
+                or table.source_container_id != dataset.document_id
+                or table.dataset_id != dataset.dataset_id
             ):
                 return _failure(
                     selected,
@@ -427,7 +450,7 @@ class DatasetPreparationRunner:
                     message="Selected source identity does not match the request.",
                     code=IssueCode.DATASET_PREPARATION_FAILED,
                 )
-            if source_version(table) != dataset.source_version:
+            if table.source_version != dataset.source_version:
                 return _failure(
                     selected,
                     reason=PreparationFailureReason.SOURCE_VERSION_MISMATCH,

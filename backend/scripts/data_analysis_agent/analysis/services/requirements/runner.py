@@ -44,7 +44,7 @@ class AnalysisRequirementsRunner:
     async def run(self, request: AnalysisRequest) -> RequirementsRunOutcome:
         cache_key = requirements_cache_key(
             query=request.query,
-            document_ids=request.document_ids,
+            document_ids=request.selected_source_ids,
             prompt_version=REQUIREMENTS_PROMPT_VERSION,
             model=self._extractor.model,
         )
@@ -68,7 +68,7 @@ class AnalysisRequirementsRunner:
             )
         if cached is not None and (
             cached.requirements_version == ANALYSIS_REQUIREMENTS_VERSION
-            and cached.selected_document_ids == request.document_ids
+            and cached.selected_document_ids == request.selected_source_ids
             and cached.prompt_version == REQUIREMENTS_PROMPT_VERSION
             and cached.model == self._extractor.model
         ):

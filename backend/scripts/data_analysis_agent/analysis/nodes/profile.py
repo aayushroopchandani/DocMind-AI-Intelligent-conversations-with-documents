@@ -16,7 +16,7 @@ def build_profiling_node(runner: DatasetProfilingRunner) -> Any:
         evidence = EvidencePackage.model_validate(state["evidence_package"])
         outcome = await runner.run(
             user_id=request.user_id,
-            document_ids=request.document_ids,
+            document_ids=request.selected_source_ids,
             evidence=evidence,
         )
         record_analysis_trace(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -83,11 +83,32 @@ class TransformationSummary(BaseModel):
 
 
 class PreparedDatasetAccessReference(BaseModel):
-    provider: Literal["mongodb"] = "mongodb"
-    collection: Literal["structured_tables", "normalized_datasets"]
+    provider: Literal["mongodb", "blob"] = "mongodb"
+    collection: Literal[
+        "structured_tables",
+        "normalized_datasets",
+        "dataset_catalog",
+    ]
     record_id: str = Field(min_length=1)
+    artifact_version_id: str | None = Field(default=None, min_length=1)
+    blob: dict[str, Any] | None = None
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_locator(self) -> Self:
+        if self.provider == "mongodb":
+            if self.collection == "dataset_catalog" or self.blob is not None:
+                raise ValueError("MongoDB prepared access has an invalid locator")
+        elif (
+            self.collection != "dataset_catalog"
+            or not self.artifact_version_id
+            or not self.blob
+        ):
+            raise ValueError(
+                "blob prepared access requires dataset catalog and artifact version"
+            )
+        return self
 
 
 class NormalizedDatasetReference(BaseModel):
@@ -101,12 +122,32 @@ class NormalizedDatasetReference(BaseModel):
     source_dataset_ids: tuple[str, ...] = Field(min_length=1, max_length=8)
     source_versions: tuple[str, ...] = Field(min_length=1, max_length=8)
     source_table_ids: tuple[str, ...] = Field(min_length=1, max_length=8)
+    source_type: Literal[
+        "pdf_table",
+        "spreadsheet_range",
+        "uploaded_csv",
+        "uploaded_xlsx",
+        "derived_dataset",
+        "generated_dataset",
+    ] = "pdf_table"
     document_id: str = Field(min_length=1)
-    source_page_start: int = Field(ge=1)
-    source_page_end: int = Field(ge=1)
+    source_page_start: int | None = Field(default=None, ge=1)
+    source_page_end: int | None = Field(default=None, ge=1)
+    artifact_id: str | None = Field(default=None, min_length=1)
+    artifact_version_id: str | None = Field(default=None, min_length=1)
+    worksheet_id: str | None = Field(default=None, min_length=1)
+    range_a1: str | None = Field(default=None, min_length=1)
+    snapshot_hash: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
     title: str = Field(min_length=1, max_length=240)
     requirement_ids: tuple[str, ...] = Field(min_length=1, max_length=48)
-    columns: tuple[NormalizedColumn, ...] = Field(min_length=1, max_length=128)
+    # Keep this aligned with the source-neutral DatasetHandle contract and the
+    # Phase 8 workbook adapter. Rejecting columns 129–500 only after profiling
+    # wastes the expensive part of the pipeline and makes an accepted workbook
+    # fail nondeterministically at normalization.
+    columns: tuple[NormalizedColumn, ...] = Field(min_length=1, max_length=500)
     input_column_count: int = Field(ge=1)
     output_column_count: int = Field(ge=1)
     input_row_count: int = Field(ge=0)
@@ -140,8 +181,15 @@ class NormalizedDatasetReference(BaseModel):
         ):
             raise ValueError("source dataset identities must have matching lengths")
         if self.materialization == MaterializationType.SOURCE_PASSTHROUGH:
-            if self.access.collection != "structured_tables":
-                raise ValueError("passthrough datasets must reference source tables")
+            expected_collection = (
+                "structured_tables"
+                if self.source_type == "pdf_table"
+                else "dataset_catalog"
+            )
+            if self.access.collection != expected_collection:
+                raise ValueError(
+                    "passthrough datasets must reference their immutable source"
+                )
             if self.transformations:
                 raise ValueError("passthrough datasets cannot report transformations")
             if self.output_row_count != self.input_row_count:
@@ -150,8 +198,18 @@ class NormalizedDatasetReference(BaseModel):
             raise ValueError("materialized datasets must use normalized storage")
         if self.retained_source_row_count > self.input_row_count:
             raise ValueError("retained source rows cannot exceed input rows")
-        if self.source_page_end < self.source_page_start:
+        if (self.source_page_start is None) != (self.source_page_end is None):
+            raise ValueError("source page bounds must both be present or absent")
+        if (
+            self.source_page_start is not None
+            and self.source_page_end is not None
+            and self.source_page_end < self.source_page_start
+        ):
             raise ValueError("source page range is invalid")
+        if self.source_type == "pdf_table" and self.source_page_start is None:
+            raise ValueError("PDF normalized datasets require source pages")
+        if self.source_type != "pdf_table" and self.source_page_start is not None:
+            raise ValueError("non-PDF normalized datasets cannot contain pages")
         if self.output_column_count != len(self.columns):
             raise ValueError("output-column count must match the schema")
         if self.numeric_parse_failure_count or self.period_parse_failure_count:

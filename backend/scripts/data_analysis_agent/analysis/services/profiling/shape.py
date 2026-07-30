@@ -6,7 +6,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from db.models.structured_table import StructuredTable, TableColumn
+from scripts.data_analysis_agent.runtime.models.datasets import (
+    DatasetColumn,
+    PdfTableLocator,
+    TabularDataset,
+)
 
 from ...models import (
     ColumnProfile,
@@ -51,7 +55,7 @@ def _duplicate_count(rows: Sequence[dict[str, Any]]) -> int:
     return duplicates
 
 
-def _row_labels(row: dict[str, Any], columns: Sequence[TableColumn]) -> list[str]:
+def _row_labels(row: dict[str, Any], columns: Sequence[DatasetColumn]) -> list[str]:
     return [
         normalize_text(row.get(column.key))
         for column in columns
@@ -59,7 +63,10 @@ def _row_labels(row: dict[str, Any], columns: Sequence[TableColumn]) -> list[str
     ]
 
 
-def _repeated_header_row(row: dict[str, Any], columns: Sequence[TableColumn]) -> bool:
+def _repeated_header_row(
+    row: dict[str, Any],
+    columns: Sequence[DatasetColumn],
+) -> bool:
     present = 0
     matched = 0
     for column in columns:
@@ -76,7 +83,7 @@ def _repeated_header_row(row: dict[str, Any], columns: Sequence[TableColumn]) ->
     return present >= 2 and (matched / present) >= 0.60
 
 
-def analyze_rows(table: StructuredTable) -> RowFeatures:
+def analyze_rows(table: TabularDataset) -> RowFeatures:
     repeated_headers = 0
     total_rows = 0
     footnote_rows = 0
@@ -96,7 +103,7 @@ def analyze_rows(table: StructuredTable) -> RowFeatures:
     )
 
 
-def _metric_row_ratio(table: StructuredTable) -> float:
+def _metric_row_ratio(table: TabularDataset) -> float:
     if not table.rows or not table.columns:
         return 0.0
     first_key = table.columns[0].key
@@ -114,7 +121,7 @@ def _metric_row_ratio(table: StructuredTable) -> float:
 
 def infer_orientation(
     *,
-    table: StructuredTable,
+    table: TabularDataset,
     profiles: Sequence[ColumnProfile],
     row_features: RowFeatures,
 ) -> tuple[TableOrientation, bool]:
@@ -149,7 +156,18 @@ def infer_orientation(
         return TableOrientation.KEY_VALUE, False
     if numeric_columns == 0 and textual_columns == len(profiles):
         return TableOrientation.PRIMARILY_TEXTUAL, False
-    if table.page_end > table.page_start or len(table.source_fragments) > 1:
+    locator = getattr(table, "locator", None)
+    continuation = (
+        isinstance(locator, PdfTableLocator)
+        and locator.page_end > locator.page_start
+    ) or (
+        locator is None
+        and (
+            getattr(table, "page_end", 1) > getattr(table, "page_start", 1)
+            or len(getattr(table, "source_fragments", ())) > 1
+        )
+    )
+    if continuation:
         return TableOrientation.CONTINUATION, False
     metric_headers = sum(
         profile.inferred_type in NUMERIC_TYPES

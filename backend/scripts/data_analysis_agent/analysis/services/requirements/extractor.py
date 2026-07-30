@@ -108,8 +108,8 @@ class RequirementsExtractor:
         generator = self._generator or get_requirements_llm()
         payload = {
             "user_request": request.query,
-            "selected_document_ids": list(request.document_ids),
-            "selected_document_count": len(request.document_ids),
+            "selected_source_ids": list(request.selected_source_ids),
+            "selected_source_count": len(request.selected_source_ids),
         }
         messages: list[Any] = [
             SystemMessage(

@@ -287,6 +287,36 @@ class EvidenceCompletionRunner:
                 assessment=assessment,
             )
 
+        # The completion cascade below is PDF-capability based: candidate
+        # rescue loads Mongo PDF tables, text extraction consumes retrieved PDF
+        # chunks, and targeted repair queries the PDF vector index. A
+        # spreadsheet-only run has none of those sources. Treat missing
+        # spreadsheet columns as a clarification boundary instead of querying
+        # Qdrant with workbook/artifact identifiers.
+        if not request.document_ids:
+            clarification = assessment.model_copy(
+                update={"decision": ReadinessDecision.NEEDS_CLARIFICATION}
+            )
+            return CompletionRunOutcome(
+                artifact=AugmentedEvidence(
+                    run_id=run_id,
+                    base_evidence_signature=initial_signature,
+                    status=CompletionStatus.SKIPPED,
+                    base_dataset_ids=tuple(
+                        item.dataset_id for item in evidence.datasets
+                    ),
+                    base_text_chunk_ids=tuple(
+                        item.chunk_id for item in retrieval.text_evidence
+                    ),
+                    remaining_requirement_ids=_remaining_required_ids(
+                        requirements,
+                        clarification,
+                    ),
+                    final_decision=clarification.decision.value,
+                ),
+                assessment=clarification,
+            )
+
         additions: list[AugmentedDatasetReference] = []
         profile_additions: list[DatasetProfiles] = []
         facts: tuple[EvidenceFact, ...] = ()

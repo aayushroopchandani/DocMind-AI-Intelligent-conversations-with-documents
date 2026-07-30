@@ -15,12 +15,58 @@ from ..models import (
     IssueCode,
     IssueSeverity,
     IssueStage,
+    RetrievedTableReference,
     RetrievalResult,
+    RetrievalSignals,
 )
 from ..state import AnalysisPhase, DataAnalysisState
 
 
 logger = logging.getLogger(__name__)
+
+
+def _pinned_references(
+    request: AnalysisRequest,
+) -> tuple[RetrievedTableReference, ...]:
+    return tuple(
+        RetrievedTableReference(
+            table_id=dataset.dataset_id,
+            document_id=dataset.source_container_id,
+            source_type=dataset.source_type.value,
+            source_version=dataset.source_version,
+            title=dataset.title,
+            page_start=getattr(dataset.locator, "page_start", None),
+            page_end=getattr(dataset.locator, "page_end", None),
+            expected_columns=tuple(column.key for column in dataset.columns),
+            expected_units=tuple(
+                dict.fromkeys(
+                    column.unit for column in dataset.columns if column.unit
+                )
+            ),
+            relevance_score=1.0,
+            matched_queries=(request.query,),
+            retrieval_modes=("pinned",),
+        )
+        for dataset in request.pinned_datasets
+    )
+
+
+def _merge_pinned(
+    result: RetrievalResult,
+    pinned: tuple[RetrievedTableReference, ...],
+) -> RetrievalResult:
+    if not pinned:
+        return result
+    existing = {item.table_id for item in result.table_references}
+    return result.model_copy(
+        update={
+            "table_intent": "required",
+            "table_references": (
+                *result.table_references,
+                *(item for item in pinned if item.table_id not in existing),
+            ),
+        }
+    )
 
 
 class AsyncRetrievalGraph(Protocol):
@@ -40,6 +86,17 @@ def build_retrieval_node(retrieval_graph: AsyncRetrievalGraph) -> Any:
         config: RunnableConfig,
     ) -> dict[str, Any]:
         request = AnalysisRequest.model_validate(state["request"])
+        pinned = _pinned_references(request)
+        if not request.document_ids:
+            return {
+                "phase": AnalysisPhase.RETRIEVED,
+                "retrieval_result": RetrievalResult(
+                    retrieval_scope="normal",
+                    table_intent="required",
+                    signals=RetrievalSignals(),
+                    table_references=pinned,
+                ),
+            }
         child_state = create_retrieval_state(
             user_id=request.user_id,
             chat_id=request.chat_id,
@@ -48,7 +105,10 @@ def build_retrieval_node(retrieval_graph: AsyncRetrievalGraph) -> Any:
         )
         try:
             child_result = await retrieval_graph.ainvoke(child_state, config=config)
-            retrieval_result = RetrievalResult.from_retrieval_state(child_result)
+            retrieval_result = _merge_pinned(
+                RetrievalResult.from_retrieval_state(child_result),
+                pinned,
+            )
         except Exception:
             logger.exception("Data-analysis retrieval failed for run %s", state["run_id"])
             record_analysis_trace(
@@ -58,6 +118,28 @@ def build_retrieval_node(retrieval_graph: AsyncRetrievalGraph) -> Any:
                 },
                 tags=("retrieval:error",),
             )
+            if pinned:
+                return {
+                    "phase": AnalysisPhase.RETRIEVED,
+                    "retrieval_result": RetrievalResult(
+                        retrieval_scope="normal",
+                        table_intent="required",
+                        signals=RetrievalSignals(),
+                        table_references=pinned,
+                    ),
+                    "warnings": [
+                        AnalysisIssue(
+                            code=IssueCode.RETRIEVAL_FAILED,
+                            severity=IssueSeverity.WARNING,
+                            stage=IssueStage.RETRIEVAL,
+                            message=(
+                                "PDF evidence retrieval failed; pinned datasets "
+                                "remain available."
+                            ),
+                            retryable=True,
+                        )
+                    ],
+                }
             return {
                 "phase": AnalysisPhase.FAILED,
                 "errors": [

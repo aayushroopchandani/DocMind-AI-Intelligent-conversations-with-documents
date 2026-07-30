@@ -693,10 +693,19 @@ class EvidenceAssessmentRunner:
         warnings: list[AnalysisIssue] = []
         metadata_load_failed = False
         try:
-            metadata = await self._metadata_repository.load_table_metadata(
-                user_id=request.user_id,
-                document_ids=request.document_ids,
-                table_ids=tuple(item.table_id for item in evidence.datasets),
+            pdf_datasets = tuple(
+                item
+                for item in evidence.datasets
+                if item.source_type == "pdf_table"
+            )
+            metadata = (
+                await self._metadata_repository.load_table_metadata(
+                    user_id=request.user_id,
+                    document_ids=request.document_ids,
+                    table_ids=tuple(item.table_id for item in pdf_datasets),
+                )
+                if pdf_datasets
+                else {}
             )
         except AssessmentMetadataRepositoryError:
             logger.exception("Assessment table metadata load failed")
