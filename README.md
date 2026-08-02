@@ -42,91 +42,158 @@ Supporting surfaces (outline-aware **summarization**, **quizzes**, PDF viewer) s
 
 ---
 
-### Data Analysis Agent — system view
+### Data Analysis Agent — end-to-end architecture
+
+The diagram follows the implemented pipeline from source ingestion through the
+durable runtime and LangGraph evidence-preparation graph. Solid arrows are the
+main execution path; dashed arrows are asynchronous, optional, or observability
+flows.
 
 ```mermaid
-flowchart TD
-    U[Next.js Workspace] --> API[FastAPI Analysis API]
-    API --> Q[Job Queue]
-    Q --> G[LangGraph Orchestrator]
+flowchart TB
+    classDef client fill:#0f172a,stroke:#38bdf8,color:#f8fafc,stroke-width:2px
+    classDef api fill:#172554,stroke:#60a5fa,color:#eff6ff
+    classDef process fill:#132e2a,stroke:#34d399,color:#ecfdf5
+    classDef decision fill:#422006,stroke:#fbbf24,color:#fffbeb,stroke-width:2px
+    classDef store fill:#2e1065,stroke:#c084fc,color:#faf5ff
+    classDef terminal fill:#3f1d2e,stroke:#fb7185,color:#fff1f2
+    classDef boundary fill:#1f2937,stroke:#f8fafc,color:#f8fafc,stroke-width:2px
 
-    subgraph Context
-        CS[Conversation Scope]
-        DS[Selected Documents]
-        NS[Node Metadata]
-        DC[Dataset Catalogue]
+    ANALYST([Analyst or API client]):::client
+
+    subgraph INGEST["A · PDF ingestion and analytical source preparation"]
+        direction TB
+        PDF[PDF upload]:::client --> ID[SHA-256 identity<br/>tenant ownership and pending-document claim]:::process
+        ID --> CLOUDPDF[(Cloudinary<br/>private PDF)]:::store
+
+        ID --> TEXTINGEST[PyMuPDF text ingest<br/>2400-token chunks · 300 overlap<br/>outline and node metadata]:::process
+        TEXTINGEST --> EMBED[OpenAI embeddings<br/>dense vectors plus sparse backfill]:::process
+        EMBED --> QTEXT[(Qdrant PDF indexes<br/>dense and sparse chunks)]:::store
+        TEXTINGEST --> MDOC[(MongoDB documents<br/>nodes · status · provenance)]:::store
+
+        ID --> PRIMARY[PyMuPDF table extraction<br/>cells · columns · pages · node links]:::process
+        PRIMARY --> TVAL[Schema and quality validation<br/>accepted · quarantined · rejected]:::process
+        TVAL --> TSUM[LLM discovery summary<br/>keywords · schema · units]:::process
+        TSUM --> MTABLE[(MongoDB structured_tables<br/>authoritative rows and metadata)]:::store
+        TSUM --> QTABLE[(Qdrant structured_tables<br/>dense and sparse summaries)]:::store
+
+        TVAL -. quarantined pages .-> COVER[Coverage detector<br/>flag suspicious page ranges]:::process
+        COVER --> MISSED{Possible missed or<br/>complex tables?}:::decision
+        MISSED -- no --> INGESTREADY[Table source ready]:::terminal
+        MISSED -. yes .-> DOCLING[Isolated Docling worker<br/>bounded page ranges]:::process
+        DOCLING --> DVALID[Validate recovered tables]:::process
+        DVALID --> MERGE[Content-aware merge and dedupe<br/>summarize additions · vector upsert<br/>replace authoritative table set]:::process
+        MERGE --> MTABLE
+        MERGE --> QTABLE
+        MERGE --> INGESTREADY
     end
 
-    CS --> G
-    DS --> G
-    NS --> G
-    DC --> G
+    subgraph CONTROL["B · Durable run control plane"]
+        direction TB
+        ANALYST -->|POST /analysis/runs<br/>Idempotency-Key| API[FastAPI analysis API<br/>auth · tenant scope · request limits]:::api
+        API --> RUNSVC[AnalysisRunService<br/>validate request · fingerprint inputs]:::process
 
-    subgraph Planning
-        IQ[Understand Query]
-        SR[Resolve Data Scope]
-        DP[Dataset Discovery]
-        MP[Metric Resolution]
-        AP[Analysis Planner]
+        RUNSVC --> PDFCTX[PDF context<br/>selected immutable document IDs]:::process
+        MDOC --> PDFCTX
+
+        RUNSVC -->|spreadsheet context| WBCTX[WorkbookContextService<br/>validate snapshot or uploaded version<br/>split selected range into tables]:::process
+        WBCTX --> ARTIFACT[ArtifactVersionService<br/>validate · hash · immutable versions]:::process
+        ARTIFACT --> BLOBS[(Cloudinary artifact blobs<br/>JSON · CSV · XLSX · snapshots)]:::store
+        WBCTX --> CATALOG[(MongoDB dataset_catalog<br/>versioned dataset handles)]:::store
+
+        PDFCTX --> RUNSTATE[(MongoDB analysis_runs<br/>state · version · deadline · lease)]:::store
+        CATALOG -->|pinned dataset versions| RUNSTATE
+        RUNSVC --> RUNSTATE
+        RUNSTATE -->|inputs_ready| WORKER[DurableAnalysisWorker<br/>poll · claim · renew lease · fencing<br/>retry expired or abandoned work]:::process
+        WORKER --> ADAPTER[Phase7AnalysisAdapter<br/>cancellation checks · token accounting<br/>stream LangGraph state values]:::process
     end
 
-    G --> IQ
-    IQ --> SR
-    SR --> DP
-    DP --> MP
-    MP --> AP
+    subgraph GRAPH["C · LangGraph evidence-preparation graph · isolated by run_id"]
+        direction TB
+        START((START)):::boundary
 
-    subgraph Execution
-        PR[Dataset Profiler]
-        CL[Cleaning Engine]
-        TF[Transformation Engine]
-        ST[Statistics Engine]
-        AD[Anomaly Engine]
-        TS[Time-Series Engine]
+        START --> RETRIEVE[Retrieve evidence]:::process
+        START --> REQ[Extract analysis requirements<br/>operation · metrics · entities · periods<br/>units · document scope · table need]:::process
+
+        subgraph HYBRID["Hybrid retrieval child graph"]
+            direction TB
+            RETRIEVE --> QGEN[Query generation<br/>normal or broad scope<br/>shared · text · table queries<br/>relevance signals and table intent]:::process
+            QGEN --> RTEXT[PDF text search<br/>tenant plus document filters<br/>dense and sparse retrieval]:::process
+            QGEN --> RTABLE[Table-summary search<br/>tenant plus document filters<br/>dense and sparse retrieval]:::process
+            QTEXT --> RTEXT
+            QTABLE --> RTABLE
+            RTEXT --> FUSION[Reciprocal-rank fusion<br/>score · dedupe · diversify · trim]:::process
+            RTABLE --> FUSION
+        end
+
+        FUSION --> HYDRATE[Hydrate authoritative evidence<br/>resolve table IDs and pinned handles<br/>verify source versions and provenance]:::process
+        MTABLE --> HYDRATE
+        CATALOG --> HYDRATE
+        BLOBS --> HYDRATE
+        HYDRATE --> PROFILE[Deterministic dataset profiling<br/>shape · types · semantic roles · units<br/>quality · duplicates · headers · footnotes]:::process
+
+        REQ --> JOIN[Parallel-branch barrier]:::boundary
+        PROFILE --> JOIN
+        JOIN --> ASSESS[Evidence assessment<br/>deterministic requirement matching<br/>coverage · conflicts · ambiguity resolver]:::process
+        ASSESS --> READY{Readiness decision}:::decision
+
+        READY -- ready --> PREPARE
+        READY -- clarification required<br/>or unanswerable --> STOP[Terminal evidence outcome<br/>clarification or unanswerable]:::terminal
+        READY -- rescue · text extraction<br/>or retrieval repair --> RESCUE[1 · Rescue unused table candidates<br/>hydrate · profile · reassess]:::process
+
+        subgraph COMPLETE["Bounded evidence-completion cascade"]
+            direction TB
+            RESCUE --> C1{Ready now?}:::decision
+            C1 -- no --> TEXTRACT[2 · Extract validated facts<br/>from already-retrieved text<br/>and build derived datasets]:::process
+            TEXTRACT --> C2{Ready now?}:::decision
+            C2 -- no --> REPAIR[3 · Targeted hybrid repair<br/>only for unmet requirements]:::process
+            REPAIR --> REASSESS[Hydrate new tables · profile<br/>extract new text facts · reassess]:::process
+            REASSESS --> MORE{Ready, terminal, or<br/>repair attempts remain?}:::decision
+            MORE -- retry within bound --> REPAIR
+        end
+
+        C1 -- yes --> PREPARE[Select final evidence<br/>build versioned cleaning recipes]:::process
+        C2 -- yes --> PREPARE
+        MORE -- ready --> PREPARE
+        MORE -- clarification<br/>or unanswerable --> STOP
+
+        PREPARE --> NORMALIZE[Deterministic normalization<br/>remove exact duplicates and repeated headers<br/>separate footnotes · parse numbers and periods<br/>reshape when justified · preserve row lineage]:::process
+        NORMALIZE --> NCACHE[(MongoDB normalized_datasets<br/>rows · lineage · exclusions · footnotes<br/>source versions and recipe cache keys)]:::store
+        NCACHE --> PREPARED[DATASETS_PREPARED<br/>normalized IDs · selected facts<br/>derived dataset IDs · issues]:::boundary
+
+        REQCACHE[(MongoDB phase caches<br/>queries · requirements · profiles<br/>assessment · completion · repair)]:::store
+        REQ <--> REQCACHE
+        PROFILE <--> REQCACHE
+        ASSESS <--> REQCACHE
+        RESCUE <--> REQCACHE
     end
 
-    AP --> PR
-    PR --> CL
-    CL --> TF
-    TF --> ST
-    TF --> AD
-    TF --> TS
+    ADAPTER --> START
 
-    subgraph Validation
-        SV[Schema Validator]
-        RV[Result Validator]
-        UV[Unit Validator]
-        CV[Citation Validator]
+    subgraph OBSERVE["D · Progress, recovery, and delivery"]
+        direction LR
+        PROJECT[Milestone projector<br/>small idempotent progress events]:::process
+        EVENTS[(MongoDB append-only events<br/>monotonic sequence · replay cursor)]:::store
+        SSE[GET /analysis/runs/:id/events<br/>replayable SSE · Last-Event-ID<br/>heartbeats and connection limits]:::api
+        RESULT[Run state machine<br/>succeeded · waiting · failed<br/>cancelled · expired]:::process
     end
 
-    ST --> SV
-    AD --> SV
-    TS --> SV
-    SV --> RV
-    RV --> UV
-    UV --> CV
+    ADAPTER -. graph milestones .-> PROJECT
+    PROJECT --> EVENTS
+    PREPARED --> RESULT
+    STOP --> RESULT
+    WORKER -. lease recovery and cancellation .-> RESULT
+    RESULT --> RUNSTATE
+    RESULT --> EVENTS
+    EVENTS --> SSE --> ANALYST
 
-    subgraph Presentation
-        IP[Insight Generator]
-        VP[Visualization Planner]
-        DB[Dashboard Builder]
-        RC[Response Composer]
-    end
-
-    CV --> IP
-    CV --> VP
-    VP --> DB
-    IP --> RC
-    DB --> RC
-
-    RC --> API
-    API --> U
-
-    TF <--> OBJ[(Parquet / Object Storage)]
-    G <--> PG[(PostgreSQL)]
-    G <--> REDIS[(Redis)]
-    DP <--> QD[(Qdrant)]
+    PREPARED -. current implementation boundary .-> LATER[Later phases<br/>typed plan · approval and apply<br/>workbook mutation · charts and narrative]:::terminal
 ```
+
+> **Current boundary:** the durable runtime returns normalized dataset IDs,
+> validated facts / derived dataset references, warnings, errors, token usage,
+> and timings. Typed plans, workbook edits, calculations, charts, and narrative
+> composition are later phases and are not inferred from `DATASETS_PREPARED`.
 
 ### Data Analysis Agent — execution flow
 
