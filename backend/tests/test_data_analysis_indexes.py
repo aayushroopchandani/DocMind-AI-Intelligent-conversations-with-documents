@@ -55,6 +55,8 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
                 "workspace_artifacts",
                 "artifact_versions",
                 "dataset_catalog",
+                "analysis_plans",
+                "analysis_patch_proposals",
             },
         )
         for group in ANALYSIS_INDEX_DEFINITIONS:
@@ -104,6 +106,24 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
                 ("dataset_id", 1),
                 ("source_version", 1),
             ),
+            ("analysis_plans", "uq_analysis_plans_run_revision"): (
+                ("user_id", 1),
+                ("run_id", 1),
+                ("revision", 1),
+            ),
+            ("analysis_plans", "uq_analysis_plans_identity"): (
+                ("user_id", 1),
+                ("run_id", 1),
+                ("plan_id", 1),
+            ),
+            (
+                "analysis_patch_proposals",
+                "uq_analysis_patch_proposals_identity",
+            ): (
+                ("user_id", 1),
+                ("run_id", 1),
+                ("patch_id", 1),
+            ),
         }
 
         for (collection_name, index_name), expected_keys in (
@@ -132,6 +152,16 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
             {"deduplication_key": {"$type": "string"}},
         )
         self.assertTrue(event_deduplication.unique)
+
+        plan_reservation = _definition_by_name(
+            "analysis_plans",
+            "uq_analysis_plans_active_write_reservations",
+        )
+        self.assertTrue(plan_reservation.unique)
+        self.assertEqual(
+            dict(plan_reservation.partial_filter or {}),
+            {"reservation_active": True},
+        )
 
     async def test_indexes_are_durable_and_tenant_scoped_except_worker_queue(
         self,

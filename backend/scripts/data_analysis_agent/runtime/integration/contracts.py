@@ -7,6 +7,11 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from scripts.data_analysis_agent.analysis.state import AnalysisPhase
+from scripts.data_analysis_agent.analysis.models import (
+    AnalysisRequirements,
+    DatasetProfiles,
+    NormalizationResult,
+)
 from scripts.data_analysis_agent.runtime.models import (
     AnalysisEventType,
     AnalysisRunOutcome,
@@ -63,6 +68,16 @@ class NullPhase7ProgressReporter:
         del progress
 
 
+class Phase7PlanningArtifacts(BaseModel):
+    """Bounded row-free artifacts required by the Phase 8 planner."""
+
+    requirements: AnalysisRequirements
+    dataset_profiles: DatasetProfiles
+    normalization: NormalizationResult
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 class Phase7ExecutionResult(BaseModel):
     """Bounded execution summary returned to the durable run worker."""
 
@@ -87,6 +102,7 @@ class Phase7ExecutionResult(BaseModel):
         default_factory=phase7_prompt_versions
     )
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    planning_artifacts: Phase7PlanningArtifacts | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -120,6 +136,7 @@ __all__ = [
     "Phase7ExecutionResult",
     "Phase7InputError",
     "Phase7Outcome",
+    "Phase7PlanningArtifacts",
     "Phase7Progress",
     "Phase7ProgressReporter",
     "StreamingAnalysisGraph",

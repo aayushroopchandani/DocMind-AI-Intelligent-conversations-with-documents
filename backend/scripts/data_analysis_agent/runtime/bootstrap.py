@@ -5,7 +5,16 @@ from dataclasses import dataclass
 from config.settings import Settings, settings
 from db.mongodb import get_db
 
-from .repositories import MongoArtifactRepository, MongoAnalysisRunStore
+from .repositories import (
+    MongoAnalysisPlanRepository,
+    MongoArtifactRepository,
+    MongoAnalysisRunStore,
+)
+from .planning import (
+    AnalysisPlanningService,
+    PlanResourcePolicy,
+    PlanningContextBuilder,
+)
 from .repositories.datasets import MongoDatasetCatalogRepository
 from .services.artifacts import (
     ArtifactServiceConfig,
@@ -34,6 +43,7 @@ class AnalysisRuntime:
     run_service: AnalysisRunService
     worker: DurableAnalysisWorker
     artifact_service: ArtifactVersionService | None
+    planning_service: AnalysisPlanningService | None = None
     artifact_reconciler: ArtifactUploadReconciler | None = None
 
     async def start(self) -> None:
@@ -69,6 +79,51 @@ def build_analysis_runtime(
         ),
     )
     dataset_catalog = MongoDatasetCatalogRepository()
+    plan_repository = MongoAnalysisPlanRepository(database)
+    planning_service = AnalysisPlanningService(
+        repository=plan_repository,
+        state_machine=state_machine,
+        context_builder=PlanningContextBuilder(
+            resource_policy=PlanResourcePolicy(
+                max_context_bytes=(
+                    active_settings.analysis_max_planning_context_bytes
+                ),
+                max_plan_bytes=active_settings.analysis_max_plan_bytes,
+                max_steps=active_settings.analysis_max_plan_steps,
+                max_rows_scanned=(
+                    active_settings.analysis_max_plan_rows_scanned
+                ),
+                max_cells_written=(
+                    active_settings.analysis_max_plan_cells_written
+                ),
+                max_joins=active_settings.analysis_max_plan_joins,
+                max_python_memory_mb=(
+                    active_settings.analysis_max_python_memory_mb
+                ),
+                max_python_seconds=(
+                    active_settings.analysis_max_python_seconds
+                ),
+                max_estimated_cost_usd=(
+                    active_settings.analysis_max_plan_cost_usd
+                ),
+                max_generated_rows=(
+                    active_settings.analysis_max_generated_rows
+                ),
+                max_chart_cardinality=(
+                    active_settings.analysis_max_chart_cardinality
+                ),
+                plan_approval_python_seconds=(
+                    active_settings.analysis_plan_approval_python_seconds
+                ),
+                plan_approval_cost_usd=(
+                    active_settings.analysis_plan_approval_cost_usd
+                ),
+                plan_approval_generated_rows=(
+                    active_settings.analysis_plan_approval_generated_rows
+                ),
+            )
+        ),
+    )
 
     artifact_service: ArtifactVersionService | None = None
     artifact_reconciler: ArtifactUploadReconciler | None = None
@@ -153,6 +208,7 @@ def build_analysis_runtime(
     worker = DurableAnalysisWorker(
         state_machine=state_machine,
         dataset_catalog=dataset_catalog,
+        planning_service=planning_service,
         config=AnalysisWorkerConfig(
             concurrency=active_settings.analysis_worker_concurrency,
             poll_seconds=active_settings.analysis_worker_poll_seconds,
@@ -164,6 +220,7 @@ def build_analysis_runtime(
         run_service=run_service,
         worker=worker,
         artifact_service=artifact_service,
+        planning_service=planning_service,
         artifact_reconciler=artifact_reconciler,
     )
 

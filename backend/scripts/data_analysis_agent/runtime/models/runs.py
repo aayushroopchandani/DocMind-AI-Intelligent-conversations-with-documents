@@ -38,6 +38,13 @@ class AnalysisRunPhase(str, Enum):
     EVIDENCE_PREPARATION = "evidence_preparation"
     REQUIREMENTS = "requirements"
     NORMALIZATION = "normalization"
+    PLANNING = "planning"
+    PLAN_VALIDATION = "plan_validation"
+    APPROVAL = "approval"
+    EXECUTION = "execution"
+    RESULT_VALIDATION = "result_validation"
+    PROPOSAL = "proposal"
+    APPLICATION = "application"
     COMPLETED = "completed"
 
 
@@ -45,9 +52,19 @@ class AnalysisRunOutcome(str, Enum):
     DATASETS_PREPARED = "datasets_prepared"
     CLARIFICATION_REQUIRED = "clarification_required"
     UNANSWERABLE = "unanswerable"
+    PLAN_READY = "plan_ready"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+
+
+class RunApprovalStatus(str, Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 TERMINAL_RUN_STATUSES = frozenset(
@@ -145,6 +162,13 @@ class AnalysisRun(BaseModel):
     selected_document_ids: tuple[str, ...] = Field(default=(), max_length=20)
     final_artifact_ids: tuple[str, ...] = Field(default=(), max_length=100)
     final_dataset_ids: tuple[str, ...] = Field(default=(), max_length=100)
+    current_plan_id: str | None = Field(default=None, max_length=36)
+    current_plan_revision: int | None = Field(default=None, ge=1)
+    current_plan_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    plan_approval_status: RunApprovalStatus | None = None
 
     warnings_summary: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)
     errors_summary: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)
@@ -188,6 +212,7 @@ class AnalysisRun(BaseModel):
         "chat_id",
         "active_artifact_id",
         "worker_id",
+        "current_plan_id",
         "input_artifact_version_ids",
         "final_artifact_ids",
         "final_dataset_ids",
@@ -305,10 +330,41 @@ class AnalysisRun(BaseModel):
         if expected_outcome is not None and self.outcome != expected_outcome:
             raise ValueError(f"{self.status.value} runs need {expected_outcome.value}")
         if self.status == AnalysisRunStatus.WAITING:
-            if self.outcome != AnalysisRunOutcome.CLARIFICATION_REQUIRED:
-                raise ValueError("waiting runs must require clarification")
+            if self.outcome not in {
+                AnalysisRunOutcome.CLARIFICATION_REQUIRED,
+                AnalysisRunOutcome.PLAN_READY,
+            }:
+                raise ValueError("waiting runs need clarification or approval")
+            if (
+                self.outcome == AnalysisRunOutcome.PLAN_READY
+                and (
+                    self.phase != AnalysisRunPhase.APPROVAL
+                    or self.plan_approval_status != RunApprovalStatus.PENDING
+                )
+            ):
+                raise ValueError("approval waits require a pending plan")
         elif not terminal and self.outcome is not None:
             raise ValueError("active runs cannot have a terminal outcome")
+        plan_values = (
+            self.current_plan_id,
+            self.current_plan_revision,
+            self.current_plan_hash,
+            self.plan_approval_status,
+        )
+        if any(value is not None for value in plan_values) != all(
+            value is not None for value in plan_values
+        ):
+            raise ValueError("current plan identity and approval must be complete")
+        if self.outcome == AnalysisRunOutcome.PLAN_READY:
+            if self.plan_approval_status not in {
+                RunApprovalStatus.NOT_REQUIRED,
+                RunApprovalStatus.PENDING,
+                RunApprovalStatus.APPROVED,
+            }:
+                raise ValueError("plan-ready runs require a usable plan")
+        if self.outcome == AnalysisRunOutcome.REJECTED:
+            if self.plan_approval_status != RunApprovalStatus.REJECTED:
+                raise ValueError("rejected runs require a rejected plan")
         return self
 
 
@@ -320,6 +376,7 @@ __all__ = [
     "AnalysisRunStatus",
     "DatasetVersionReference",
     "RunIssueSummary",
+    "RunApprovalStatus",
     "TERMINAL_RUN_STATUSES",
     "TokenUsage",
 ]

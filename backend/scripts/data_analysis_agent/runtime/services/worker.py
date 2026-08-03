@@ -19,9 +19,19 @@ from ..models import (
     AnalysisRunOutcome,
     AnalysisRunPhase,
     AnalysisRunStatus,
+    DatasetHandle,
     RunIssueSummary,
+    RunApprovalStatus,
+    TokenUsage,
     TERMINAL_RUN_STATUSES,
 )
+from ..planning.contracts import (
+    PlanningExecutionResult,
+    PlanningOutcome,
+    PlanningProgress,
+    PlanningProgressReporter,
+)
+from ..planning.service import AnalysisPlanningService
 from ..repositories.datasets import DatasetCatalogRepository
 from ..repositories.runs import (
     AnalysisRunConflictError,
@@ -42,7 +52,14 @@ _PHASE_RANK = {
     AnalysisRunPhase.EVIDENCE_PREPARATION: 1,
     AnalysisRunPhase.REQUIREMENTS: 2,
     AnalysisRunPhase.NORMALIZATION: 3,
-    AnalysisRunPhase.COMPLETED: 4,
+    AnalysisRunPhase.PLANNING: 4,
+    AnalysisRunPhase.PLAN_VALIDATION: 5,
+    AnalysisRunPhase.APPROVAL: 6,
+    AnalysisRunPhase.EXECUTION: 7,
+    AnalysisRunPhase.RESULT_VALIDATION: 8,
+    AnalysisRunPhase.PROPOSAL: 9,
+    AnalysisRunPhase.APPLICATION: 10,
+    AnalysisRunPhase.COMPLETED: 11,
 }
 
 
@@ -112,6 +129,39 @@ class _DurableProgressReporter(Phase7ProgressReporter):
         )
 
 
+class _DurablePlanningReporter(PlanningProgressReporter):
+    def __init__(
+        self,
+        *,
+        state_machine: AnalysisRunStateMachine,
+        run: AnalysisRun,
+        worker_id: str,
+        lease_attempt: int,
+    ) -> None:
+        self._state_machine = state_machine
+        self._run = run
+        self._worker_id = worker_id
+        self._lease_attempt = lease_attempt
+
+    async def emit(self, progress: PlanningProgress) -> None:
+        current = await self._state_machine.require_run(
+            user_id=self._run.user_id,
+            run_id=self._run.run_id,
+        )
+        await self._state_machine.record_event(
+            user_id=self._run.user_id,
+            run_id=self._run.run_id,
+            event_type=progress.event_type,
+            phase=_furthest_phase(current.phase, progress.phase),
+            payload=progress.payload,
+            deduplication_key=(
+                f"attempt-{self._lease_attempt}:{progress.deduplication_key}"
+            ),
+            worker_id=self._worker_id,
+            lease_attempt=self._lease_attempt,
+        )
+
+
 class DurableAnalysisWorker:
     """Mongo-leased background executor for the implemented Phase 1–7 graph.
 
@@ -125,12 +175,14 @@ class DurableAnalysisWorker:
         state_machine: AnalysisRunStateMachine,
         dataset_catalog: DatasetCatalogRepository,
         adapter: Phase7AnalysisAdapter | None = None,
+        planning_service: AnalysisPlanningService | None = None,
         config: AnalysisWorkerConfig | None = None,
         worker_id: str | None = None,
     ) -> None:
         self._state_machine = state_machine
         self._dataset_catalog = dataset_catalog
         self._adapter = adapter or Phase7AnalysisAdapter()
+        self._planning_service = planning_service
         self._config = config or AnalysisWorkerConfig()
         self._worker_id = worker_id or f"analysis-worker-{uuid4()}"
         self._stop = asyncio.Event()
@@ -496,6 +548,7 @@ class DurableAnalysisWorker:
                 run=run,
                 lease_attempt=lease_attempt,
                 result=result,
+                dataset_handles=tuple(dataset_handles),
                 elapsed_ms=(monotonic() - started) * 1000,
             )
         except Phase7ExecutionCancelled:
@@ -626,6 +679,7 @@ class DurableAnalysisWorker:
         run: AnalysisRun,
         lease_attempt: int,
         result: Phase7ExecutionResult,
+        dataset_handles: tuple[DatasetHandle, ...],
         elapsed_ms: float,
     ) -> None:
         summary = {
@@ -644,6 +698,15 @@ class DurableAnalysisWorker:
             "total_output_rows": result.total_output_rows,
         }
         if result.outcome == AnalysisRunOutcome.DATASETS_PREPARED:
+            if self._planning_service is not None:
+                await self._finish_planning(
+                    run=run,
+                    lease_attempt=lease_attempt,
+                    result=result,
+                    dataset_handles=dataset_handles,
+                    phase7_elapsed_ms=elapsed_ms,
+                )
+                return
             await self._state_machine.transition(
                 user_id=run.user_id,
                 run_id=run.run_id,
@@ -708,6 +771,183 @@ class DurableAnalysisWorker:
             warnings=result.warnings,
             errors=result.errors,
             elapsed_ms=elapsed_ms,
+        )
+
+    async def _finish_planning(
+        self,
+        *,
+        run: AnalysisRun,
+        lease_attempt: int,
+        result: Phase7ExecutionResult,
+        dataset_handles: tuple[DatasetHandle, ...],
+        phase7_elapsed_ms: float,
+    ) -> None:
+        artifacts = result.planning_artifacts
+        if artifacts is None:
+            await self._finish_failed(
+                run=run,
+                lease_attempt=lease_attempt,
+                error=RunIssueSummary(
+                    code="planning_artifacts_missing",
+                    message="Prepared evidence did not include planning artifacts.",
+                    retryable=False,
+                ),
+                warnings=result.warnings,
+                errors=result.errors,
+                elapsed_ms=phase7_elapsed_ms,
+            )
+            return
+        planning_started = monotonic()
+        assert self._planning_service is not None
+        planning = await self._planning_service.create_plan(
+            run=run,
+            dataset_handles=dataset_handles,
+            requirements=artifacts.requirements,
+            profiles=artifacts.dataset_profiles,
+            normalization=artifacts.normalization,
+            reporter=_DurablePlanningReporter(
+                state_machine=self._state_machine,
+                run=run,
+                worker_id=self._worker_id,
+                lease_attempt=lease_attempt,
+            ),
+        )
+        planning_elapsed_ms = (monotonic() - planning_started) * 1000
+        token_usage = _merge_usage(result.token_usage, planning.token_usage)
+        model_versions = {
+            **result.model_versions,
+            **(
+                {"planner": planning.plan.model}
+                if planning.plan is not None
+                else {}
+            ),
+        }
+        prompt_versions = {
+            **result.prompt_versions,
+            **(
+                {"planner": planning.plan.prompt_version}
+                if planning.plan is not None
+                else {}
+            ),
+        }
+        base_summary = {
+            "warnings_summary": (*result.warnings, *planning.warnings),
+            "errors_summary": (*result.errors, *planning.errors),
+            "final_dataset_ids": result.final_dataset_ids,
+            "model_versions": model_versions,
+            "prompt_versions": prompt_versions,
+            "token_usage": token_usage,
+            "timings_ms": {
+                "phase_1_to_7": phase7_elapsed_ms,
+                "planning": planning_elapsed_ms,
+            },
+        }
+        if planning.outcome == PlanningOutcome.FAILED:
+            error = (
+                planning.errors[0]
+                if planning.errors
+                else RunIssueSummary(
+                    code="planning_failed",
+                    message="A safe analysis plan could not be generated.",
+                    retryable=True,
+                )
+            )
+            await self._state_machine.transition(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                target_status=AnalysisRunStatus.FAILED,
+                target_phase=AnalysisRunPhase.COMPLETED,
+                outcome=AnalysisRunOutcome.FAILED,
+                event_type=AnalysisEventType.RUN_FAILED,
+                payload={
+                    "code": error.code,
+                    "message": error.message,
+                    "retryable": error.retryable,
+                },
+                deduplication_key=f"attempt-{lease_attempt}:planning-failed",
+                worker_id=self._worker_id,
+                lease_attempt=lease_attempt,
+                summary_updates=base_summary,
+            )
+            return
+        if planning.outcome == PlanningOutcome.CLARIFICATION_REQUIRED:
+            await self._state_machine.transition(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                target_status=AnalysisRunStatus.WAITING,
+                target_phase=AnalysisRunPhase.PLAN_VALIDATION,
+                outcome=AnalysisRunOutcome.CLARIFICATION_REQUIRED,
+                event_type=AnalysisEventType.CLARIFICATION_REQUIRED,
+                payload={
+                    "stage": "plan_validation",
+                    "message": planning.clarification or "Clarification is required.",
+                    "validation_attempts": len(planning.reports),
+                },
+                deduplication_key=(
+                    f"attempt-{lease_attempt}:planning-clarification"
+                ),
+                worker_id=self._worker_id,
+                lease_attempt=lease_attempt,
+                summary_updates=base_summary,
+            )
+            return
+        plan = planning.plan
+        assert plan is not None
+        approval_status = (
+            RunApprovalStatus.PENDING
+            if planning.outcome == PlanningOutcome.APPROVAL_REQUIRED
+            else RunApprovalStatus.NOT_REQUIRED
+        )
+        plan_summary = {
+            **base_summary,
+            "current_plan_id": plan.plan_id,
+            "current_plan_revision": plan.revision,
+            "current_plan_hash": plan.plan_hash,
+            "plan_approval_status": approval_status,
+        }
+        payload = {
+            "plan_id": plan.plan_id,
+            "revision": plan.revision,
+            "plan_hash": plan.plan_hash,
+            "step_count": len(plan.steps),
+            "approval_required": plan.approval_policy.plan_approval_required,
+            "approval_reasons": [
+                reason.value
+                for reason in plan.approval_policy.plan_approval_reasons
+            ],
+            "final_patch_approval_required": (
+                plan.approval_policy.final_patch_approval_required
+            ),
+        }
+        if planning.outcome == PlanningOutcome.APPROVAL_REQUIRED:
+            await self._state_machine.transition(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                target_status=AnalysisRunStatus.WAITING,
+                target_phase=AnalysisRunPhase.APPROVAL,
+                outcome=AnalysisRunOutcome.PLAN_READY,
+                event_type=AnalysisEventType.PLAN_APPROVAL_REQUIRED,
+                payload=payload,
+                deduplication_key=(
+                    f"attempt-{lease_attempt}:plan-approval-required"
+                ),
+                worker_id=self._worker_id,
+                lease_attempt=lease_attempt,
+                summary_updates=plan_summary,
+            )
+            return
+        await self._state_machine.transition(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            target_status=AnalysisRunStatus.SUCCEEDED,
+            target_phase=AnalysisRunPhase.COMPLETED,
+            outcome=AnalysisRunOutcome.PLAN_READY,
+            event_type=AnalysisEventType.PLAN_READY,
+            payload=payload,
+            deduplication_key=f"attempt-{lease_attempt}:plan-ready",
+            worker_id=self._worker_id,
+            lease_attempt=lease_attempt,
+            summary_updates=plan_summary,
         )
 
     async def _finish_failed(
@@ -817,3 +1057,16 @@ __all__ = [
     "AnalysisWorkerConfig",
     "DurableAnalysisWorker",
 ]
+
+
+def _merge_usage(left: TokenUsage, right: TokenUsage) -> TokenUsage:
+    input_tokens = left.input_tokens + right.input_tokens
+    output_tokens = left.output_tokens + right.output_tokens
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=input_tokens + output_tokens,
+        estimated_cost_usd=(
+            left.estimated_cost_usd + right.estimated_cost_usd
+        ),
+    )

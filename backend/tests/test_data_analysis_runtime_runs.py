@@ -42,8 +42,12 @@ def _operator_matches(*, actual: Any, exists: bool, expression: dict[str, Any]) 
             return False
         if operator == "$lte" and not (exists and actual <= expected):
             return False
-        if operator == "$in" and actual not in expected:
-            return False
+        if operator == "$in":
+            if isinstance(actual, (list, tuple)):
+                if not set(actual).intersection(expected):
+                    return False
+            elif actual not in expected:
+                return False
         if operator == "$nin" and actual in expected:
             return False
         if operator == "$ne" and actual == expected:
@@ -67,8 +71,23 @@ def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
                 return False
             continue
 
-        exists = key in document
-        actual = document.get(key)
+        actual: Any = document
+        exists = True
+        for segment in key.split("."):
+            if isinstance(actual, dict) and segment in actual:
+                actual = actual[segment]
+                continue
+            if (
+                isinstance(actual, (list, tuple))
+                and segment.isdigit()
+                and int(segment) < len(actual)
+            ):
+                actual = actual[int(segment)]
+                continue
+            else:
+                exists = False
+                actual = None
+                break
         if isinstance(expected, dict) and any(
             str(operator).startswith("$") for operator in expected
         ):
@@ -159,6 +178,45 @@ class _Collection:
                 )
                 if duplicate_sequence or duplicate_command:
                     raise DuplicateKeyError("duplicate analysis event")
+            elif self.name == "analysis_plans":
+                if (
+                    existing["user_id"],
+                    existing["run_id"],
+                    existing["revision"],
+                ) == (
+                    candidate["user_id"],
+                    candidate["run_id"],
+                    candidate["revision"],
+                ) or (
+                    existing["user_id"],
+                    existing["run_id"],
+                    existing["plan_id"],
+                ) == (
+                    candidate["user_id"],
+                    candidate["run_id"],
+                    candidate["plan_id"],
+                ):
+                    raise DuplicateKeyError("duplicate analysis plan")
+                if (
+                    existing.get("reservation_active") is True
+                    and candidate.get("reservation_active") is True
+                    and existing["user_id"] == candidate["user_id"]
+                    and existing["workspace_id"] == candidate["workspace_id"]
+                    and set(existing.get("write_target_keys", ())).intersection(
+                        candidate.get("write_target_keys", ())
+                    )
+                ):
+                    raise DuplicateKeyError("duplicate write reservation")
+            elif self.name == "analysis_patch_proposals" and (
+                existing["user_id"],
+                existing["run_id"],
+                existing["patch_id"],
+            ) == (
+                candidate["user_id"],
+                candidate["run_id"],
+                candidate["patch_id"],
+            ):
+                raise DuplicateKeyError("duplicate patch proposal")
 
     async def insert_one(
         self,
@@ -180,17 +238,20 @@ class _Collection:
         query: dict[str, Any],
         *_args: Any,
         session: Any = None,
-        **_kwargs: Any,
+        **kwargs: Any,
     ) -> dict[str, Any] | None:
         self.sessions.append(session)
-        return next(
-            (
-                deepcopy(document)
-                for document in self.documents
-                if _matches(document, query)
-            ),
-            None,
-        )
+        matches = [
+            deepcopy(document)
+            for document in self.documents
+            if _matches(document, query)
+        ]
+        for field, order in reversed(kwargs.get("sort") or ()):
+            matches.sort(
+                key=lambda item: item.get(field),
+                reverse=order == -1,
+            )
+        return matches[0] if matches else None
 
     def find(
         self,
@@ -223,6 +284,24 @@ class _Collection:
             self.documents[index] = updated
             return deepcopy(updated)
         return None
+
+    async def update_many(
+        self,
+        query: dict[str, Any],
+        update: dict[str, Any],
+        *,
+        session: Any = None,
+    ) -> SimpleNamespace:
+        self.sessions.append(session)
+        count = 0
+        for index, document in enumerate(self.documents):
+            if not _matches(document, query):
+                continue
+            updated = deepcopy(document)
+            updated.update(deepcopy(update.get("$set", {})))
+            self.documents[index] = updated
+            count += 1
+        return SimpleNamespace(modified_count=count)
 
 
 class _Session:
@@ -265,6 +344,10 @@ class _Database:
         self.collections = {
             "analysis_runs": _Collection("analysis_runs"),
             "analysis_run_events": _Collection("analysis_run_events"),
+            "analysis_plans": _Collection("analysis_plans"),
+            "analysis_patch_proposals": _Collection(
+                "analysis_patch_proposals"
+            ),
         }
         self.client = _Client(self)
 

@@ -40,6 +40,7 @@ from .contracts import (
     Phase7ExecutionCancelled,
     Phase7ExecutionResult,
     Phase7InputError,
+    Phase7PlanningArtifacts,
     Phase7Progress,
     Phase7ProgressReporter,
     StreamingAnalysisGraph,
@@ -526,6 +527,14 @@ class Phase7AnalysisAdapter:
                     NormalizationResult,
                     final_state.get("normalization_result")
                 )
+                requirements = _artifact(
+                    AnalysisRequirements,
+                    final_state.get("analysis_requirements"),
+                )
+                profiles = _artifact(
+                    DatasetProfiles,
+                    final_state.get("dataset_profiles"),
+                )
             except ValidationError:
                 return self._failed_result(
                     final_state=final_state,
@@ -563,6 +572,14 @@ class Phase7AnalysisAdapter:
                 total_output_rows=artifact.total_output_rows,
                 warnings=warnings,
                 errors=errors,
+                # The graph already validates these checkpoint artifacts at
+                # their producing nodes. Avoid recursively rebuilding large
+                # immutable profile models on the worker boundary.
+                planning_artifacts=Phase7PlanningArtifacts.model_construct(
+                    requirements=requirements,
+                    dataset_profiles=profiles,
+                    normalization=artifact,
+                ),
             )
 
         if graph_phase == AnalysisPhase.FAILED:

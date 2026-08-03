@@ -280,6 +280,64 @@ ANALYSIS_INDEX_DEFINITIONS = (
             ),
         ),
     ),
+    CollectionIndexDefinitions(
+        collection_name="analysis_plans",
+        indexes=(
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("run_id", ASCENDING),
+                    ("revision", ASCENDING),
+                ),
+                name="uq_analysis_plans_run_revision",
+                unique=True,
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("run_id", ASCENDING),
+                    ("plan_id", ASCENDING),
+                ),
+                name="uq_analysis_plans_identity",
+                unique=True,
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("workspace_id", ASCENDING),
+                    ("write_target_keys", ASCENDING),
+                ),
+                name="uq_analysis_plans_active_write_reservations",
+                unique=True,
+                partial_filter=MappingProxyType(
+                    {"reservation_active": True}
+                ),
+            ),
+        ),
+    ),
+    CollectionIndexDefinitions(
+        collection_name="analysis_patch_proposals",
+        indexes=(
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("run_id", ASCENDING),
+                    ("patch_id", ASCENDING),
+                ),
+                name="uq_analysis_patch_proposals_identity",
+                unique=True,
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("workspace_id", ASCENDING),
+                    ("approval.status", ASCENDING),
+                    ("created_at", DESCENDING),
+                ),
+                name="ix_analysis_patch_proposals_approval_queue",
+            ),
+        ),
+    ),
 )
 
 

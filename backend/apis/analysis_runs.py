@@ -37,6 +37,7 @@ from scripts.data_analysis_agent.runtime.models.runs import (
     AnalysisRunPhase,
     AnalysisRunStatus,
     DatasetVersionReference,
+    RunApprovalStatus,
     RunIssueSummary,
     TokenUsage,
 )
@@ -208,6 +209,10 @@ class AnalysisRunView(BaseModel):
     selected_document_ids: tuple[str, ...]
     final_artifact_ids: tuple[str, ...]
     final_dataset_ids: tuple[str, ...]
+    current_plan_id: str | None
+    current_plan_revision: int | None
+    current_plan_hash: str | None
+    plan_approval_status: RunApprovalStatus | None
     warnings_summary: tuple[RunIssueSummary, ...]
     errors_summary: tuple[RunIssueSummary, ...]
     model_versions: dict[str, str]

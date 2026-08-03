@@ -157,6 +157,51 @@ class Settings:
         os.getenv("ANALYSIS_WORKER_RENEW_SECONDS", "20")
     )
 
+    # Typed planning and deterministic validation limits. Plans contain only
+    # schemas/statistics/references, never full source rows.
+    analysis_max_planning_context_bytes: int = int(
+        os.getenv("ANALYSIS_MAX_PLANNING_CONTEXT_BYTES", str(2 * 1024 * 1024))
+    )
+    analysis_max_plan_bytes: int = int(
+        os.getenv("ANALYSIS_MAX_PLAN_BYTES", str(1024 * 1024))
+    )
+    analysis_max_plan_steps: int = int(
+        os.getenv("ANALYSIS_MAX_PLAN_STEPS", "32")
+    )
+    analysis_max_plan_rows_scanned: int = int(
+        os.getenv("ANALYSIS_MAX_PLAN_ROWS_SCANNED", "2000000")
+    )
+    analysis_max_plan_cells_written: int = int(
+        os.getenv("ANALYSIS_MAX_PLAN_CELLS_WRITTEN", "250000")
+    )
+    analysis_max_plan_joins: int = int(
+        os.getenv("ANALYSIS_MAX_PLAN_JOINS", "4")
+    )
+    analysis_max_python_memory_mb: int = int(
+        os.getenv("ANALYSIS_MAX_PYTHON_MEMORY_MB", "512")
+    )
+    analysis_max_python_seconds: float = float(
+        os.getenv("ANALYSIS_MAX_PYTHON_SECONDS", "120")
+    )
+    analysis_max_plan_cost_usd: float = float(
+        os.getenv("ANALYSIS_MAX_PLAN_COST_USD", "1.0")
+    )
+    analysis_max_generated_rows: int = int(
+        os.getenv("ANALYSIS_MAX_GENERATED_ROWS", "100000")
+    )
+    analysis_max_chart_cardinality: int = int(
+        os.getenv("ANALYSIS_MAX_CHART_CARDINALITY", "500")
+    )
+    analysis_plan_approval_python_seconds: float = float(
+        os.getenv("ANALYSIS_PLAN_APPROVAL_PYTHON_SECONDS", "15")
+    )
+    analysis_plan_approval_cost_usd: float = float(
+        os.getenv("ANALYSIS_PLAN_APPROVAL_COST_USD", "0.10")
+    )
+    analysis_plan_approval_generated_rows: int = int(
+        os.getenv("ANALYSIS_PLAN_APPROVAL_GENERATED_ROWS", "25000")
+    )
+
     def __post_init__(self) -> None:
         phase8_positive = {
             "ANALYSIS_MAX_INLINE_CELLS": self.analysis_max_inline_cells,
@@ -206,6 +251,29 @@ class Settings:
             "ANALYSIS_WORKER_POLL_SECONDS": self.analysis_worker_poll_seconds,
             "ANALYSIS_WORKER_LEASE_SECONDS": self.analysis_worker_lease_seconds,
             "ANALYSIS_WORKER_RENEW_SECONDS": self.analysis_worker_renew_seconds,
+            "ANALYSIS_MAX_PLAN_BYTES": self.analysis_max_plan_bytes,
+            "ANALYSIS_MAX_PLANNING_CONTEXT_BYTES": (
+                self.analysis_max_planning_context_bytes
+            ),
+            "ANALYSIS_MAX_PLAN_STEPS": self.analysis_max_plan_steps,
+            "ANALYSIS_MAX_PLAN_ROWS_SCANNED": (
+                self.analysis_max_plan_rows_scanned
+            ),
+            "ANALYSIS_MAX_PLAN_CELLS_WRITTEN": (
+                self.analysis_max_plan_cells_written
+            ),
+            "ANALYSIS_MAX_PLAN_JOINS": self.analysis_max_plan_joins,
+            "ANALYSIS_MAX_PYTHON_MEMORY_MB": (
+                self.analysis_max_python_memory_mb
+            ),
+            "ANALYSIS_MAX_PYTHON_SECONDS": self.analysis_max_python_seconds,
+            "ANALYSIS_MAX_GENERATED_ROWS": self.analysis_max_generated_rows,
+            "ANALYSIS_MAX_CHART_CARDINALITY": (
+                self.analysis_max_chart_cardinality
+            ),
+            "ANALYSIS_PLAN_APPROVAL_GENERATED_ROWS": (
+                self.analysis_plan_approval_generated_rows
+            ),
         }
         invalid = [name for name, value in phase8_positive.items() if value <= 0]
         if invalid:
@@ -271,6 +339,36 @@ class Settings:
         if self.analysis_max_xlsx_compression_ratio <= 1:
             raise ValueError(
                 "ANALYSIS_MAX_XLSX_COMPRESSION_RATIO must exceed 1"
+            )
+        if not 1 <= self.analysis_max_plan_steps <= 64:
+            raise ValueError("ANALYSIS_MAX_PLAN_STEPS must be between 1 and 64")
+        if not 1 <= self.analysis_max_plan_joins <= 16:
+            raise ValueError("ANALYSIS_MAX_PLAN_JOINS must be between 1 and 16")
+        if self.analysis_max_plan_cost_usd < 0:
+            raise ValueError("ANALYSIS_MAX_PLAN_COST_USD cannot be negative")
+        if self.analysis_plan_approval_python_seconds < 0:
+            raise ValueError(
+                "ANALYSIS_PLAN_APPROVAL_PYTHON_SECONDS cannot be negative"
+            )
+        if self.analysis_plan_approval_cost_usd < 0:
+            raise ValueError(
+                "ANALYSIS_PLAN_APPROVAL_COST_USD cannot be negative"
+            )
+        if (
+            self.analysis_plan_approval_python_seconds
+            > self.analysis_max_python_seconds
+        ):
+            raise ValueError(
+                "Python approval threshold cannot exceed its hard limit"
+            )
+        if self.analysis_plan_approval_cost_usd > self.analysis_max_plan_cost_usd:
+            raise ValueError("cost approval threshold cannot exceed its hard limit")
+        if (
+            self.analysis_plan_approval_generated_rows
+            > self.analysis_max_generated_rows
+        ):
+            raise ValueError(
+                "generated-row approval threshold cannot exceed its hard limit"
             )
 
     @property

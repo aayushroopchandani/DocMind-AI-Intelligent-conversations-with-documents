@@ -26,6 +26,14 @@ from .datasets import (
     DatasetCatalogRepository,
     MongoDatasetCatalogRepository,
 )
+from .plans import (
+    AnalysisPlanConflictError,
+    AnalysisPlanNotFoundError,
+    AnalysisPlanRepository,
+    AnalysisPlanRepositoryError,
+    MongoAnalysisPlanRepository,
+    PlanDecisionResult,
+)
 
 __all__ = [
     "ArtifactNotFoundError",
@@ -41,13 +49,19 @@ __all__ = [
     "AnalysisRunNotFoundError",
     "AnalysisRunStore",
     "AnalysisRunStoreError",
+    "AnalysisPlanConflictError",
+    "AnalysisPlanNotFoundError",
+    "AnalysisPlanRepository",
+    "AnalysisPlanRepositoryError",
     "CreateRunResult",
     "DatasetCatalogConflictError",
     "DatasetCatalogError",
     "DatasetCatalogRepository",
     "MongoArtifactRepository",
+    "MongoAnalysisPlanRepository",
     "MongoAnalysisRunStore",
     "MongoDatasetCatalogRepository",
     "RunMutationResult",
+    "PlanDecisionResult",
     "new_workspace_artifact",
 ]

@@ -122,6 +122,25 @@ def a1_dimensions(value: str) -> tuple[int, int]:
     return _parse_a1_range(value).dimensions
 
 
+def a1_ranges_overlap(left: str, right: str) -> bool:
+    """Return whether two bounded ranges on the same sheet share any cell."""
+
+    left_range = _parse_a1_range(left)
+    right_range = _parse_a1_range(right)
+    if (
+        left_range.sheet_name is not None
+        and right_range.sheet_name is not None
+        and left_range.sheet_name.casefold() != right_range.sheet_name.casefold()
+    ):
+        return False
+    return not (
+        left_range.end_column < right_range.start_column
+        or right_range.end_column < left_range.start_column
+        or left_range.end_row < right_range.start_row
+        or right_range.end_row < left_range.start_row
+    )
+
+
 def a1_subrange(
     value: str,
     *,
@@ -421,6 +440,7 @@ __all__ = [
     "WorkbookCellType",
     "WorkbookRangeSnapshot",
     "a1_dimensions",
+    "a1_ranges_overlap",
     "a1_subrange",
     "canonical_snapshot_bytes",
     "canonical_snapshot_hash",

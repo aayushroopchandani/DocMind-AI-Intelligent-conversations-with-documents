@@ -56,6 +56,7 @@ _ALLOWED_STATUS_TRANSITIONS: dict[
     AnalysisRunStatus.WAITING: frozenset(
         {
             AnalysisRunStatus.ACTIVE,
+            AnalysisRunStatus.SUCCEEDED,
             AnalysisRunStatus.FAILED,
             AnalysisRunStatus.CANCELLED,
             AnalysisRunStatus.EXPIRED,
@@ -72,12 +73,17 @@ _PHASE_RANK = {
     AnalysisRunPhase.EVIDENCE_PREPARATION: 1,
     AnalysisRunPhase.REQUIREMENTS: 2,
     AnalysisRunPhase.NORMALIZATION: 3,
-    AnalysisRunPhase.COMPLETED: 4,
+    AnalysisRunPhase.PLANNING: 4,
+    AnalysisRunPhase.PLAN_VALIDATION: 5,
+    AnalysisRunPhase.APPROVAL: 6,
+    AnalysisRunPhase.EXECUTION: 7,
+    AnalysisRunPhase.RESULT_VALIDATION: 8,
+    AnalysisRunPhase.PROPOSAL: 9,
+    AnalysisRunPhase.APPLICATION: 10,
+    AnalysisRunPhase.COMPLETED: 11,
 }
 
 _STATUS_EVENT = {
-    AnalysisRunStatus.WAITING: AnalysisEventType.CLARIFICATION_REQUIRED,
-    AnalysisRunStatus.SUCCEEDED: AnalysisEventType.RUN_COMPLETED,
     AnalysisRunStatus.FAILED: AnalysisEventType.RUN_FAILED,
     AnalysisRunStatus.CANCELLED: AnalysisEventType.RUN_CANCELLED,
     AnalysisRunStatus.EXPIRED: AnalysisEventType.RUN_EXPIRED,
@@ -95,6 +101,9 @@ _TERMINAL_EVENT_TYPES = frozenset(
         AnalysisEventType.RUN_FAILED,
         AnalysisEventType.RUN_CANCELLED,
         AnalysisEventType.RUN_EXPIRED,
+        AnalysisEventType.PLAN_READY,
+        AnalysisEventType.PLAN_APPROVED,
+        AnalysisEventType.PLAN_REJECTED,
     }
 )
 
@@ -108,6 +117,10 @@ _SUMMARY_UPDATE_FIELDS = frozenset(
         "timings_ms",
         "final_artifact_ids",
         "final_dataset_ids",
+        "current_plan_id",
+        "current_plan_revision",
+        "current_plan_hash",
+        "plan_approval_status",
     }
 )
 
@@ -622,17 +635,50 @@ class AnalysisRunStateMachine:
                 )
 
         if target_status == AnalysisRunStatus.WAITING:
-            if outcome != AnalysisRunOutcome.CLARIFICATION_REQUIRED:
+            expected_wait_event = {
+                AnalysisRunOutcome.CLARIFICATION_REQUIRED: (
+                    AnalysisEventType.CLARIFICATION_REQUIRED
+                ),
+                AnalysisRunOutcome.PLAN_READY: (
+                    AnalysisEventType.PLAN_APPROVAL_REQUIRED
+                ),
+            }.get(outcome)
+            if expected_wait_event is None or event_type != expected_wait_event:
                 raise InvalidAnalysisRunTransition(
-                    "waiting runs must require clarification"
+                    "waiting runs must request clarification or plan approval"
                 )
         elif target_status == AnalysisRunStatus.SUCCEEDED:
             if outcome not in {
                 AnalysisRunOutcome.DATASETS_PREPARED,
                 AnalysisRunOutcome.UNANSWERABLE,
+                AnalysisRunOutcome.PLAN_READY,
+                AnalysisRunOutcome.REJECTED,
+                AnalysisRunOutcome.COMPLETED,
             }:
                 raise InvalidAnalysisRunTransition(
                     "succeeded runs need a successful business outcome"
+                )
+            allowed_events = {
+                AnalysisRunOutcome.DATASETS_PREPARED: {
+                    AnalysisEventType.RUN_COMPLETED,
+                },
+                AnalysisRunOutcome.UNANSWERABLE: {
+                    AnalysisEventType.RUN_COMPLETED,
+                },
+                AnalysisRunOutcome.PLAN_READY: {
+                    AnalysisEventType.PLAN_READY,
+                    AnalysisEventType.PLAN_APPROVED,
+                },
+                AnalysisRunOutcome.REJECTED: {
+                    AnalysisEventType.PLAN_REJECTED,
+                },
+                AnalysisRunOutcome.COMPLETED: {
+                    AnalysisEventType.RUN_COMPLETED,
+                },
+            }[outcome]
+            if event_type not in allowed_events:
+                raise InvalidAnalysisRunTransition(
+                    "succeeded transition uses an incompatible event"
                 )
         elif target_status in _TERMINAL_OUTCOME:
             if outcome != _TERMINAL_OUTCOME[target_status]:
