@@ -3,6 +3,10 @@
 import React, { useEffect, useRef } from 'react';
 import { Renderer, Triangle, Program, Mesh } from 'ogl';
 
+const MAX_DEVICE_PIXEL_RATIO = 1;
+const MAX_FRAMES_PER_SECOND = 30;
+const MIN_FRAME_INTERVAL_MS = 1000 / MAX_FRAMES_PER_SECOND;
+
 type PrismProps = {
   height?: number;
   baseWidth?: number;
@@ -59,11 +63,14 @@ const Prism: React.FC<PrismProps> = ({
     const RSX = 1;
     const RSY = 1;
     const RSZ = 1;
-    const TS = Math.max(0, timeScale || 1);
+    const TS = Math.max(0, timeScale);
     const HOVSTR = Math.max(0, hoverStrength || 1);
     const INERT = Math.max(0, Math.min(1, inertia || 0.12));
 
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    // A DPR of 2 quadruples the number of shader fragments. This backdrop is
+    // intentionally soft, so one device pixel per CSS pixel preserves the
+    // visual while greatly reducing GPU work on high-density laptop screens.
+    const dpr = Math.min(MAX_DEVICE_PIXEL_RATIO, window.devicePixelRatio || 1);
     const renderer = new Renderer({
       dpr,
       alpha: transparent,
@@ -177,7 +184,7 @@ const Prism: React.FC<PrismProps> = ({
           wob = mat2(c0, c1, c2, c0);
         }
 
-        const int STEPS = 100;
+        const int STEPS = 40;
         for (int i = 0; i < STEPS; i++) {
           p = vec3(f, z);
           p.xz = p.xz * wob;
@@ -251,10 +258,6 @@ const Prism: React.FC<PrismProps> = ({
       offsetPxBuf[1] = offY * dpr;
       program.uniforms.uPxScale.value = 1 / ((gl.drawingBufferHeight || 1) * 0.1 * SCALE);
     };
-    const ro = new ResizeObserver(resize);
-    ro.observe(container);
-    resize();
-
     const rotBuf = new Float32Array(9);
     const setMat3FromEuler = (yawY: number, pitchX: number, rollZ: number, out: Float32Array) => {
       const cy = Math.cos(yawY),
@@ -288,10 +291,15 @@ const Prism: React.FC<PrismProps> = ({
     };
 
     const NOISE_IS_ZERO = NOISE < 1e-6;
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let prefersReducedMotion = reducedMotionQuery.matches;
+    let documentIsVisible = !document.hidden;
+    let canvasIsVisible = !suspendWhenOffscreen;
+    let lastRenderedAt = Number.NEGATIVE_INFINITY;
     let raf = 0;
     const t0 = performance.now();
     const startRAF = () => {
-      if (raf) return;
+      if (raf || !documentIsVisible || !canvasIsVisible) return;
       raf = requestAnimationFrame(render);
     };
     const stopRAF = () => {
@@ -337,7 +345,7 @@ const Prism: React.FC<PrismProps> = ({
     if (animationType === 'hover') {
       onPointerMove = (e: PointerEvent) => {
         onMove(e);
-        startRAF();
+        if (!prefersReducedMotion) startRAF();
       };
       window.addEventListener('pointermove', onPointerMove, { passive: true });
       window.addEventListener('mouseleave', onLeave);
@@ -350,10 +358,26 @@ const Prism: React.FC<PrismProps> = ({
     }
 
     const render = (t: number) => {
-      const time = (t - t0) * 0.001;
+      raf = 0;
+      if (!documentIsVisible || !canvasIsVisible) return;
+
+      // requestAnimationFrame follows the display refresh rate, which is often
+      // 60–120 Hz. Skip surplus callbacks so the expensive GPU draw runs at
+      // no more than 30 FPS while still remaining synchronized to the display.
+      if (
+        !prefersReducedMotion &&
+        t - lastRenderedAt < MIN_FRAME_INTERVAL_MS - 1
+      ) {
+        startRAF();
+        return;
+      }
+      lastRenderedAt = t;
+
+      // Reduced-motion users get the same Prism composition as a static frame.
+      const time = prefersReducedMotion ? 0 : (t - t0) * 0.001;
       program.uniforms.iTime.value = time;
 
-      let continueRAF = true;
+      let continueRAF = !prefersReducedMotion;
 
       if (animationType === 'hover') {
         const maxPitch = 0.6 * HOVSTR;
@@ -396,25 +420,51 @@ const Prism: React.FC<PrismProps> = ({
 
       renderer.render({ scene: mesh });
       if (continueRAF) {
-        raf = requestAnimationFrame(render);
-      } else {
-        raf = 0;
+        startRAF();
       }
     };
 
-    interface PrismContainer extends HTMLElement {
-      __prismIO?: IntersectionObserver;
-    }
+    // A resize clears the WebGL drawing buffer. Queue a fresh frame so static
+    // reduced-motion mode also remains visible after the viewport changes.
+    const ro = new ResizeObserver(() => {
+      resize();
+      lastRenderedAt = Number.NEGATIVE_INFINITY;
+      startRAF();
+    });
+    ro.observe(container);
+    resize();
 
+    const onVisibilityChange = () => {
+      documentIsVisible = !document.hidden;
+      if (documentIsVisible) {
+        lastRenderedAt = Number.NEGATIVE_INFINITY;
+        startRAF();
+      } else {
+        stopRAF();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    const onReducedMotionChange = (event: MediaQueryListEvent) => {
+      prefersReducedMotion = event.matches;
+      lastRenderedAt = Number.NEGATIVE_INFINITY;
+      stopRAF();
+      startRAF();
+    };
+    reducedMotionQuery.addEventListener('change', onReducedMotionChange);
+
+    let io: IntersectionObserver | null = null;
     if (suspendWhenOffscreen) {
-      const io = new IntersectionObserver(entries => {
-        const vis = entries.some(e => e.isIntersecting);
-        if (vis) startRAF();
-        else stopRAF();
+      io = new IntersectionObserver(entries => {
+        canvasIsVisible = entries.some(e => e.isIntersecting);
+        if (canvasIsVisible) {
+          lastRenderedAt = Number.NEGATIVE_INFINITY;
+          startRAF();
+        } else {
+          stopRAF();
+        }
       });
       io.observe(container);
-      startRAF();
-      (container as PrismContainer).__prismIO = io;
     } else {
       startRAF();
     }
@@ -422,15 +472,13 @@ const Prism: React.FC<PrismProps> = ({
     return () => {
       stopRAF();
       ro.disconnect();
+      io?.disconnect();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      reducedMotionQuery.removeEventListener('change', onReducedMotionChange);
       if (animationType === 'hover') {
         if (onPointerMove) window.removeEventListener('pointermove', onPointerMove as EventListener);
         window.removeEventListener('mouseleave', onLeave);
         window.removeEventListener('blur', onBlur);
-      }
-      if (suspendWhenOffscreen) {
-        const io = (container as PrismContainer).__prismIO as IntersectionObserver | undefined;
-        if (io) io.disconnect();
-        delete (container as PrismContainer).__prismIO;
       }
       if (gl.canvas.parentElement === container) container.removeChild(gl.canvas);
     };
