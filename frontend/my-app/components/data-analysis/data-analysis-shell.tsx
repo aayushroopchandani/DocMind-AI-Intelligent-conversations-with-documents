@@ -12,6 +12,7 @@ import { DeleteArtifactDialog } from "@/components/data-analysis/dialogs/delete-
 import { RenameArtifactDialog } from "@/components/data-analysis/dialogs/rename-artifact-dialog";
 import { RunHistorySheet } from "@/components/data-analysis/history/run-history-sheet";
 import { WorkspacePanels } from "@/components/data-analysis/workspace-panels";
+import { AnalysisRunProvider } from "@/components/data-analysis/analysis-run-provider";
 import {
   useWorkspace,
   WorkspaceProvider,
@@ -21,10 +22,12 @@ import {
 export function DataAnalysisShell() {
   return (
     <WorkspaceProvider>
-      <TooltipProvider>
-        <DataAnalysisLayout />
-        <Toaster theme="dark" position="bottom-center" />
-      </TooltipProvider>
+      <AnalysisRunProvider>
+        <TooltipProvider>
+          <DataAnalysisLayout />
+          <Toaster theme="dark" position="bottom-center" />
+        </TooltipProvider>
+      </AnalysisRunProvider>
     </WorkspaceProvider>
   );
 }

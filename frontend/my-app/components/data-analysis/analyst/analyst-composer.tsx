@@ -5,7 +5,6 @@ import { SendHorizonal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { notifyPendingFeature } from "@/lib/data-analysis/feedback";
 import type { AnalystRequestContext } from "@/lib/data-analysis/types";
 import { usePdfAnalystContext } from "@/lib/data-analysis/use-pdf-analyst-context";
 import { activeArtifact } from "@/lib/data-analysis/workspace-state";
@@ -15,14 +14,12 @@ import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 /**
  * Prompt composer for the AI analyst.
  *
- * The backend is not connected yet, so `onSubmit` defaults to an honest
- * "still being connected" notice, the draft is preserved and **no network
- * request is made**. The request context — mode, prompt, active artifact and
- * its live spreadsheet/PDF state — is assembled here regardless, so shipping
- * the agent service means passing a real `onSubmit` and nothing else.
+ * It captures the lightweight UI context; the durable run provider resolves
+ * the live workbook snapshot or PDF ingestion identity before submission.
  */
 interface AnalystComposerProps {
-  onSubmit?: (request: AnalystRequestContext) => void;
+  onSubmit: (request: AnalystRequestContext) => Promise<boolean>;
+  pending?: boolean;
   draft: string;
   onDraftChange: (draft: string) => void;
 }
@@ -39,6 +36,7 @@ export function AnalystComposer({
   onSubmit,
   draft,
   onDraftChange,
+  pending = false,
 }: AnalystComposerProps) {
   const { state } = useWorkspace();
   const pdfContext = usePdfAnalystContext();
@@ -58,12 +56,11 @@ export function AnalystComposer({
     textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
   }, []);
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     const prompt = draft.trim();
     if (!prompt) return;
 
-    if (onSubmit) {
-      onSubmit({
+    const sent = await onSubmit({
         mode: state.analystMode,
         prompt,
         activeArtifactId: artifact?.id ?? null,
@@ -72,17 +69,13 @@ export function AnalystComposer({
           artifact?.type === "spreadsheet" ? state.analystContext : null,
         pdf: artifact?.type === "pdf" ? pdfContext : null,
       });
-      return;
-    }
-
-    // No backend yet: keep the draft so nothing the user typed is lost.
-    notifyPendingFeature("analyst");
-  }, [draft, onSubmit, state.analystMode, state.analystContext, artifact, pdfContext]);
+    if (sent) onDraftChange("");
+  }, [draft, onSubmit, onDraftChange, state.analystMode, state.analystContext, artifact, pdfContext]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      handleSend();
+      void handleSend();
     }
   };
 
@@ -120,8 +113,8 @@ export function AnalystComposer({
               <Button
                 size="icon-sm"
                 aria-label="Send message"
-                disabled={!draft.trim()}
-                onClick={handleSend}
+                disabled={!draft.trim() || pending}
+                onClick={() => void handleSend()}
                 className="shrink-0"
               >
                 <SendHorizonal />
@@ -132,7 +125,7 @@ export function AnalystComposer({
         </Tooltip>
       </div>
       <p className="pt-1.5 text-[11px] text-muted-foreground/60">
-        Backend connection pending — messages are not sent yet.
+        {pending ? "Creating a durable analysis run…" : "Plans are validated before any workbook change."}
       </p>
     </div>
   );

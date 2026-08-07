@@ -11,6 +11,7 @@ import { AnalystComposer } from "@/components/data-analysis/analyst/analyst-comp
 import { ProposedActionCard } from "@/components/data-analysis/analyst/proposed-action-card";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 import { cn } from "@/lib/utils";
+import { useAnalysisRuns } from "@/components/data-analysis/analysis-run-provider";
 
 const MODES: Array<{ value: AnalystMode; label: string }> = [
   { value: "ask", label: "Ask" },
@@ -57,6 +58,7 @@ interface AiAnalystPanelProps {
  */
 export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
   const { state, actions } = useWorkspace();
+  const runs = useAnalysisRuns();
   const [draft, setDraft] = useState("");
 
   const activeType = activeArtifact(state)?.type;
@@ -125,8 +127,8 @@ export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
             </p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
               {surface === "pdf"
-                ? "The analyst will read the page you are on, cite its sources and extract tables into spreadsheets once its backend is connected."
-                : "The analyst will read your selection, propose edits and build new artifacts once its backend is connected."}
+                ? "The analyst reads the active document through the same durable analysis pipeline and preserves every run."
+                : "The analyst snapshots your selection, validates a typed plan and asks before risky edits."}
             </p>
             <div className="mt-4 flex flex-wrap justify-center gap-1.5">
               {SUGGESTIONS[surface].map((suggestion) => (
@@ -142,11 +144,29 @@ export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
             </div>
           </div>
 
-          <ProposedActionCard />
+          {runs.activeRun ? (
+            <div className="rounded-lg border border-border/70 bg-muted/20 p-2.5">
+              <p className="line-clamp-2 text-xs font-medium text-foreground">{runs.activeRun.prompt}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {runs.activeRun.status} · {runs.activeRun.phase.replaceAll("_", " ")}
+              </p>
+            </div>
+          ) : null}
+          <ProposedActionCard
+            run={runs.activeRun}
+            plan={runs.activePlan}
+            onApprove={runs.approvePlan}
+            onReject={() => runs.rejectPlan("other")}
+          />
         </div>
       </ScrollArea>
 
-      <AnalystComposer draft={draft} onDraftChange={setDraft} />
+      <AnalystComposer
+        draft={draft}
+        onDraftChange={setDraft}
+        onSubmit={runs.submit}
+        pending={runs.submitting}
+      />
     </div>
   );
 }
