@@ -223,6 +223,7 @@ class DurableAnalysisWorker:
         try:
             while not self._stop.is_set():
                 try:
+                    await self._reconcile_abandoned_pauses()
                     await self._reconcile_abandoned_cancellations()
                     await self._reconcile_expired_runs()
                     self._remove_finished_tasks()
@@ -295,6 +296,24 @@ class DurableAnalysisWorker:
                 AnalysisRunConflictError,
                 AnalysisRunLeaseConflictError,
                 AnalysisRunNotFoundError,
+            ):
+                continue
+
+    async def _reconcile_abandoned_pauses(self) -> None:
+        runs = await self._state_machine.list_abandoned_pauses(
+            limit=self._config.recovery_batch_size,
+        )
+        for run in runs:
+            try:
+                await self._state_machine.finalize_requested_pause(
+                    user_id=run.user_id,
+                    run_id=run.run_id,
+                )
+            except (
+                AnalysisRunConflictError,
+                AnalysisRunLeaseConflictError,
+                AnalysisRunNotFoundError,
+                InvalidAnalysisRunTransition,
             ):
                 continue
 
@@ -375,6 +394,7 @@ class DurableAnalysisWorker:
                 lease_lost.set()
                 execution.cancel()
                 await asyncio.gather(execution, return_exceptions=True)
+                await self._finish_interrupted(run, lease_attempt)
                 return
             await execution
         except asyncio.CancelledError:
@@ -528,6 +548,7 @@ class DurableAnalysisWorker:
                 )
                 return (
                     latest.cancellation_requested
+                    or latest.pause_requested
                     or latest.status != AnalysisRunStatus.ACTIVE
                     or latest.worker_id != self._worker_id
                     or latest.lease_attempt != lease_attempt
@@ -552,13 +573,13 @@ class DurableAnalysisWorker:
                 elapsed_ms=(monotonic() - started) * 1000,
             )
         except Phase7ExecutionCancelled:
-            await self._finish_cancelled(run, lease_attempt)
+            await self._finish_interrupted(run, lease_attempt)
         except (
             AnalysisRunConflictError,
             AnalysisRunLeaseConflictError,
             InvalidAnalysisRunTransition,
         ):
-            await self._finish_cancelled_if_requested(run, lease_attempt)
+            await self._finish_interrupted(run, lease_attempt)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -987,7 +1008,7 @@ class DurableAnalysisWorker:
             AnalysisRunLeaseConflictError,
             InvalidAnalysisRunTransition,
         ):
-            await self._finish_cancelled_if_requested(run, lease_attempt)
+            await self._finish_interrupted(run, lease_attempt)
 
     async def _finish_cancelled(
         self,
@@ -1026,6 +1047,38 @@ class DurableAnalysisWorker:
         try:
             await self._finish_cancelled(run, lease_attempt)
         except AnalysisRunNotFoundError:
+            return
+
+    async def _finish_interrupted(
+        self,
+        run: AnalysisRun,
+        lease_attempt: int,
+    ) -> None:
+        """Honor cancel/pause in priority order at a worker-safe boundary."""
+
+        try:
+            latest = await self._state_machine.require_run(
+                user_id=run.user_id,
+                run_id=run.run_id,
+            )
+            if latest.status in TERMINAL_RUN_STATUSES:
+                return
+            if latest.cancellation_requested:
+                await self._finish_cancelled(run, lease_attempt)
+                return
+            if latest.pause_requested:
+                await self._state_machine.finalize_requested_pause(
+                    user_id=run.user_id,
+                    run_id=run.run_id,
+                    worker_id=self._worker_id,
+                    lease_attempt=lease_attempt,
+                )
+        except (
+            AnalysisRunConflictError,
+            AnalysisRunLeaseConflictError,
+            AnalysisRunNotFoundError,
+            InvalidAnalysisRunTransition,
+        ):
             return
 
     async def _best_effort_release(

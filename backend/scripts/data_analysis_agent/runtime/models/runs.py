@@ -27,6 +27,7 @@ class AnalysisRunStatus(str, Enum):
     CREATED = "created"
     ACTIVE = "active"
     WAITING = "waiting"
+    PAUSED = "paused"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -147,6 +148,20 @@ class AnalysisRun(BaseModel):
 
     cancellation_requested: bool = False
     cancellation_requested_at: datetime | None = None
+    pause_requested: bool = False
+    pause_requested_at: datetime | None = None
+    paused_at: datetime | None = None
+    checkpoint_id: str | None = Field(default=None, max_length=200)
+    last_completed_step_id: str | None = Field(default=None, max_length=200)
+    resume_count: int = Field(default=0, ge=0)
+    paused_from_status: AnalysisRunStatus | None = None
+    paused_from_phase: AnalysisRunPhase | None = None
+    paused_from_outcome: AnalysisRunOutcome | None = None
+
+    # A terminal run is never reopened. "Resume" from a terminal run creates
+    # a fresh run and records immutable lineage back to the original request.
+    parent_run_id: str | None = Field(default=None, max_length=36)
+    root_run_id: str | None = Field(default=None, max_length=36)
     worker_id: str | None = Field(default=None, max_length=200)
     lease_expires_at: datetime | None = None
     lease_attempt: int = Field(default=0, ge=0)
@@ -190,9 +205,11 @@ class AnalysisRun(BaseModel):
         validate_default=True,
     )
 
-    @field_validator("run_id", mode="before")
+    @field_validator("run_id", "parent_run_id", "root_run_id", mode="before")
     @classmethod
-    def normalize_run_id(cls, value: object) -> str:
+    def normalize_run_id(cls, value: object) -> str | None:
+        if value is None:
+            return None
         try:
             return str(UUID(str(value or "").strip()))
         except (ValueError, AttributeError) as exc:
@@ -212,6 +229,8 @@ class AnalysisRun(BaseModel):
         "chat_id",
         "active_artifact_id",
         "worker_id",
+        "checkpoint_id",
+        "last_completed_step_id",
         "current_plan_id",
         "input_artifact_version_ids",
         "final_artifact_ids",
@@ -294,6 +313,10 @@ class AnalysisRun(BaseModel):
             raise ValueError(
                 "cancellation_requested and cancellation_requested_at must agree"
             )
+        if self.pause_requested != (self.pause_requested_at is not None):
+            raise ValueError("pause_requested and pause_requested_at must agree")
+        if self.pause_requested and self.cancellation_requested:
+            raise ValueError("pause and cancellation cannot both be requested")
         if (self.worker_id is None) != (self.lease_expires_at is None):
             raise ValueError("worker_id and lease_expires_at must be set together")
         if self.worker_id is not None and self.lease_attempt < 1:
@@ -305,6 +328,7 @@ class AnalysisRun(BaseModel):
             in {
                 AnalysisRunStatus.ACTIVE,
                 AnalysisRunStatus.WAITING,
+                AnalysisRunStatus.PAUSED,
                 AnalysisRunStatus.SUCCEEDED,
             }
             and not self.inputs_ready
@@ -321,6 +345,30 @@ class AnalysisRun(BaseModel):
                 raise ValueError("terminal runs cannot retain an execution lease")
         elif self.completed_at is not None:
             raise ValueError("non-terminal runs cannot have completed_at")
+
+        paused_metadata = (
+            self.paused_at,
+            self.paused_from_status,
+            self.paused_from_phase,
+        )
+        if self.status == AnalysisRunStatus.PAUSED:
+            if any(value is None for value in paused_metadata):
+                raise ValueError("paused runs need checkpoint lifecycle metadata")
+            if self.worker_id is not None or self.pause_requested:
+                raise ValueError("paused runs cannot retain a lease or pause request")
+            if self.outcome is not None:
+                raise ValueError("paused runs cannot have a current outcome")
+            if self.paused_from_status not in {
+                AnalysisRunStatus.CREATED,
+                AnalysisRunStatus.ACTIVE,
+                AnalysisRunStatus.WAITING,
+            }:
+                raise ValueError("paused runs need a resumable prior status")
+        elif (
+            any(value is not None for value in paused_metadata)
+            or self.paused_from_outcome is not None
+        ):
+            raise ValueError("only paused runs may retain paused lifecycle metadata")
 
         expected_outcome = {
             AnalysisRunStatus.FAILED: AnalysisRunOutcome.FAILED,
@@ -343,8 +391,16 @@ class AnalysisRun(BaseModel):
                 )
             ):
                 raise ValueError("approval waits require a pending plan")
-        elif not terminal and self.outcome is not None:
+        elif (
+            not terminal
+            and self.status != AnalysisRunStatus.PAUSED
+            and self.outcome is not None
+        ):
             raise ValueError("active runs cannot have a terminal outcome")
+        if (self.parent_run_id is None) != (self.root_run_id is None):
+            raise ValueError("resumed run lineage must include parent and root IDs")
+        if self.parent_run_id == self.run_id or self.root_run_id == self.run_id:
+            raise ValueError("a run cannot be its own lineage ancestor")
         plan_values = (
             self.current_plan_id,
             self.current_plan_revision,

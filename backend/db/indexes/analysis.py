@@ -84,6 +84,7 @@ ANALYSIS_INDEX_DEFINITIONS = (
             MongoIndexDefinition(
                 keys=(
                     ("cancellation_requested", ASCENDING),
+                    ("pause_requested", ASCENDING),
                     ("status", ASCENDING),
                     ("lease_expires_at", ASCENDING),
                     ("created_at", ASCENDING),
@@ -94,6 +95,7 @@ ANALYSIS_INDEX_DEFINITIONS = (
             MongoIndexDefinition(
                 keys=(
                     ("cancellation_requested", ASCENDING),
+                    ("pause_requested", ASCENDING),
                     ("status", ASCENDING),
                     ("expires_at", ASCENDING),
                     ("run_id", ASCENDING),
@@ -103,6 +105,16 @@ ANALYSIS_INDEX_DEFINITIONS = (
                 partial_filter=MappingProxyType(
                     {"expires_at": {"$type": "date"}}
                 ),
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("pause_requested", ASCENDING),
+                    ("status", ASCENDING),
+                    ("lease_expires_at", ASCENDING),
+                    ("pause_requested_at", ASCENDING),
+                    ("run_id", ASCENDING),
+                ),
+                name="ix_analysis_runs_pause_queue",
             ),
         ),
     ),

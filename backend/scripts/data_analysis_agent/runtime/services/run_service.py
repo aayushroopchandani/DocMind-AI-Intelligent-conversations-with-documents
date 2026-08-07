@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from ..models import (
+    AnalysisEventType,
     AnalysisRun,
     AnalysisRunStatus,
     CreateAnalysisRunRequest,
@@ -67,6 +69,10 @@ class AnalysisRuntimeUnavailableError(AnalysisRunServiceError):
 
 class InvalidRunCursorError(AnalysisRunServiceError):
     """The run-history cursor is malformed or incompatible."""
+
+
+class InvalidRunResumeError(AnalysisRunServiceError):
+    """A run cannot be resumed using the requested lifecycle operation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +393,158 @@ class AnalysisRunService:
             # current graph milestone. A crashed worker is swept after expiry.
             return requested
 
+    async def pause_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        expected_version: int | None = None,
+        trace_id: str | None = None,
+    ) -> RunMutationResult:
+        requested = await self._state_machine.request_pause(
+            user_id=user_id,
+            run_id=run_id,
+            expected_version=expected_version,
+            trace_id=trace_id,
+        )
+        if (
+            requested.run.status == AnalysisRunStatus.PAUSED
+            or requested.run.status in {
+                AnalysisRunStatus.SUCCEEDED,
+                AnalysisRunStatus.FAILED,
+                AnalysisRunStatus.CANCELLED,
+                AnalysisRunStatus.EXPIRED,
+            }
+        ):
+            return requested
+        try:
+            return await self._state_machine.finalize_requested_pause(
+                user_id=user_id,
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+        except AnalysisRunLeaseConflictError:
+            # A live worker checkpoints after the current safe graph boundary.
+            return requested
+
+    async def resume_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        expected_version: int | None = None,
+        trace_id: str | None = None,
+    ) -> RunMutationResult:
+        return await self._state_machine.resume_paused_run(
+            user_id=user_id,
+            run_id=run_id,
+            execution_expires_at=(
+                datetime.now(timezone.utc) + self._run_deadline
+            ),
+            expected_version=expected_version,
+            trace_id=trace_id,
+        )
+
+    async def resume_as_new_run(
+        self,
+        *,
+        user_id: str,
+        source_run_id: str,
+        idempotency_key: str,
+        trace_id: str | None = None,
+    ) -> CreateRunResult:
+        """Create a linked retry while preserving the source audit record."""
+
+        source = await self.get_run(user_id=user_id, run_id=source_run_id)
+        if source.status not in {
+            AnalysisRunStatus.CANCELLED,
+            AnalysisRunStatus.FAILED,
+            AnalysisRunStatus.EXPIRED,
+        }:
+            raise InvalidRunResumeError(
+                "only cancelled, failed, or expired runs can resume as new"
+            )
+        semantic_resume = {
+            "source_run_id": source.run_id,
+            "source_version": source.version,
+            "checkpoint_id": source.checkpoint_id,
+            "mode": source.mode.value,
+            "prompt": source.prompt,
+            "artifacts": list(source.input_artifact_version_ids),
+            "datasets": [
+                item.model_dump(mode="json")
+                for item in source.input_dataset_versions
+            ],
+            "documents": list(source.selected_document_ids),
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                semantic_resume,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        existing = await self._store.get_run_by_idempotency_key(
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            if existing.request_fingerprint != fingerprint:
+                raise AnalysisRunIdempotencyConflictError(
+                    "idempotency key was already used for a different request"
+                )
+            events = await self._store.list_events(
+                user_id=user_id,
+                run_id=existing.run_id,
+                limit=1,
+            )
+            if not events:
+                raise AnalysisRunServiceError(
+                    "the resumed run has no durable creation event"
+                )
+            return CreateRunResult(
+                run=existing,
+                event=events[0],
+                created=False,
+            )
+
+        now = datetime.now(timezone.utc)
+        run = AnalysisRun(
+            run_id=str(uuid4()),
+            user_id=user_id,
+            workspace_id=source.workspace_id,
+            chat_id=source.chat_id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=fingerprint,
+            mode=source.mode,
+            prompt=source.prompt,
+            active_artifact_id=source.active_artifact_id,
+            inputs_ready=True,
+            input_artifact_version_ids=source.input_artifact_version_ids,
+            input_dataset_versions=source.input_dataset_versions,
+            selected_document_ids=source.selected_document_ids,
+            parent_run_id=source.run_id,
+            root_run_id=source.root_run_id or source.run_id,
+            checkpoint_id=source.checkpoint_id,
+            last_completed_step_id=source.last_completed_step_id,
+            model_versions=phase7_model_versions(),
+            prompt_versions=phase7_prompt_versions(),
+            created_at=now,
+            updated_at=now,
+            expires_at=now + self._run_deadline,
+        )
+        return await self._state_machine.create_run(
+            run=run,
+            event_type=AnalysisEventType.RUN_RESUMED_AS_NEW,
+            payload={
+                "parent_run_id": source.run_id,
+                "root_run_id": run.root_run_id,
+                "resume_from_checkpoint_id": source.checkpoint_id,
+                "events_url": f"/analysis/runs/{run.run_id}/events",
+            },
+            trace_id=trace_id,
+        )
+
 
 def _permanent_input_error(error: Exception) -> RunIssueSummary | None:
     """Map known input defects to bounded, provider-neutral public metadata."""
@@ -539,4 +697,5 @@ __all__ = [
     "AnalysisRunServiceError",
     "AnalysisRuntimeUnavailableError",
     "InvalidRunCursorError",
+    "InvalidRunResumeError",
 ]

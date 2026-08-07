@@ -1010,6 +1010,94 @@ class DurableRunRepositoryTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
+    async def test_pause_checkpoints_same_run_and_resume_requeues_it(self) -> None:
+        run = await self._create()
+        claimed = await self.machine.claim_execution(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            worker_id="worker-pause",
+            lease_seconds=30,
+        )
+        requested = await self.machine.request_pause(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            expected_version=claimed.run.version,
+        )
+
+        self.assertTrue(requested.run.pause_requested)
+        with self.assertRaises(InvalidAnalysisRunTransition):
+            await self.machine.record_event(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                event_type=AnalysisEventType.DATASET_PREPARED,
+                worker_id="worker-pause",
+                lease_attempt=claimed.run.lease_attempt,
+            )
+
+        paused = await self.machine.finalize_requested_pause(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            worker_id="worker-pause",
+            lease_attempt=claimed.run.lease_attempt,
+            last_completed_step_id="normalization",
+        )
+        self.assertEqual(paused.run.run_id, run.run_id)
+        self.assertEqual(paused.run.status, AnalysisRunStatus.PAUSED)
+        self.assertIsNotNone(paused.run.checkpoint_id)
+        self.assertEqual(paused.run.last_completed_step_id, "normalization")
+        self.assertIsNone(paused.run.worker_id)
+        self.assertIsNone(paused.run.expires_at)
+        self.assertFalse(paused.run.pause_requested)
+
+        resumed = await self.machine.resume_paused_run(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            execution_expires_at=self.clock() + timedelta(hours=1),
+            expected_version=paused.run.version,
+        )
+        self.assertEqual(resumed.run.run_id, run.run_id)
+        self.assertEqual(resumed.run.status, AnalysisRunStatus.CREATED)
+        self.assertEqual(resumed.run.resume_count, 1)
+        self.assertIsNone(resumed.run.paused_at)
+        self.assertEqual(
+            [
+                event["event_type"]
+                for event in self.database["analysis_run_events"].documents
+            ][-3:],
+            [
+                AnalysisEventType.PAUSE_REQUESTED,
+                AnalysisEventType.RUN_PAUSED,
+                AnalysisEventType.RUN_RESUMED,
+            ],
+        )
+
+    async def test_cancelled_paused_run_stays_terminal(self) -> None:
+        run = await self._create()
+        await self.machine.request_pause(user_id=run.user_id, run_id=run.run_id)
+        paused = await self.machine.finalize_requested_pause(
+            user_id=run.user_id,
+            run_id=run.run_id,
+        )
+        requested = await self.machine.request_cancellation(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            expected_version=paused.run.version,
+        )
+        cancelled = await self.machine.finalize_requested_cancellation(
+            user_id=run.user_id,
+            run_id=run.run_id,
+        )
+
+        self.assertTrue(requested.run.cancellation_requested)
+        self.assertEqual(cancelled.run.status, AnalysisRunStatus.CANCELLED)
+        self.assertIsNone(cancelled.run.paused_at)
+        with self.assertRaises(InvalidAnalysisRunTransition):
+            await self.machine.resume_paused_run(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                execution_expires_at=self.clock() + timedelta(hours=1),
+            )
+
     async def test_cancellation_request_wins_over_successful_completion(self) -> None:
         run = await self._create()
         claimed = await self.machine.claim_execution(

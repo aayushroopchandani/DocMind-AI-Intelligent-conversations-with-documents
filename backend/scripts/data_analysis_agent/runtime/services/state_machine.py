@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from pydantic import JsonValue
 
@@ -38,6 +39,7 @@ _ALLOWED_STATUS_TRANSITIONS: dict[
     AnalysisRunStatus.CREATED: frozenset(
         {
             AnalysisRunStatus.ACTIVE,
+            AnalysisRunStatus.PAUSED,
             AnalysisRunStatus.FAILED,
             AnalysisRunStatus.CANCELLED,
             AnalysisRunStatus.EXPIRED,
@@ -47,6 +49,7 @@ _ALLOWED_STATUS_TRANSITIONS: dict[
         {
             AnalysisRunStatus.ACTIVE,
             AnalysisRunStatus.WAITING,
+            AnalysisRunStatus.PAUSED,
             AnalysisRunStatus.SUCCEEDED,
             AnalysisRunStatus.FAILED,
             AnalysisRunStatus.CANCELLED,
@@ -56,10 +59,18 @@ _ALLOWED_STATUS_TRANSITIONS: dict[
     AnalysisRunStatus.WAITING: frozenset(
         {
             AnalysisRunStatus.ACTIVE,
+            AnalysisRunStatus.PAUSED,
             AnalysisRunStatus.SUCCEEDED,
             AnalysisRunStatus.FAILED,
             AnalysisRunStatus.CANCELLED,
             AnalysisRunStatus.EXPIRED,
+        }
+    ),
+    AnalysisRunStatus.PAUSED: frozenset(
+        {
+            AnalysisRunStatus.CREATED,
+            AnalysisRunStatus.WAITING,
+            AnalysisRunStatus.CANCELLED,
         }
     ),
     AnalysisRunStatus.SUCCEEDED: frozenset(),
@@ -185,6 +196,10 @@ class AnalysisRunStateMachine:
             candidates.append(current.started_at)
         if current.cancellation_requested_at is not None:
             candidates.append(current.cancellation_requested_at)
+        if current.pause_requested_at is not None:
+            candidates.append(current.pause_requested_at)
+        if current.paused_at is not None:
+            candidates.append(current.paused_at)
         return max(candidates)
 
     def _lease_expiry(self, *, seconds: int, current_time: datetime) -> datetime:
@@ -199,12 +214,13 @@ class AnalysisRunStateMachine:
         self,
         *,
         run: AnalysisRun,
+        event_type: AnalysisEventType = AnalysisEventType.RUN_CREATED,
         payload: Mapping[str, JsonValue] | None = None,
         trace_id: str | None = None,
     ) -> CreateRunResult:
         return await self._store.create_run(
             run=run,
-            event_type=AnalysisEventType.RUN_CREATED,
+            event_type=event_type,
             payload=payload,
             trace_id=trace_id,
         )
@@ -741,6 +757,10 @@ class AnalysisRunStateMachine:
             raise InvalidAnalysisRunTransition(
                 "a cancellation-requested run must transition to cancelled"
             )
+        if current.pause_requested and target_status != AnalysisRunStatus.PAUSED:
+            raise InvalidAnalysisRunTransition(
+                "a pause-requested run must checkpoint before progressing"
+            )
 
         now = self._operation_time(current)
         additional_filter: Mapping[str, object] | None = None
@@ -844,6 +864,10 @@ class AnalysisRunStateMachine:
             raise InvalidAnalysisRunTransition(
                 "cancellation-requested runs cannot emit new progress events"
             )
+        if current.pause_requested or current.status == AnalysisRunStatus.PAUSED:
+            raise InvalidAnalysisRunTransition(
+                "paused runs cannot emit new progress events"
+            )
         if expected_version is not None and expected_version != current.version:
             raise AnalysisRunConflictError(
                 f"stale run version: expected {expected_version}, "
@@ -920,6 +944,8 @@ class AnalysisRunStateMachine:
                 updates={
                     "cancellation_requested": True,
                     "cancellation_requested_at": now,
+                    "pause_requested": False,
+                    "pause_requested_at": None,
                     "updated_at": now,
                 },
                 event_type=AnalysisEventType.CANCELLATION_REQUESTED,
@@ -949,6 +975,224 @@ class AnalysisRunStateMachine:
                     changed=False,
                 )
             raise
+
+    async def request_pause(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        expected_version: int | None = None,
+        trace_id: str | None = None,
+    ) -> RunMutationResult:
+        """Persist a cooperative pause request without stealing a live lease."""
+
+        current = await self.require_run(user_id=user_id, run_id=run_id)
+        if current.status in TERMINAL_RUN_STATUSES:
+            return RunMutationResult(run=current, event=None, changed=False)
+        if current.status == AnalysisRunStatus.PAUSED or current.pause_requested:
+            return RunMutationResult(run=current, event=None, changed=False)
+        if current.status not in {
+            AnalysisRunStatus.CREATED,
+            AnalysisRunStatus.ACTIVE,
+        }:
+            raise InvalidAnalysisRunTransition(
+                "only queued or executing runs can be paused"
+            )
+        if current.cancellation_requested:
+            raise InvalidAnalysisRunTransition(
+                "a cancellation-requested run cannot be paused"
+            )
+        if expected_version is not None and current.version != expected_version:
+            raise AnalysisRunConflictError(
+                f"stale run version: expected {expected_version}, "
+                f"found {current.version}"
+            )
+
+        now = self._operation_time(current)
+        cycle = current.resume_count
+        return await self._store.mutate_with_event(
+            user_id=user_id,
+            run_id=run_id,
+            expected_version=current.version,
+            updates={
+                "pause_requested": True,
+                "pause_requested_at": now,
+                "updated_at": now,
+            },
+            event_type=AnalysisEventType.PAUSE_REQUESTED,
+            payload={"checkpoint_boundary": "next_safe_boundary"},
+            deduplication_key=f"pause-request:{run_id}:{cycle}",
+            trace_id=trace_id,
+            additional_filter={
+                "pause_requested": {"$ne": True},
+                "cancellation_requested": False,
+                "status": {
+                    "$in": [
+                        AnalysisRunStatus.CREATED.value,
+                        AnalysisRunStatus.ACTIVE.value,
+                    ]
+                },
+            },
+        )
+
+    async def finalize_requested_pause(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        worker_id: str | None = None,
+        lease_attempt: int | None = None,
+        last_completed_step_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> RunMutationResult:
+        """Checkpoint a pause at a safe boundary and release the lease."""
+
+        current = await self.require_run(user_id=user_id, run_id=run_id)
+        if current.status == AnalysisRunStatus.PAUSED:
+            return RunMutationResult(run=current, event=None, changed=False)
+        if current.status in TERMINAL_RUN_STATUSES:
+            return RunMutationResult(run=current, event=None, changed=False)
+        if current.cancellation_requested:
+            raise InvalidAnalysisRunTransition(
+                "cancellation takes priority over a pending pause"
+            )
+        if not current.pause_requested:
+            raise InvalidAnalysisRunTransition(
+                "run does not have a pending pause request"
+            )
+
+        now = self._operation_time(current)
+        additional_filter: dict[str, object] = {
+            "pause_requested": True,
+            "cancellation_requested": False,
+        }
+        if current.worker_id is not None:
+            if (
+                current.worker_id != worker_id
+                or current.lease_attempt != lease_attempt
+            ):
+                if (
+                    current.lease_expires_at is not None
+                    and current.lease_expires_at > now
+                ):
+                    raise AnalysisRunLeaseConflictError(
+                        "the active worker still owns the pause handoff"
+                    )
+                additional_filter["$or"] = [
+                    {"lease_expires_at": None},
+                    {"lease_expires_at": {"$lte": now}},
+                ]
+            else:
+                additional_filter.update(
+                    _lease_guard(
+                        worker_id=current.worker_id,
+                        lease_attempt=current.lease_attempt,
+                        current_time=now,
+                    )
+                )
+
+        checkpoint_id = str(uuid4())
+        return await self._store.mutate_with_event(
+            user_id=user_id,
+            run_id=run_id,
+            expected_version=current.version,
+            updates={
+                "status": AnalysisRunStatus.PAUSED,
+                "outcome": None,
+                "pause_requested": False,
+                "pause_requested_at": None,
+                "paused_at": now,
+                "checkpoint_id": checkpoint_id,
+                "last_completed_step_id": (
+                    last_completed_step_id or current.last_completed_step_id
+                ),
+                "paused_from_status": current.status,
+                "paused_from_phase": current.phase,
+                "paused_from_outcome": current.outcome,
+                "worker_id": None,
+                "lease_expires_at": None,
+                # A paused run does not age out while it consumes no worker.
+                "expires_at": None,
+                "updated_at": now,
+            },
+            event_type=AnalysisEventType.RUN_PAUSED,
+            payload={
+                "checkpoint_id": checkpoint_id,
+                "last_completed_step_id": last_completed_step_id,
+            },
+            deduplication_key=f"paused:{run_id}:{current.resume_count}",
+            trace_id=trace_id,
+            additional_filter=additional_filter,
+        )
+
+    async def resume_paused_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        execution_expires_at: datetime | None,
+        expected_version: int | None = None,
+        trace_id: str | None = None,
+    ) -> RunMutationResult:
+        """Requeue the same paused run from its latest durable checkpoint."""
+
+        current = await self.require_run(user_id=user_id, run_id=run_id)
+        if current.status != AnalysisRunStatus.PAUSED:
+            raise InvalidAnalysisRunTransition("only a paused run can be resumed")
+        if expected_version is not None and current.version != expected_version:
+            raise AnalysisRunConflictError(
+                f"stale run version: expected {expected_version}, "
+                f"found {current.version}"
+            )
+        now = self._operation_time(current)
+        normalized_expiry = (
+            _as_utc(execution_expires_at)
+            if execution_expires_at is not None
+            else None
+        )
+        if normalized_expiry is not None and normalized_expiry <= now:
+            raise InvalidAnalysisRunTransition(
+                "resumed execution deadline must be in the future"
+            )
+        restore_wait = current.paused_from_status == AnalysisRunStatus.WAITING
+        target_status = (
+            AnalysisRunStatus.WAITING
+            if restore_wait
+            else AnalysisRunStatus.CREATED
+        )
+        target_outcome = current.paused_from_outcome if restore_wait else None
+        target_phase = current.paused_from_phase or current.phase
+        resume_count = current.resume_count + 1
+        return await self._store.mutate_with_event(
+            user_id=user_id,
+            run_id=run_id,
+            expected_version=current.version,
+            updates={
+                "status": target_status,
+                "phase": target_phase,
+                "outcome": target_outcome,
+                "paused_at": None,
+                "paused_from_status": None,
+                "paused_from_phase": None,
+                "paused_from_outcome": None,
+                "resume_count": resume_count,
+                "expires_at": normalized_expiry,
+                "updated_at": now,
+            },
+            event_type=AnalysisEventType.RUN_RESUMED,
+            payload={
+                "checkpoint_id": current.checkpoint_id,
+                "resume_count": resume_count,
+                "requeued": not restore_wait,
+            },
+            deduplication_key=f"resumed:{run_id}:{resume_count}",
+            trace_id=trace_id,
+            additional_filter={
+                "status": AnalysisRunStatus.PAUSED.value,
+                "pause_requested": False,
+                "cancellation_requested": False,
+            },
+        )
 
     async def claim_execution(
         self,
@@ -980,6 +1224,10 @@ class AnalysisRunStateMachine:
         if current.cancellation_requested:
             raise AnalysisRunLeaseConflictError(
                 "cancelled execution cannot be claimed"
+            )
+        if current.pause_requested:
+            raise AnalysisRunLeaseConflictError(
+                "paused execution cannot be claimed"
             )
 
         now = self._operation_time(current)
@@ -1042,6 +1290,7 @@ class AnalysisRunStateMachine:
             trace_id=trace_id,
             additional_filter={
                 "cancellation_requested": False,
+                "pause_requested": {"$ne": True},
                 "inputs_ready": {"$ne": False},
                 "status": {
                     "$in": [
@@ -1142,6 +1391,8 @@ class AnalysisRunStateMachine:
         current = await self.require_run(user_id=user_id, run_id=run_id)
         if current.status in TERMINAL_RUN_STATUSES:
             return RunMutationResult(run=current, event=None, changed=False)
+        if current.status == AnalysisRunStatus.PAUSED:
+            raise InvalidAnalysisRunTransition("paused runs do not expire")
 
         now = self._now()
         if current.expires_at is None or current.expires_at > now:
@@ -1175,6 +1426,12 @@ class AnalysisRunStateMachine:
                     "completed_at": updated_at,
                     "worker_id": None,
                     "lease_expires_at": None,
+                    "pause_requested": False,
+                    "pause_requested_at": None,
+                    "paused_at": None,
+                    "paused_from_status": None,
+                    "paused_from_phase": None,
+                    "paused_from_outcome": None,
                 },
                 event_type=AnalysisEventType.RUN_EXPIRED,
                 payload=payload,
@@ -1291,6 +1548,12 @@ class AnalysisRunStateMachine:
                 "completed_at": now,
                 "worker_id": None,
                 "lease_expires_at": None,
+                "pause_requested": False,
+                "pause_requested_at": None,
+                "paused_at": None,
+                "paused_from_status": None,
+                "paused_from_phase": None,
+                "paused_from_outcome": None,
             },
             event_type=AnalysisEventType.RUN_CANCELLED,
             payload={"reason": "user_requested"},
@@ -1315,6 +1578,16 @@ class AnalysisRunStateMachine:
         limit: int = 100,
     ) -> tuple[AnalysisRun, ...]:
         return await self._store.list_abandoned_cancellations(
+            current_time=self._now(),
+            limit=limit,
+        )
+
+    async def list_abandoned_pauses(
+        self,
+        *,
+        limit: int = 100,
+    ) -> tuple[AnalysisRun, ...]:
+        return await self._store.list_abandoned_pauses(
             current_time=self._now(),
             limit=limit,
         )

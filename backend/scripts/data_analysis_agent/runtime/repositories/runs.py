@@ -150,6 +150,13 @@ class AnalysisRunStore(Protocol):
         limit: int = 100,
     ) -> tuple[AnalysisRun, ...]: ...
 
+    async def list_abandoned_pauses(
+        self,
+        *,
+        current_time: datetime,
+        limit: int = 100,
+    ) -> tuple[AnalysisRun, ...]: ...
+
     async def list_expirable_runs(
         self,
         *,
@@ -174,6 +181,8 @@ _IMMUTABLE_MUTATION_FIELDS = frozenset(
         "input_dataset_versions",
         "idempotency_key",
         "request_fingerprint",
+        "parent_run_id",
+        "root_run_id",
         "created_at",
         "version",
         "last_event_sequence",
@@ -676,6 +685,7 @@ class MongoAnalysisRunStore:
                     "lease_attempt": lease_attempt,
                     "lease_expires_at": {"$gt": current_time},
                     "cancellation_requested": False,
+                    "pause_requested": {"$ne": True},
                     "$or": [
                         {"expires_at": None},
                         {"expires_at": {"$gt": current_time}},
@@ -739,6 +749,7 @@ class MongoAnalysisRunStore:
         current_time = _as_utc(current_time)
         query = {
             "cancellation_requested": False,
+            "pause_requested": {"$ne": True},
             # `$ne` preserves claimability for any early Phase-8 documents
             # written before the explicit initialization gate was introduced.
             "inputs_ready": {"$ne": False},
@@ -778,6 +789,45 @@ class MongoAnalysisRunStore:
             ) from exc
         return tuple(_run_from_document(document) for document in documents)
 
+    async def list_abandoned_pauses(
+        self,
+        *,
+        current_time: datetime,
+        limit: int = 100,
+    ) -> tuple[AnalysisRun, ...]:
+        if not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500")
+        current_time = _as_utc(current_time)
+        query = {
+            "pause_requested": True,
+            "cancellation_requested": False,
+            "status": {
+                "$in": [
+                    AnalysisRunStatus.CREATED.value,
+                    AnalysisRunStatus.ACTIVE.value,
+                    AnalysisRunStatus.WAITING.value,
+                ]
+            },
+            "$or": [
+                {"worker_id": None},
+                {"lease_expires_at": None},
+                {"lease_expires_at": {"$lte": current_time}},
+            ],
+        }
+        try:
+            cursor = (
+                self._db()[self.runs_collection_name]
+                .find(query, {"_id": 0})
+                .sort([("pause_requested_at", 1), ("run_id", 1)])
+                .limit(limit)
+            )
+            documents = await cursor.to_list(length=limit)
+        except PyMongoError as exc:
+            raise AnalysisRunStoreError(
+                "abandoned analysis pauses could not be listed"
+            ) from exc
+        return tuple(_run_from_document(document) for document in documents)
+
     async def list_abandoned_cancellations(
         self,
         *,
@@ -794,6 +844,7 @@ class MongoAnalysisRunStore:
                     AnalysisRunStatus.CREATED.value,
                     AnalysisRunStatus.ACTIVE.value,
                     AnalysisRunStatus.WAITING.value,
+                    AnalysisRunStatus.PAUSED.value,
                 ]
             },
             "$or": [
@@ -829,6 +880,7 @@ class MongoAnalysisRunStore:
         current_time = _as_utc(current_time)
         query = {
             "cancellation_requested": False,
+            "pause_requested": {"$ne": True},
             "status": {
                 "$in": [
                     AnalysisRunStatus.CREATED.value,

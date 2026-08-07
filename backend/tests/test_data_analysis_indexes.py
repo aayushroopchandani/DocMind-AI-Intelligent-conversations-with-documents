@@ -169,6 +169,7 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
         worker_queue_indexes = {
             "ix_analysis_runs_recovery_queue",
             "ix_analysis_runs_expiration_queue",
+            "ix_analysis_runs_pause_queue",
             "ix_artifact_versions_reconciliation_queue",
         }
         names: set[str] = set()
@@ -189,6 +190,7 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
             recovery.keys,
             (
                 ("cancellation_requested", 1),
+                ("pause_requested", 1),
                 ("status", 1),
                 ("lease_expires_at", 1),
                 ("created_at", 1),
@@ -207,6 +209,7 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
             expiration.keys,
             (
                 ("cancellation_requested", 1),
+                ("pause_requested", 1),
                 ("status", 1),
                 ("expires_at", 1),
                 ("run_id", 1),
