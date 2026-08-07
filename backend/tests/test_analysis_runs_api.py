@@ -153,6 +153,22 @@ class _FakeRunService:
         self.calls.append(("cancel", kwargs))
         return RunMutationResult(run=self.run, event=None, changed=False)
 
+    async def pause_run(self, **kwargs: object) -> RunMutationResult:
+        self.calls.append(("pause", kwargs))
+        return RunMutationResult(run=self.run, event=None, changed=False)
+
+    async def resume_run(self, **kwargs: object) -> RunMutationResult:
+        self.calls.append(("resume", kwargs))
+        return RunMutationResult(run=self.run, event=None, changed=False)
+
+    async def resume_as_new_run(self, **kwargs: object) -> CreateRunResult:
+        self.calls.append(("resume-as-new", kwargs))
+        return CreateRunResult(
+            run=self.run,
+            event=self.events[0],
+            created=self.created,
+        )
+
     async def list_events(
         self,
         *,
@@ -231,6 +247,11 @@ class AnalysisRunAPITests(unittest.TestCase):
         )
         payload = response.json()
         self.assertTrue(payload["created"])
+        self.assertEqual(payload["run_id"], service.run.run_id)
+        self.assertEqual(
+            payload["events_url"],
+            f"/analysis/runs/{service.run.run_id}/events",
+        )
         self.assertEqual(payload["run"]["prompt"], service.run.prompt)
         self.assertTrue(payload["run"]["inputs_ready"])
         self.assertNotIn("user_id", payload["run"])
@@ -274,6 +295,39 @@ class AnalysisRunAPITests(unittest.TestCase):
         call = service.calls[0][1]
         assert isinstance(call, dict)
         self.assertEqual(call["expected_version"], 7)
+
+    def test_pause_and_resume_are_distinct_optimistic_commands(self) -> None:
+        service = _FakeRunService()
+        with _client(service) as client:
+            paused = client.post(
+                f"/analysis/runs/{service.run.run_id}/pause",
+                json={"expected_version": 3},
+            )
+            resumed = client.post(
+                f"/analysis/runs/{service.run.run_id}/resume",
+                json={"expected_version": 4},
+            )
+
+        self.assertEqual(paused.status_code, 202)
+        self.assertEqual(resumed.status_code, 202)
+        self.assertEqual(service.calls[0][0], "pause")
+        self.assertEqual(service.calls[0][1]["expected_version"], 3)
+        self.assertEqual(service.calls[1][0], "resume")
+        self.assertEqual(service.calls[1][1]["expected_version"], 4)
+
+    def test_resume_as_new_requires_an_independent_idempotency_key(self) -> None:
+        service = _FakeRunService()
+        with _client(service) as client:
+            response = client.post(
+                f"/analysis/runs/{service.run.run_id}/resume-as-new",
+                headers={"Idempotency-Key": "resume-request-123"},
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        call = service.calls[0][1]
+        self.assertEqual(call["source_run_id"], service.run.run_id)
+        self.assertEqual(call["idempotency_key"], "resume-request-123")
 
     def test_sse_replays_after_last_event_id_with_stable_transport_name(self) -> None:
         service = _FakeRunService(terminal=True)

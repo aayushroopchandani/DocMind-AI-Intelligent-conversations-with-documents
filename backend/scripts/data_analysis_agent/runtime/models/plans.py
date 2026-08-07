@@ -750,10 +750,19 @@ class PlanApprovalStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class PlanRejectionReason(str, Enum):
+    WRONG_DATASET = "wrong_dataset"
+    WRONG_OPERATION = "wrong_operation"
+    WRONG_TARGET = "wrong_target"
+    TOO_DESTRUCTIVE = "too_destructive"
+    OTHER = "other"
+
+
 class PlanApprovalRecord(BaseModel):
     status: PlanApprovalStatus
     actor_user_id: str | None = Field(default=None, max_length=200)
     comment: str | None = Field(default=None, max_length=1_000)
+    rejection_reason: PlanRejectionReason | None = None
     requested_at: datetime | None = None
     decided_at: datetime | None = None
     decision_id: str | None = Field(default=None, max_length=36)
@@ -797,9 +806,15 @@ class PlanApprovalRecord(BaseModel):
                 self.decided_at,
                 self.decision_id,
                 self.comment,
+                self.rejection_reason,
             )
         ):
             raise ValueError("not-required approval cannot contain a decision")
+        if (
+            self.rejection_reason is not None
+            and self.status != PlanApprovalStatus.REJECTED
+        ):
+            raise ValueError("only rejected plans may include a rejection reason")
         return self
 
 
@@ -904,6 +919,7 @@ class PlanApprovalCommand(BaseModel):
         max_length=24,
     )
     comment: str | None = Field(default=None, max_length=1_000)
+    rejection_reason: PlanRejectionReason | None = None
     decision_id: str = Field(min_length=36, max_length=36)
 
     model_config = ConfigDict(
@@ -919,6 +935,12 @@ class PlanApprovalCommand(BaseModel):
             return str(UUID(str(value or "").strip()))
         except (ValueError, AttributeError) as exc:
             raise ValueError("approval IDs must be UUIDs") from exc
+
+    @model_validator(mode="after")
+    def validate_rejection_reason(self) -> Self:
+        if self.decision == "approve" and self.rejection_reason is not None:
+            raise ValueError("approved plans cannot include a rejection reason")
+        return self
 
 
 class PatchImpactSummary(BaseModel):
@@ -1182,6 +1204,7 @@ __all__ = [
     "PlanApprovalCommand",
     "PlanApprovalRecord",
     "PlanApprovalStatus",
+    "PlanRejectionReason",
     "PlanAssertion",
     "PlanColumn",
     "PlanDataType",

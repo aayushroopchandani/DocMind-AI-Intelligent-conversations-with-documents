@@ -17,6 +17,7 @@ from ..models.plans import (
     FinalPatchProposal,
     PlanApprovalRecord,
     PlanApprovalStatus,
+    PlanRejectionReason,
 )
 from ..models.runs import (
     AnalysisRun,
@@ -91,6 +92,7 @@ class AnalysisPlanRepository(Protocol):
         decision_id: str,
         comment: str | None,
         decided_at: datetime,
+        rejection_reason: PlanRejectionReason | None = None,
         trace_id: str | None = None,
     ) -> PlanDecisionResult: ...
 
@@ -305,6 +307,7 @@ class MongoAnalysisPlanRepository:
                         "status": 1,
                         "outcome": 1,
                         "cancellation_requested": 1,
+                        "pause_requested": 1,
                         "current_plan_id": 1,
                         "current_plan_hash": 1,
                     },
@@ -370,6 +373,7 @@ class MongoAnalysisPlanRepository:
         decision_id: str,
         comment: str | None,
         decided_at: datetime,
+        rejection_reason: PlanRejectionReason | None = None,
         trace_id: str | None = None,
     ) -> PlanDecisionResult:
         if status not in {
@@ -402,6 +406,9 @@ class MongoAnalysisPlanRepository:
             "revision": expected_revision,
             "plan_hash": expected_plan_hash,
             "decision_id": decision_id,
+            "rejection_reason": (
+                rejection_reason.value if rejection_reason is not None else None
+            ),
         }
         database = self._db()
 
@@ -495,6 +502,7 @@ class MongoAnalysisPlanRepository:
                 or run.current_plan_hash != expected_plan_hash
                 or run.plan_approval_status != RunApprovalStatus.PENDING
                 or run.cancellation_requested
+                or run.pause_requested
                 or run.worker_id is not None
             ):
                 raise AnalysisPlanConflictError(
@@ -513,6 +521,7 @@ class MongoAnalysisPlanRepository:
                 status=status,
                 actor_user_id=actor_user_id,
                 comment=comment,
+                rejection_reason=rejection_reason,
                 requested_at=plan.approval.requested_at,
                 decided_at=operation_time,
                 decision_id=decision_id,
@@ -578,6 +587,7 @@ class MongoAnalysisPlanRepository:
                     "current_plan_hash": expected_plan_hash,
                     "plan_approval_status": RunApprovalStatus.PENDING.value,
                     "cancellation_requested": False,
+                    "pause_requested": {"$ne": True},
                     "worker_id": None,
                 },
                 {"$set": decided_run.model_dump(mode="python")},
@@ -827,7 +837,11 @@ def _reservation_is_live(
     plan_document: Mapping[str, Any],
     run_document: Mapping[str, Any] | None,
 ) -> bool:
-    if run_document is None or run_document.get("cancellation_requested") is True:
+    if (
+        run_document is None
+        or run_document.get("cancellation_requested") is True
+        or run_document.get("pause_requested") is True
+    ):
         return False
     status = run_document.get("status")
     if status == AnalysisRunStatus.ACTIVE.value:

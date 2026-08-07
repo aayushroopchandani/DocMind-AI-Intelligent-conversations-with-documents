@@ -1,8 +1,8 @@
 """Public control-plane API for durable data-analysis runs.
 
-This router deliberately exposes only run creation, observation, cancellation,
-and durable event replay. Typed plans and approval/apply endpoints belong to a
-later phase and must not be inferred from the current prepared-dataset outcome.
+This router exposes durable run creation, observation, cooperative pause,
+terminal cancellation, linked retries, and replayable events. Typed plan
+decisions live in the adjacent analysis-plans control-plane router.
 """
 
 from __future__ import annotations
@@ -70,6 +70,7 @@ from scripts.data_analysis_agent.runtime.services.run_service import (
     AnalysisRunPage,
     AnalysisRunServiceError,
     InvalidRunCursorError,
+    InvalidRunResumeError,
 )
 from scripts.data_analysis_agent.runtime.services.state_machine import (
     InvalidAnalysisRunTransition,
@@ -151,6 +152,33 @@ class AnalysisRunAPIService(Protocol):
         trace_id: str | None = None,
     ) -> RunMutationResult: ...
 
+    async def pause_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        expected_version: int | None = None,
+        trace_id: str | None = None,
+    ) -> RunMutationResult: ...
+
+    async def resume_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+        expected_version: int | None = None,
+        trace_id: str | None = None,
+    ) -> RunMutationResult: ...
+
+    async def resume_as_new_run(
+        self,
+        *,
+        user_id: str,
+        source_run_id: str,
+        idempotency_key: str,
+        trace_id: str | None = None,
+    ) -> CreateRunResult: ...
+
 
 def get_analysis_run_service(request: Request) -> AnalysisRunAPIService:
     """Resolve the process-wide runtime assembled during application startup."""
@@ -202,6 +230,16 @@ class AnalysisRunView(BaseModel):
     outcome: AnalysisRunOutcome | None
     inputs_ready: bool
     cancellation_requested: bool
+    pause_requested: bool
+    paused_at: datetime | None
+    checkpoint_id: str | None
+    last_completed_step_id: str | None
+    resume_count: int
+    paused_from_status: AnalysisRunStatus | None
+    paused_from_phase: AnalysisRunPhase | None
+    paused_from_outcome: AnalysisRunOutcome | None
+    parent_run_id: str | None
+    root_run_id: str | None
     version: int
     last_event_sequence: int
     input_artifact_version_ids: tuple[str, ...]
@@ -239,6 +277,7 @@ class AnalysisRunView(BaseModel):
                     "lease_expires_at",
                     "lease_attempt",
                     "cancellation_requested_at",
+                    "pause_requested_at",
                 }
             )
         )
@@ -246,6 +285,10 @@ class AnalysisRunView(BaseModel):
 
 class CreateAnalysisRunResponse(BaseModel):
     created: bool
+    run_id: str
+    status: AnalysisRunStatus
+    phase: AnalysisRunPhase
+    events_url: str
     run: AnalysisRunView
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -268,6 +311,10 @@ class CancelAnalysisRunResponse(BaseModel):
     changed: bool
     run: AnalysisRunView
 
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ResumeAsNewRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
@@ -314,6 +361,11 @@ def _raise_public_error(exc: Exception) -> None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid analysis run cursor",
+        ) from exc
+    if isinstance(exc, InvalidRunResumeError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
         ) from exc
     if isinstance(
         exc,
@@ -363,6 +415,10 @@ async def create_analysis_run(
         response.headers["Idempotent-Replay"] = "true"
     return CreateAnalysisRunResponse(
         created=result.created,
+        run_id=result.run.run_id,
+        status=result.run.status,
+        phase=result.run.phase,
+        events_url=f"/analysis/runs/{result.run.run_id}/events",
         run=AnalysisRunView.from_run(result.run),
     )
 
@@ -448,6 +504,108 @@ async def cancel_analysis_run(
     response.headers["Cache-Control"] = "no-store"
     return CancelAnalysisRunResponse(
         changed=result.changed,
+        run=AnalysisRunView.from_run(result.run),
+    )
+
+
+@router.post(
+    "/{run_id}/pause",
+    response_model=CancelAnalysisRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def pause_analysis_run(
+    run_id: UUID,
+    body: CancelAnalysisRunRequest,
+    response: Response,
+    trace_id: TraceId = None,
+    user_id: str = Depends(current_user_id),
+    _: None = Depends(verify_internal_secret),
+    service: AnalysisRunAPIService = Depends(get_analysis_run_service),
+) -> CancelAnalysisRunResponse:
+    try:
+        result = await service.pause_run(
+            user_id=user_id,
+            run_id=_canonical_run_id(run_id),
+            expected_version=body.expected_version,
+            trace_id=trace_id,
+        )
+    except Exception as exc:
+        _raise_public_error(exc)
+        raise  # pragma: no cover
+    response.headers["Cache-Control"] = "no-store"
+    return CancelAnalysisRunResponse(
+        changed=result.changed,
+        run=AnalysisRunView.from_run(result.run),
+    )
+
+
+@router.post(
+    "/{run_id}/resume",
+    response_model=CancelAnalysisRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_analysis_run(
+    run_id: UUID,
+    body: CancelAnalysisRunRequest,
+    response: Response,
+    trace_id: TraceId = None,
+    user_id: str = Depends(current_user_id),
+    _: None = Depends(verify_internal_secret),
+    service: AnalysisRunAPIService = Depends(get_analysis_run_service),
+) -> CancelAnalysisRunResponse:
+    try:
+        result = await service.resume_run(
+            user_id=user_id,
+            run_id=_canonical_run_id(run_id),
+            expected_version=body.expected_version,
+            trace_id=trace_id,
+        )
+    except Exception as exc:
+        _raise_public_error(exc)
+        raise  # pragma: no cover
+    response.headers["Cache-Control"] = "no-store"
+    return CancelAnalysisRunResponse(
+        changed=result.changed,
+        run=AnalysisRunView.from_run(result.run),
+    )
+
+
+@router.post(
+    "/{run_id}/resume-as-new",
+    response_model=CreateAnalysisRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_analysis_run_as_new(
+    run_id: UUID,
+    body: ResumeAsNewRunRequest,
+    response: Response,
+    idempotency_key: IdempotencyKey,
+    trace_id: TraceId = None,
+    user_id: str = Depends(current_user_id),
+    _: None = Depends(verify_internal_secret),
+    service: AnalysisRunAPIService = Depends(get_analysis_run_service),
+) -> CreateAnalysisRunResponse:
+    del body
+    try:
+        result = await service.resume_as_new_run(
+            user_id=user_id,
+            source_run_id=_canonical_run_id(run_id),
+            idempotency_key=idempotency_key,
+            trace_id=trace_id,
+        )
+    except Exception as exc:
+        _raise_public_error(exc)
+        raise  # pragma: no cover
+    response.headers["Location"] = f"/analysis/runs/{result.run.run_id}"
+    response.headers["Cache-Control"] = "no-store"
+    if not result.created:
+        response.headers["Idempotent-Replay"] = "true"
+    return CreateAnalysisRunResponse(
+        created=result.created,
+        run_id=result.run.run_id,
+        status=result.run.status,
+        phase=result.run.phase,
+        events_url=f"/analysis/runs/{result.run.run_id}/events",
         run=AnalysisRunView.from_run(result.run),
     )
 

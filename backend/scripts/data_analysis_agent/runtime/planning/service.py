@@ -336,6 +336,7 @@ class AnalysisPlanningService:
         user_id: str,
         run_id: str,
         command: PlanApprovalCommand,
+        trace_id: str | None = None,
     ) -> AnalysisPlan:
         plan = await self._repository.get_plan(
             user_id=user_id,
@@ -377,9 +378,25 @@ class AnalysisPlanningService:
             actor_user_id=user_id,
             decision_id=command.decision_id,
             comment=command.comment,
+            rejection_reason=command.rejection_reason,
             decided_at=datetime.now(timezone.utc),
+            trace_id=trace_id,
         )
         return decision.plan
+
+    async def get_current_plan(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+    ) -> AnalysisPlan:
+        plan = await self._repository.get_current_plan(
+            user_id=user_id,
+            run_id=run_id,
+        )
+        if plan is None:
+            raise AnalysisPlanNotFoundError("analysis plan not found")
+        return plan
 
     async def register_patch_proposal(
         self,
