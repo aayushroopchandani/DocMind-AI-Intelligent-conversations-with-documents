@@ -112,6 +112,7 @@ export default function UniverHost() {
         const unitId =
           params?.unitId ?? univerAPI.getActiveWorkbook()?.getId() ?? null;
         if (!unitId || !bridge.loadedUnitIds.has(unitId)) return;
+        dispatch({ type: "BUMP_WORKBOOK_REVISION", id: unitId });
         scheduleSnapshot(unitId);
       }),
 

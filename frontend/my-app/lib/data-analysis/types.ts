@@ -39,6 +39,8 @@ export interface ArtifactMeta {
   updatedAt: number;
   /** True while edits exist that have not been flushed to localStorage. */
   isDirty: boolean;
+  /** Monotonic client-side workbook revision used by plan guards. */
+  workbookRevision?: number;
   /**
    * Type-specific serializable facts. Present exactly when `type === "pdf"`
    * — use `isPdfArtifact` rather than reading it directly.
@@ -63,6 +65,8 @@ export interface ProjectMeta {
   id: string;
   name: string;
   updatedAt: number;
+  /** Opaque BFF token for the analysis PDF ingestion chat. */
+  analysisChatId?: string;
 }
 
 /** Local draft persistence status shown in the top bar. */
@@ -77,9 +81,8 @@ export interface AnalystContext {
 }
 
 /**
- * The shape a future analyst request will carry. Nothing sends this yet —
- * the composer only surfaces the backend-pending notice — but keeping the
- * contract here means the service adapter is the only thing left to write.
+ * Context assembled by the composer before the durable run provider resolves
+ * live workbook/PDF bytes into backend input references.
  */
 export interface AnalystRequestContext {
   mode: AnalystMode;

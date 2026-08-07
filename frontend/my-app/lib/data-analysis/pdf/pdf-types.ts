@@ -38,6 +38,9 @@ export interface PdfArtifactMeta {
   loadingStatus: PdfLoadingStatus;
   /** Human-readable reason shown by the error state. */
   errorMessage?: string;
+  /** Durable ingestion identity, cached after the first analysis request. */
+  analysisDocumentId?: string;
+  analysisChatId?: string;
 }
 
 /** A rectangle in PDF page coordinates (origin at the page's top-left). */

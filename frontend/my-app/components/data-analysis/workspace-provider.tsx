@@ -92,6 +92,7 @@ interface WorkspaceActions {
   duplicateArtifact: (id: string) => void;
   deleteArtifact: (id: string) => void;
   setProjectName: (name: string) => void;
+  setAnalysisChatId: (chatId: string) => void;
   setAnalystMode: (mode: AnalystMode) => void;
   undo: () => void;
   redo: () => void;
@@ -407,6 +408,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "SET_PROJECT_NAME", name });
   }, []);
 
+  const setAnalysisChatId = useCallback((chatId: string) => {
+    dispatch({ type: "SET_ANALYSIS_CHAT_ID", chatId });
+  }, []);
+
   const setAnalystMode = useCallback((mode: AnalystMode) => {
     dispatch({ type: "SET_ANALYST_MODE", mode });
   }, []);
@@ -431,6 +436,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       duplicateArtifact,
       deleteArtifact,
       setProjectName,
+      setAnalysisChatId,
       setAnalystMode,
       undo,
       redo,
@@ -446,6 +452,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       duplicateArtifact,
       deleteArtifact,
       setProjectName,
+      setAnalysisChatId,
       setAnalystMode,
       undo,
       redo,

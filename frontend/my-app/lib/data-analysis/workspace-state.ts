@@ -29,8 +29,10 @@ export type WorkspaceAction =
   | { type: "RENAME_ARTIFACT"; id: string; name: string }
   | { type: "DELETE_ARTIFACT"; id: string }
   | { type: "SET_DIRTY"; id: string; isDirty: boolean }
+  | { type: "BUMP_WORKBOOK_REVISION"; id: string }
   | { type: "SET_SAVE_STATUS"; status: SaveStatus }
   | { type: "SET_PROJECT_NAME"; name: string }
+  | { type: "SET_ANALYSIS_CHAT_ID"; chatId: string }
   | { type: "SET_ANALYST_MODE"; mode: AnalystMode }
   | { type: "SET_ANALYST_CONTEXT"; context: Partial<AnalystContext> }
   | { type: "SET_UNIVER_READY"; ready: boolean };
@@ -263,6 +265,17 @@ export function workspaceReducer(
       };
     }
 
+    case "BUMP_WORKBOOK_REVISION": {
+      const artifact = findArtifact(state, action.id);
+      if (!artifact || artifact.type !== "spreadsheet") return state;
+      return {
+        ...state,
+        artifacts: state.artifacts.map((item) => item.id === action.id
+          ? { ...item, workbookRevision: (item.workbookRevision ?? 0) + 1, updatedAt: Date.now() }
+          : item),
+      };
+    }
+
     case "SET_SAVE_STATUS": {
       if (state.saveStatus === action.status) return state;
       return { ...state, saveStatus: action.status };
@@ -274,6 +287,14 @@ export function workspaceReducer(
       return {
         ...state,
         project: { ...state.project, name, updatedAt: Date.now() },
+      };
+    }
+
+    case "SET_ANALYSIS_CHAT_ID": {
+      if (state.project.analysisChatId === action.chatId) return state;
+      return {
+        ...state,
+        project: { ...state.project, analysisChatId: action.chatId, updatedAt: Date.now() },
       };
     }
 
