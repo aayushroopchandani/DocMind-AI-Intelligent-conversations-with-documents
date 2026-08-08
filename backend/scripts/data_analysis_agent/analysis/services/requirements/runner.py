@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 
 from ...models import AnalysisIssue, IssueCode, IssueSeverity, IssueStage
@@ -20,7 +19,12 @@ from .extractor import RequirementsExtractor
 from .validation import fallback_extraction, validate_requirements_extraction
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

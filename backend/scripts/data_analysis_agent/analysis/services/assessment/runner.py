@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -50,7 +49,12 @@ from .resolver import AmbiguityDecision, AmbiguityResolver
 from .rules import contains_phrase, lexical_score, normalized_phrase
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

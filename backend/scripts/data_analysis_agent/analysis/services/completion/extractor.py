@@ -13,11 +13,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 
+from scripts.data_analysis_agent.runtime.observability import measure_llm_call
+
 from ...models import (
     RequirementItem,
     TextEvidenceReference,
     TextExtractionResponse,
 )
+from ...models.completion import TEXT_EVIDENCE_PROMPT_VERSION
 
 
 TEXT_EVIDENCE_SYSTEM_PROMPT = """You extract explicitly stated numeric evidence
@@ -257,7 +260,12 @@ class StructuredTextEvidenceExtractor:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                response = await generator.ainvoke(messages)
+                with measure_llm_call(
+                    stage="evidence_extraction",
+                    model=self.model,
+                    prompt_version=TEXT_EVIDENCE_PROMPT_VERSION,
+                ):
+                    response = await generator.ainvoke(messages)
                 if isinstance(response, TextExtractionResponse):
                     parsed = response
                 elif (

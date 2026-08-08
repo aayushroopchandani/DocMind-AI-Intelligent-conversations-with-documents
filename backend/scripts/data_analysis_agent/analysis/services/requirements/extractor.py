@@ -10,7 +10,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import ValidationError
 
-from ...models.requirements import RequirementsExtraction
+from scripts.data_analysis_agent.runtime.observability import measure_llm_call
+
+from ...models.requirements import (
+    REQUIREMENTS_PROMPT_VERSION,
+    RequirementsExtraction,
+)
 from ...models.request import AnalysisRequest
 
 
@@ -128,7 +133,12 @@ class RequirementsExtractor:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                response = await generator.ainvoke(messages)
+                with measure_llm_call(
+                    stage="requirements_extraction",
+                    model=self.model,
+                    prompt_version=REQUIREMENTS_PROMPT_VERSION,
+                ):
+                    response = await generator.ainvoke(messages)
                 parsed = (
                     response
                     if isinstance(response, RequirementsExtraction)

@@ -32,6 +32,9 @@ from ..planning.contracts import (
     PlanningProgressReporter,
 )
 from ..planning.service import AnalysisPlanningService
+from ..observability.tokens import merge_stage_maps, total_token_usage
+from ..observability.logging import get_analysis_logger, log_analysis_event
+from ..observability.metrics import analysis_metrics
 from ..repositories.datasets import DatasetCatalogRepository
 from ..repositories.runs import (
     AnalysisRunConflictError,
@@ -45,7 +48,7 @@ from .state_machine import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = get_analysis_logger(__name__)
 
 _PHASE_RANK = {
     AnalysisRunPhase.CONTEXT_RESOLUTION: 0,
@@ -192,6 +195,18 @@ class DurableAnalysisWorker:
     @property
     def worker_id(self) -> str:
         return self._worker_id
+
+    @property
+    def running(self) -> bool:
+        return self._poll_task is not None and not self._poll_task.done()
+
+    @property
+    def active_run_count(self) -> int:
+        return len(self._active)
+
+    @property
+    def concurrency(self) -> int:
+        return self._config.concurrency
 
     async def start(self) -> None:
         if self._poll_task is not None and not self._poll_task.done():
@@ -346,6 +361,16 @@ class DurableAnalysisWorker:
 
         run = claimed.run
         lease_attempt = run.lease_attempt
+        log_analysis_event(
+            logger,
+            "run_claimed",
+            run_id=run.run_id,
+            workspace_id=run.workspace_id,
+            phase=run.phase.value,
+            operation="execute",
+            lease_attempt=lease_attempt,
+            status=run.status.value,
+        )
         lease_lost = asyncio.Event()
         assert run.lease_expires_at is not None
         committed_lease_seconds = max(
@@ -703,6 +728,7 @@ class DurableAnalysisWorker:
         dataset_handles: tuple[DatasetHandle, ...],
         elapsed_ms: float,
     ) -> None:
+        analysis_metrics.observe_phase("phase_1_to_7", elapsed_ms)
         summary = {
             "warnings_summary": result.warnings,
             "errors_summary": result.errors,
@@ -710,6 +736,7 @@ class DurableAnalysisWorker:
             "model_versions": result.model_versions,
             "prompt_versions": result.prompt_versions,
             "token_usage": result.token_usage,
+            "token_usage_by_stage": result.token_usage_by_stage,
             "timings_ms": {"phase_1_to_7": elapsed_ms},
         }
         payload = {
@@ -834,7 +861,16 @@ class DurableAnalysisWorker:
             ),
         )
         planning_elapsed_ms = (monotonic() - planning_started) * 1000
-        token_usage = _merge_usage(result.token_usage, planning.token_usage)
+        analysis_metrics.observe_phase("planning", planning_elapsed_ms)
+        token_usage_by_stage = merge_stage_maps(
+            result.token_usage_by_stage,
+            planning.token_usage_by_stage,
+        )
+        token_usage = (
+            total_token_usage(token_usage_by_stage)
+            if token_usage_by_stage
+            else _merge_usage(result.token_usage, planning.token_usage)
+        )
         model_versions = {
             **result.model_versions,
             **(
@@ -858,6 +894,12 @@ class DurableAnalysisWorker:
             "model_versions": model_versions,
             "prompt_versions": prompt_versions,
             "token_usage": token_usage,
+            "token_usage_by_stage": token_usage_by_stage,
+            "privacy_summary": (
+                planning.plan.privacy
+                if planning.plan is not None
+                else run.privacy_summary
+            ),
             "timings_ms": {
                 "phase_1_to_7": phase7_elapsed_ms,
                 "planning": planning_elapsed_ms,
@@ -889,6 +931,20 @@ class DurableAnalysisWorker:
                 worker_id=self._worker_id,
                 lease_attempt=lease_attempt,
                 summary_updates=base_summary,
+            )
+            analysis_metrics.record_error(error.code)
+            analysis_metrics.record_run_outcome("failed")
+            log_analysis_event(
+                logger,
+                "run_failed",
+                level=logging.ERROR,
+                run_id=run.run_id,
+                workspace_id=run.workspace_id,
+                phase=AnalysisRunPhase.PLAN_VALIDATION.value,
+                operation="planning",
+                duration_ms=planning_elapsed_ms,
+                error_code=error.code,
+                outcome="failed",
             )
             return
         if planning.outcome == PlanningOutcome.CLARIFICATION_REQUIRED:
@@ -956,6 +1012,17 @@ class DurableAnalysisWorker:
                 lease_attempt=lease_attempt,
                 summary_updates=plan_summary,
             )
+            log_analysis_event(
+                logger,
+                "approval_required",
+                run_id=run.run_id,
+                workspace_id=run.workspace_id,
+                phase=AnalysisRunPhase.APPROVAL.value,
+                operation="planning",
+                plan_step_count=len(plan.steps),
+                duration_ms=planning_elapsed_ms,
+                status=AnalysisRunStatus.WAITING.value,
+            )
             return
         await self._state_machine.transition(
             user_id=run.user_id,
@@ -969,6 +1036,19 @@ class DurableAnalysisWorker:
             worker_id=self._worker_id,
             lease_attempt=lease_attempt,
             summary_updates=plan_summary,
+        )
+        analysis_metrics.record_run_outcome("plan_ready")
+        log_analysis_event(
+            logger,
+            "run_completed",
+            run_id=run.run_id,
+            workspace_id=run.workspace_id,
+            phase=AnalysisRunPhase.COMPLETED.value,
+            operation="planning",
+            plan_step_count=len(plan.steps),
+            duration_ms=planning_elapsed_ms,
+            outcome="plan_ready",
+            status=AnalysisRunStatus.SUCCEEDED.value,
         )
 
     async def _finish_failed(
@@ -1003,6 +1083,20 @@ class DurableAnalysisWorker:
                     "timings_ms": {"phase_1_to_7": elapsed_ms},
                 },
             )
+            analysis_metrics.record_error(error.code)
+            analysis_metrics.record_run_outcome("failed")
+            log_analysis_event(
+                logger,
+                "run_failed",
+                level=logging.ERROR,
+                run_id=run.run_id,
+                workspace_id=run.workspace_id,
+                phase=AnalysisRunPhase.COMPLETED.value,
+                operation="execute",
+                duration_ms=elapsed_ms,
+                error_code=error.code,
+                outcome="failed",
+            )
         except (
             AnalysisRunConflictError,
             AnalysisRunLeaseConflictError,
@@ -1035,6 +1129,17 @@ class DurableAnalysisWorker:
                 deduplication_key=f"attempt-{lease_attempt}:cancelled",
                 worker_id=self._worker_id,
                 lease_attempt=lease_attempt,
+            )
+            analysis_metrics.record_run_outcome("cancelled")
+            log_analysis_event(
+                logger,
+                "run_cancelled",
+                run_id=run.run_id,
+                workspace_id=run.workspace_id,
+                phase=AnalysisRunPhase.COMPLETED.value,
+                operation="execute",
+                outcome="cancelled",
+                status=AnalysisRunStatus.CANCELLED.value,
             )
         except (AnalysisRunConflictError, AnalysisRunLeaseConflictError):
             return

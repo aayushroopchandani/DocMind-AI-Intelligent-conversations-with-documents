@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 from dataclasses import dataclass
 from typing import Sequence
@@ -41,7 +40,12 @@ from .repair import TargetedRepairRetriever
 from .text import TextEvidenceCompletionService
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import os
 from dataclasses import asdict, dataclass, replace
 from time import perf_counter
@@ -49,7 +48,12 @@ from .selection import SelectedDataset, select_preparation_evidence
 from .transform import DeterministicDatasetTransformer, TransformOutput
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 DEFAULT_PREPARATION_CONCURRENCY = 4
 MAX_PREPARATION_CONCURRENCY = 8
 

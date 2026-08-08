@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import os
 import re
 from dataclasses import dataclass
@@ -46,7 +45,12 @@ from .validation import (
 )
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 _NUMBER_RE = re.compile(r"(?:^|[^\w])[-+]?[$€£₹]?\s*\d[\d,.]*")
 _DEFAULT_MAX_CHUNKS_PER_DOCUMENT = 4
 _DEFAULT_MAX_CONCURRENCY = 3

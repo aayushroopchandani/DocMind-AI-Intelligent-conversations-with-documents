@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import logging
 import os
 from pathlib import Path
 from typing import Any, Sequence
@@ -49,7 +48,12 @@ from utils.pydantic_schemas import IngestData
 DATA_ANALYSIS_CHUNK_SIZE = 2400
 DATA_ANALYSIS_CHUNK_OVERLAP = 300
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 _background_docling_tasks: set[asyncio.Task["TableFallbackResult"]] = set()
 
 

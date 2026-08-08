@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
@@ -32,7 +31,12 @@ from ...repositories.datasets import load_materialized_dataset_batch
 from .profiler import DeterministicDatasetProfiler
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 DEFAULT_PROFILE_CONCURRENCY = 4
 MAX_PROFILE_CONCURRENCY = 8
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -10,9 +9,10 @@ from .artifacts import (
     ArtifactReconciliationSummary,
     ArtifactVersionService,
 )
+from ..observability.logging import get_analysis_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_analysis_logger(__name__)
 
 
 def _utc_now() -> datetime:

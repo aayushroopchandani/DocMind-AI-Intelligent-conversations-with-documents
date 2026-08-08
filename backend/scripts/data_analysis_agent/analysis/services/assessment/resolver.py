@@ -10,6 +10,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
+from scripts.data_analysis_agent.runtime.models.privacy import AnalysisPrivacyMode
+from scripts.data_analysis_agent.runtime.privacy import (
+    PrivacyGateway,
+    current_privacy_mode,
+)
+from scripts.data_analysis_agent.runtime.observability import measure_llm_call
+from ...models.assessment import AMBIGUITY_PROMPT_VERSION
+
 from .matcher import AmbiguityCandidate
 
 
@@ -92,9 +100,11 @@ class AmbiguityResolver:
         generator: AsyncAmbiguityGenerator | None = None,
         *,
         model: str | None = None,
+        privacy_gateway: PrivacyGateway | None = None,
     ) -> None:
         self._generator = generator
         self.model = model or ambiguity_model_name()
+        self._privacy_gateway = privacy_gateway or PrivacyGateway()
 
     async def resolve(
         self,
@@ -102,15 +112,21 @@ class AmbiguityResolver:
     ) -> dict[str, AmbiguityResolution]:
         if not candidates:
             return {}
+        privacy_mode = current_privacy_mode()
         tables: dict[str, dict[str, Any]] = {}
         pairs = []
         for candidate in candidates:
             table_key = candidate.evidence.table_id or candidate.evidence.dataset_id
             if table_key and table_key not in tables:
-                tables[table_key] = {
-                    "table_title": candidate.table_title,
-                    "table_summary": candidate.table_summary[:900],
-                    "columns": [
+                safe_columns = []
+                for column in candidate.columns[:30]:
+                    privacy = self._privacy_gateway.sanitize_examples(
+                        column_key=column.key,
+                        label=column.label,
+                        semantic_role=column.semantic_role.value,
+                        values=column.example_values,
+                    )
+                    safe_columns.append(
                         {
                             "key": column.key,
                             "label": column.label,
@@ -118,10 +134,24 @@ class AmbiguityResolver:
                             "inferred_type": column.inferred_type.value,
                             "semantic_role": column.semantic_role.value,
                             "unit": column.detected_unit,
-                            "example_values": list(column.example_values),
+                            "example_values": list(privacy.examples),
+                            "privacy_classification": (
+                                privacy.classification.value
+                            ),
                         }
-                        for column in candidate.columns[:30]
-                    ],
+                    )
+                tables[table_key] = {
+                    "table_title": self._privacy_gateway.redact_sensitive_text(
+                        candidate.table_title
+                    ),
+                    "table_summary": (
+                        self._privacy_gateway.redact_sensitive_text(
+                            candidate.table_summary[:900]
+                        )
+                        if privacy_mode == AnalysisPrivacyMode.STANDARD
+                        else ""
+                    ),
+                    "columns": safe_columns,
                 }
             pairs.append(
                 {
@@ -143,17 +173,22 @@ class AmbiguityResolver:
                 }
             )
         generator = self._generator or get_ambiguity_llm()
-        response = await generator.ainvoke(
-            [
-                SystemMessage(content=AMBIGUITY_SYSTEM_PROMPT),
-                HumanMessage(
-                    content=json.dumps(
-                        {"tables": tables, "pairs": pairs},
-                        ensure_ascii=False,
-                    )
-                ),
-            ]
-        )
+        with measure_llm_call(
+            stage="ambiguity_resolution",
+            model=self.model,
+            prompt_version=AMBIGUITY_PROMPT_VERSION,
+        ):
+            response = await generator.ainvoke(
+                [
+                    SystemMessage(content=AMBIGUITY_SYSTEM_PROMPT),
+                    HumanMessage(
+                        content=json.dumps(
+                            {"tables": tables, "pairs": pairs},
+                            ensure_ascii=False,
+                        )
+                    ),
+                ]
+            )
         parsed = (
             response
             if isinstance(response, AmbiguityResolutionBatch)

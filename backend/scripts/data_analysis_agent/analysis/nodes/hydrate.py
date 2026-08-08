@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from ..observability import record_analysis_trace
@@ -22,7 +21,12 @@ from ..services import EvidenceHydrator, deduplicate_table_references
 from ..state import AnalysisPhase, DataAnalysisState
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 
 
 def build_hydration_node(

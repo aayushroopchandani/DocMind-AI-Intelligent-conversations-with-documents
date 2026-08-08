@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -44,7 +43,12 @@ from ...repositories import (
 )
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 _MAX_REPAIR_TEXT_EVIDENCE = 30
 
 

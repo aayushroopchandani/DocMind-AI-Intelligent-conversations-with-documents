@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -22,7 +21,12 @@ from ..models import (
 from ..state import AnalysisPhase, DataAnalysisState
 
 
-logger = logging.getLogger(__name__)
+from scripts.data_analysis_agent.runtime.observability.logging import (
+    get_analysis_logger,
+)
+
+
+logger = get_analysis_logger(__name__)
 
 
 def _pinned_references(

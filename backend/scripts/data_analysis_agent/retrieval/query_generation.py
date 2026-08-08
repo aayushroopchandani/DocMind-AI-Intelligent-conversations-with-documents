@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 from enum import Enum
@@ -13,6 +12,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from scripts.data_analysis_agent.runtime.observability import (
+    get_analysis_logger,
+    measure_llm_call,
+)
+
 from .state import DataAnalysisRetrievalState
 from .query_cache import (
     MongoQueryGenerationCache,
@@ -22,7 +26,7 @@ from .query_cache import (
 )
 
 
-logger = logging.getLogger(__name__)
+logger = get_analysis_logger(__name__)
 QUERY_GENERATION_VERSION = "1.1.0"
 QUERY_GENERATION_PROMPT_VERSION = "1.0.0"
 
@@ -438,7 +442,12 @@ def build_query_generation_node(
         for attempt in range(attempts):
             attempts_used = attempt + 1
             try:
-                response = await generator.ainvoke(messages)
+                with measure_llm_call(
+                    stage="query_generation",
+                    model=_query_generation_model(),
+                    prompt_version=QUERY_GENERATION_PROMPT_VERSION,
+                ):
+                    response = await generator.ainvoke(messages)
                 parsed = (
                     response
                     if isinstance(response, GeneratedRetrievalQueries)
