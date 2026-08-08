@@ -95,6 +95,8 @@ class SpreadsheetRangeLocator(BaseModel):
     worksheet_name: str = Field(min_length=1, max_length=255)
     range_a1: str = Field(min_length=5, max_length=100)
     snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    hidden_rows_excluded: int = Field(default=0, ge=0)
+    hidden_columns_excluded: int = Field(default=0, ge=0)
 
     model_config = ConfigDict(
         extra="forbid",

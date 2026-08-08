@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from scripts.data_analysis_agent.runtime.models.datasets import DatasetHandle
+from scripts.data_analysis_agent.runtime.models.privacy import AnalysisPrivacyMode
 
 
 _DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -22,6 +23,7 @@ class AnalysisRequest(BaseModel):
     chat_id: str = Field(min_length=1)
     workspace_id: str = Field(default="", min_length=1)
     query: str = Field(min_length=1)
+    privacy_mode: AnalysisPrivacyMode = AnalysisPrivacyMode.STANDARD
     document_ids: tuple[str, ...] = ()
     pinned_datasets: tuple[DatasetHandle, ...] = Field(default=(), max_length=100)
     created_at: datetime = Field(default_factory=utc_now)

@@ -8,6 +8,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .datasets import DatasetHandle
+from .privacy import AnalysisPrivacyMode
 from .runs import AnalysisMode
 from .workbook import SpreadsheetContext
 
@@ -123,6 +124,7 @@ class CreateAnalysisRunRequest(BaseModel):
     )
     mode: AnalysisMode
     prompt: str = Field(min_length=1, max_length=20_000)
+    privacy_mode: AnalysisPrivacyMode = AnalysisPrivacyMode.STANDARD
     active_artifact: ActiveArtifactContext | None = None
     spreadsheet_context: SpreadsheetContext | None = None
     pdf_context: PdfRunContext | None = None
@@ -195,6 +197,7 @@ def request_fingerprint(request: CreateAnalysisRunRequest) -> str:
         "workspace_id": request.workspace_id,
         "mode": request.mode.value,
         "prompt": request.prompt,
+        "privacy_mode": request.privacy_mode.value,
         "active_artifact": (
             request.active_artifact.model_dump(mode="json")
             if request.active_artifact

@@ -9,11 +9,36 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
+from ..privacy.gateway import PrivacyGateway
+
 from .runs import AnalysisRunPhase, AnalysisRunStatus
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 MAX_EVENT_PAYLOAD_BYTES = 64 * 1024
+_FORBIDDEN_PAYLOAD_KEYS = frozenset(
+    {
+        "cell",
+        "cells",
+        "chunk",
+        "chunks",
+        "content",
+        "formula",
+        "formulas",
+        "prompt",
+        "raw",
+        "row",
+        "rows",
+        "secure_url",
+        "signed_url",
+        "text",
+        "value",
+        "values",
+    }
+)
+_REDACTED_TEXT_KEYS = frozenset(
+    {"comment", "description", "message", "reason"}
+)
 
 
 def utc_now() -> datetime:
@@ -111,8 +136,10 @@ class AnalysisRunEvent(BaseModel):
         cls,
         value: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
+        sanitized = _sanitize_event_value(value)
+        assert isinstance(sanitized, dict)
         encoded = json.dumps(
-            value,
+            sanitized,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -120,7 +147,35 @@ class AnalysisRunEvent(BaseModel):
         ).encode("utf-8")
         if len(encoded) > MAX_EVENT_PAYLOAD_BYTES:
             raise ValueError("event payload exceeds 64 KiB")
-        return value
+        return sanitized
+
+
+def _sanitize_event_value(
+    value: JsonValue,
+    *,
+    parent_key: str | None = None,
+) -> JsonValue:
+    if isinstance(value, dict):
+        output: dict[str, JsonValue] = {}
+        for key, item in value.items():
+            normalized_key = str(key).strip().casefold()
+            if normalized_key in _FORBIDDEN_PAYLOAD_KEYS:
+                raise ValueError(
+                    f"event payload cannot contain raw data field '{normalized_key}'"
+                )
+            output[str(key)] = _sanitize_event_value(
+                item,
+                parent_key=normalized_key,
+            )
+        return output
+    if isinstance(value, list):
+        return [
+            _sanitize_event_value(item, parent_key=parent_key)
+            for item in value
+        ]
+    if isinstance(value, str) and parent_key in _REDACTED_TEXT_KEYS:
+        return PrivacyGateway.redact_sensitive_text(value)
+    return value
 
 
 __all__ = [

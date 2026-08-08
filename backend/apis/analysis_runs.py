@@ -39,7 +39,12 @@ from scripts.data_analysis_agent.runtime.models.runs import (
     DatasetVersionReference,
     RunApprovalStatus,
     RunIssueSummary,
+    StageTokenUsage,
     TokenUsage,
+)
+from scripts.data_analysis_agent.runtime.models.privacy import (
+    AnalysisPrivacyMode,
+    PrivacySummary,
 )
 from scripts.data_analysis_agent.runtime.repositories.runs import (
     AnalysisRunConflictError,
@@ -224,6 +229,8 @@ class AnalysisRunView(BaseModel):
     chat_id: str
     mode: AnalysisMode
     prompt: str
+    privacy_mode: AnalysisPrivacyMode
+    privacy_summary: PrivacySummary
     active_artifact_id: str | None
     status: AnalysisRunStatus
     phase: AnalysisRunPhase
@@ -255,7 +262,9 @@ class AnalysisRunView(BaseModel):
     errors_summary: tuple[RunIssueSummary, ...]
     model_versions: dict[str, str]
     prompt_versions: dict[str, str]
+    component_versions: dict[str, str]
     token_usage: TokenUsage
+    token_usage_by_stage: dict[str, StageTokenUsage]
     timings_ms: dict[str, float]
     created_at: datetime
     updated_at: datetime

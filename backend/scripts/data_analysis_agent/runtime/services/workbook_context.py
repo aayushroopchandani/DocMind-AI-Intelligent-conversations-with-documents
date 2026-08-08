@@ -447,26 +447,46 @@ def _snapshot_to_tabular(
             "spreadsheet dataset exceeds the column limit"
         )
     headers = _headers(snapshot)
+    # A selected range is explicit user scope. For an automatic used-range
+    # snapshot, hidden cells remain in the immutable workbook artifact but are
+    # not materialized into the analytical dataset or later sampled for LLMs.
+    explicit_scope = context.selected_range is not None
+    included_columns = tuple(
+        index
+        for index in range(snapshot.column_count)
+        if explicit_scope or index not in snapshot.hidden_columns
+    )
+    if not included_columns:
+        raise WorkbookContextError(
+            "the spreadsheet range contains no visible analytical columns"
+        )
+    included_rows = tuple(
+        index
+        for index in range(snapshot.row_count)
+        if index != snapshot.header_row_index
+        and (explicit_scope or index not in snapshot.hidden_rows)
+    )
     columns = tuple(
         DatasetColumn(
-            key=f"c_{index + 1:04d}",
-            label=label,
-            type=_column_type(snapshot, index),
-            source_index=index,
+            key=f"c_{source_index + 1:04d}",
+            label=headers[source_index],
+            type=_column_type(
+                snapshot,
+                source_index,
+                included_rows=included_rows,
+            ),
+            source_index=source_index,
         )
-        for index, label in enumerate(headers)
-    )
-    data_rows = tuple(
-        tuple(row)
-        for index, row in enumerate(snapshot.values)
-        if index != snapshot.header_row_index
+        for source_index in included_columns
     )
     rows: tuple[dict[str, JsonValue], ...] = tuple(
         {
-            column.key: _json_cell(row[column_index])
-            for column_index, column in enumerate(columns)
+            column.key: _json_cell(
+                snapshot.values[row_index][column.source_index]
+            )
+            for column in columns
         }
-        for row in data_rows
+        for row_index in included_rows
     )
     locator = SpreadsheetRangeLocator(
         artifact_id=artifact_id,
@@ -477,6 +497,12 @@ def _snapshot_to_tabular(
         worksheet_name=context.worksheet_name,
         range_a1=snapshot.range_a1,
         snapshot_hash=canonical_snapshot_hash(snapshot),
+        hidden_rows_excluded=(
+            0 if explicit_scope else len(snapshot.hidden_rows)
+        ),
+        hidden_columns_excluded=(
+            0 if explicit_scope else len(snapshot.hidden_columns)
+        ),
     )
     title = (
         f"{context.workbook_name} — {context.worksheet_name} "
@@ -772,10 +798,17 @@ def _headers(snapshot: WorkbookRangeSnapshot) -> tuple[str, ...]:
 def _column_type(
     snapshot: WorkbookRangeSnapshot,
     column_index: int,
+    *,
+    included_rows: tuple[int, ...] | None = None,
 ) -> DatasetColumnType:
+    allowed_rows = (
+        frozenset(included_rows) if included_rows is not None else None
+    )
     observed: list[WorkbookCellType] = []
     for row_index, row in enumerate(snapshot.cell_types):
         if row_index == snapshot.header_row_index:
+            continue
+        if allowed_rows is not None and row_index not in allowed_rows:
             continue
         cell_type = row[column_index]
         if cell_type not in {None, WorkbookCellType.BLANK, WorkbookCellType.ERROR}:
@@ -797,6 +830,7 @@ def _column_type(
         row[column_index]
         for row_index, row in enumerate(snapshot.values)
         if row_index != snapshot.header_row_index
+        and (allowed_rows is None or row_index in allowed_rows)
         and row[column_index] is not None
     )
     if raw_values and all(

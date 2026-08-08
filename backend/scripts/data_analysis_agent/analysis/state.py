@@ -19,6 +19,7 @@ from .models import (
     RetrievalResult,
 )
 from scripts.data_analysis_agent.runtime.models.datasets import DatasetHandle
+from scripts.data_analysis_agent.runtime.models.privacy import AnalysisPrivacyMode
 
 
 ANALYSIS_STATE_VERSION: Literal[5] = 5
@@ -70,6 +71,7 @@ def create_analysis_state(
     document_ids: list[str] | tuple[str, ...] = (),
     workspace_id: str | None = None,
     pinned_datasets: list[DatasetHandle] | tuple[DatasetHandle, ...] = (),
+    privacy_mode: AnalysisPrivacyMode = AnalysisPrivacyMode.STANDARD,
     run_id: str | None = None,
 ) -> DataAnalysisState:
     """Validate a request and create isolated state for one analysis run."""
@@ -85,6 +87,7 @@ def create_analysis_state(
             query=query,
             document_ids=document_ids,
             pinned_datasets=pinned_datasets,
+            privacy_mode=privacy_mode,
         ),
         phase=AnalysisPhase.INITIALIZED,
         warnings=[],
