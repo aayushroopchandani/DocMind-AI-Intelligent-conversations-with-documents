@@ -17,6 +17,7 @@ from scripts.data_analysis_agent.runtime.models import (
     AnalysisRunOutcome,
     AnalysisRunPhase,
     RunIssueSummary,
+    StageTokenUsage,
     TokenUsage,
 )
 from .metadata import phase7_model_versions, phase7_prompt_versions
@@ -102,6 +103,7 @@ class Phase7ExecutionResult(BaseModel):
         default_factory=phase7_prompt_versions
     )
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    token_usage_by_stage: dict[str, StageTokenUsage] = Field(default_factory=dict)
     planning_artifacts: Phase7PlanningArtifacts | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)

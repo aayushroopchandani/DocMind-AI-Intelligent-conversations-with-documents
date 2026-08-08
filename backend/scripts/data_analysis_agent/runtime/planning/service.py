@@ -31,8 +31,11 @@ from ..models.runs import (
     AnalysisRun,
     AnalysisRunPhase,
     RunIssueSummary,
+    StageTokenUsage,
     TokenUsage,
 )
+from ..models.privacy import PrivacySummary
+from ..observability.tokens import merge_stage_maps
 from ..repositories.plans import (
     AnalysisPlanConflictError,
     AnalysisPlanNotFoundError,
@@ -148,6 +151,7 @@ class AnalysisPlanningService:
                 plan=existing,
                 reports=(PlanValidationReport(),),
                 token_usage=existing.token_usage,
+                token_usage_by_stage=existing.token_usage_by_stage,
             )
 
         conflicting_targets = (
@@ -160,6 +164,7 @@ class AnalysisPlanningService:
         reports: list[PlanValidationReport] = []
         invocations: list[PlannerInvocation] = []
         failed_usages: list[TokenUsage] = []
+        failed_stages: list[StageTokenUsage] = []
         original = None
         await progress.emit(
             PlanningProgress(
@@ -200,11 +205,18 @@ class AnalysisPlanningService:
             )
         except PlannerOutputError as exc:
             failed_usages.append(exc.token_usage)
+            if exc.stage_usage is not None:
+                failed_stages.append(exc.stage_usage)
             if exc.code == "planner_unavailable":
                 return _failed(
                     code=exc.code,
                     message=str(exc),
                     retryable=True,
+                    token_usage=_sum_usage(invocations, failed_usages),
+                    token_usage_by_stage=_stage_usage(
+                        invocations,
+                        failed_stages,
+                    ),
                 )
             report = _planner_schema_report(exc)
             draft = None
@@ -216,6 +228,7 @@ class AnalysisPlanningService:
                 return _clarification(
                     reports,
                     _sum_usage(invocations, failed_usages),
+                    _stage_usage(invocations, failed_stages),
                 )
             await progress.emit(
                 PlanningProgress(
@@ -256,12 +269,18 @@ class AnalysisPlanningService:
                 )
             except PlannerOutputError as exc:
                 failed_usages.append(exc.token_usage)
+                if exc.stage_usage is not None:
+                    failed_stages.append(exc.stage_usage)
                 if exc.code == "planner_unavailable":
                     return _failed(
                         code=exc.code,
                         message=str(exc),
                         retryable=True,
                         token_usage=_sum_usage(invocations, failed_usages),
+                        token_usage_by_stage=_stage_usage(
+                            invocations,
+                            failed_stages,
+                        ),
                     )
                 report = _planner_schema_report(exc)
                 draft = None
@@ -273,6 +292,7 @@ class AnalysisPlanningService:
             return _clarification(
                 reports,
                 _sum_usage(invocations, failed_usages),
+                _stage_usage(invocations, failed_stages),
             )
 
         approval_policy = derive_approval_policy(
@@ -289,7 +309,12 @@ class AnalysisPlanningService:
                 approval_policy=approval_policy,
                 reports=reports,
                 invocation=final_invocation,
+                privacy=context.privacy,
                 token_usage=_sum_usage(invocations, failed_usages),
+                token_usage_by_stage=_stage_usage(
+                    invocations,
+                    failed_stages,
+                ),
             )
         )
         try:
@@ -318,6 +343,7 @@ class AnalysisPlanningService:
             return _clarification(
                 reports,
                 _sum_usage(invocations, failed_usages),
+                _stage_usage(invocations, failed_stages),
             )
         return PlanningExecutionResult(
             outcome=(
@@ -328,6 +354,7 @@ class AnalysisPlanningService:
             plan=plan,
             reports=tuple(reports),
             token_usage=_sum_usage(invocations, failed_usages),
+            token_usage_by_stage=_stage_usage(invocations, failed_stages),
         )
 
     async def decide_plan(
@@ -526,7 +553,9 @@ def _build_plan_data(
     approval_policy: object,
     reports: list[PlanValidationReport],
     invocation: PlannerInvocation,
+    privacy: PrivacySummary,
     token_usage: TokenUsage,
+    token_usage_by_stage: dict[str, StageTokenUsage],
 ) -> dict[str, object]:
     from ..models.plans import build_analysis_plan
 
@@ -548,7 +577,9 @@ def _build_plan_data(
         ),
         model=invocation.model,
         prompt_version=invocation.prompt_version,
+        privacy=privacy,
         token_usage=token_usage,
+        token_usage_by_stage=token_usage_by_stage,
     )
     return plan.model_dump(mode="python")
 
@@ -574,6 +605,7 @@ def _planner_schema_report(exc: PlannerOutputError) -> PlanValidationReport:
 def _clarification(
     reports: list[PlanValidationReport],
     token_usage: TokenUsage,
+    token_usage_by_stage: dict[str, StageTokenUsage],
 ) -> PlanningExecutionResult:
     report = reports[-1]
     user_issue = next(
@@ -600,6 +632,7 @@ def _clarification(
         reports=tuple(reports),
         clarification=question[:1_000],
         token_usage=token_usage,
+        token_usage_by_stage=token_usage_by_stage,
     )
 
 
@@ -609,6 +642,7 @@ def _failed(
     message: str,
     retryable: bool,
     token_usage: TokenUsage | None = None,
+    token_usage_by_stage: dict[str, StageTokenUsage] | None = None,
 ) -> PlanningExecutionResult:
     return PlanningExecutionResult(
         outcome=PlanningOutcome.FAILED,
@@ -620,6 +654,7 @@ def _failed(
             ),
         ),
         token_usage=token_usage or TokenUsage(),
+        token_usage_by_stage=token_usage_by_stage or {},
     )
 
 
@@ -639,6 +674,22 @@ def _sum_usage(
         output_tokens=output_tokens,
         total_tokens=input_tokens + output_tokens,
         estimated_cost_usd=cost,
+    )
+
+
+def _stage_usage(
+    invocations: list[PlannerInvocation],
+    failed_stages: list[StageTokenUsage] | None = None,
+) -> dict[str, StageTokenUsage]:
+    return merge_stage_maps(
+        {
+            item.stage_usage.stage: item.stage_usage
+            for item in invocations
+            if item.stage_usage is not None
+        },
+        {
+            item.stage: item for item in (failed_stages or ())
+        },
     )
 
 

@@ -57,6 +57,8 @@ from ..integration.metadata import (
     phase7_model_versions,
     phase7_prompt_versions,
 )
+from ..models.privacy import PrivacySummary
+from ..versioning import phase8_component_versions
 
 
 class AnalysisRunServiceError(RuntimeError):
@@ -190,12 +192,15 @@ class AnalysisRunService:
             request_fingerprint=fingerprint,
             mode=request.mode,
             prompt=request.prompt,
+            privacy_mode=request.privacy_mode,
+            privacy_summary=PrivacySummary(mode=request.privacy_mode),
             active_artifact_id=active_artifact_id,
             inputs_ready=not spreadsheet_pending,
             input_artifact_version_ids=artifact_version_ids,
             selected_document_ids=request.selected_document_ids,
             model_versions=phase7_model_versions(),
             prompt_versions=phase7_prompt_versions(),
+            component_versions=phase8_component_versions(),
             created_at=now,
             updated_at=now,
             expires_at=(
@@ -518,6 +523,8 @@ class AnalysisRunService:
             request_fingerprint=fingerprint,
             mode=source.mode,
             prompt=source.prompt,
+            privacy_mode=source.privacy_mode,
+            privacy_summary=source.privacy_summary,
             active_artifact_id=source.active_artifact_id,
             inputs_ready=True,
             input_artifact_version_ids=source.input_artifact_version_ids,
@@ -529,6 +536,7 @@ class AnalysisRunService:
             last_completed_step_id=source.last_completed_step_id,
             model_versions=phase7_model_versions(),
             prompt_versions=phase7_prompt_versions(),
+            component_versions=phase8_component_versions(),
             created_at=now,
             updated_at=now,
             expires_at=now + self._run_deadline,

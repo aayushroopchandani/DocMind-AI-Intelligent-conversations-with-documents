@@ -11,7 +11,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..models.plans import PLANNER_PROMPT_VERSION, PlanProposal
-from ..models.runs import TokenUsage
+from ..models.runs import StageTokenUsage, TokenUsage
+from ..observability import measure_llm_call
 from .context import PlanningContext
 from .contracts import PlanValidationIssue
 
@@ -64,6 +65,7 @@ class PlannerInvocation(BaseModel):
     model: str = Field(min_length=1, max_length=200)
     prompt_version: str = PLANNER_PROMPT_VERSION
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    stage_usage: StageTokenUsage | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -78,11 +80,13 @@ class PlannerOutputError(RuntimeError):
         code: str,
         schema_issues: tuple[tuple[str, str], ...] = (),
         token_usage: TokenUsage | None = None,
+        stage_usage: StageTokenUsage | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.schema_issues = schema_issues
         self.token_usage = token_usage or TokenUsage()
+        self.stage_usage = stage_usage
 
 
 class AnalysisPlanner(Protocol):
@@ -150,7 +154,8 @@ class TypedAnalysisPlanner:
             [
                 SystemMessage(content=PLANNER_SYSTEM_PROMPT),
                 HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
-            ]
+            ],
+            stage="planning",
         )
 
     async def repair(
@@ -185,27 +190,45 @@ class TypedAnalysisPlanner:
             [
                 SystemMessage(content=PLANNER_SYSTEM_PROMPT),
                 HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
-            ]
+            ],
+            stage="plan_repair",
         )
 
-    async def _invoke(self, messages: list[Any]) -> PlannerInvocation:
+    async def _invoke(
+        self,
+        messages: list[Any],
+        *,
+        stage: str,
+    ) -> PlannerInvocation:
         generator = self._generator or get_planning_llm()
+        measurement = None
         try:
-            response = await generator.ainvoke(messages)
+            with measure_llm_call(
+                stage=stage,
+                model=self.model,
+                prompt_version=PLANNER_PROMPT_VERSION,
+            ) as measurement:
+                response = await generator.ainvoke(messages)
         except (
             OutputParserException,
             ValidationError,
             ValueError,
             TypeError,
         ) as exc:
+            stage_usage = measurement.result if measurement else None
             raise PlannerOutputError(
                 "The planner returned an invalid typed response.",
                 code="planner_schema_invalid",
+                token_usage=(stage_usage.usage if stage_usage else None),
+                stage_usage=stage_usage,
             ) from exc
         except Exception as exc:
+            stage_usage = measurement.result if measurement else None
             raise PlannerOutputError(
                 "The planning model is temporarily unavailable.",
                 code="planner_unavailable",
+                token_usage=(stage_usage.usage if stage_usage else None),
+                stage_usage=stage_usage,
             ) from exc
 
         raw: object = response
@@ -216,6 +239,17 @@ class TypedAnalysisPlanner:
             parsed = response.get("parsed")
             raw = response.get("raw")
         token_usage = _usage(raw)
+        stage_usage = measurement.result if measurement is not None else None
+        if stage_usage is None:
+            stage_usage = StageTokenUsage(
+                stage=stage,
+                model=self.model,
+                prompt_version=PLANNER_PROMPT_VERSION,
+                usage=token_usage,
+            )
+        elif token_usage.total_tokens > stage_usage.usage.total_tokens:
+            stage_usage = stage_usage.model_copy(update={"usage": token_usage})
+        token_usage = stage_usage.usage
         try:
             if parsed is None:
                 parsed = _raw_json(raw)
@@ -230,6 +264,7 @@ class TypedAnalysisPlanner:
                 code="planner_schema_invalid",
                 schema_issues=_safe_schema_issues(exc),
                 token_usage=token_usage,
+                stage_usage=stage_usage,
             ) from exc
         except (ValueError, TypeError) as exc:
             raise PlannerOutputError(
@@ -237,11 +272,13 @@ class TypedAnalysisPlanner:
                 code="planner_schema_invalid",
                 schema_issues=(("plan", "Return one complete JSON object."),),
                 token_usage=token_usage,
+                stage_usage=stage_usage,
             ) from exc
         return PlannerInvocation(
             proposal=proposal,
             model=self.model,
             token_usage=token_usage,
+            stage_usage=stage_usage,
         )
 
 

@@ -181,9 +181,11 @@ _IMMUTABLE_MUTATION_FIELDS = frozenset(
         "input_dataset_versions",
         "idempotency_key",
         "request_fingerprint",
+        "privacy_mode",
         "parent_run_id",
         "root_run_id",
         "created_at",
+        "component_versions",
         "version",
         "last_event_sequence",
     }

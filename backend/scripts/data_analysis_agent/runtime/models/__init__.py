@@ -54,6 +54,7 @@ from .plans import (
     PlanWriteIntent,
     WorkbookVersionGuard,
 )
+from .privacy import AnalysisPrivacyMode, DataSensitivity, PrivacySummary
 from .runs import (
     AnalysisMode,
     AnalysisRun,
@@ -63,6 +64,7 @@ from .runs import (
     DatasetVersionReference,
     RunIssueSummary,
     RunApprovalStatus,
+    StageTokenUsage,
     TERMINAL_RUN_STATUSES,
     TokenUsage,
 )
@@ -87,6 +89,7 @@ __all__ = [
     "AnalysisPlan",
     "AnalysisPlanDraft",
     "AnalysisPlanStatus",
+    "AnalysisPrivacyMode",
     "AnalysisRun",
     "AnalysisRunEvent",
     "AnalysisRunOutcome",
@@ -111,6 +114,7 @@ __all__ = [
     "DatasetSourceType",
     "DatasetStorageReference",
     "DatasetVersionReference",
+    "DataSensitivity",
     "DerivedDatasetLocator",
     "FinalPatchApprovalCommand",
     "FinalPatchProposal",
@@ -128,11 +132,13 @@ __all__ = [
     "PlanProposal",
     "PlanStep",
     "PlanWriteIntent",
+    "PrivacySummary",
     "ResolvedAnalysisInput",
     "RunIssueSummary",
     "RunApprovalStatus",
     "SpreadsheetContext",
     "SpreadsheetRangeLocator",
+    "StageTokenUsage",
     "TERMINAL_RUN_STATUSES",
     "TabularDataset",
     "TokenUsage",

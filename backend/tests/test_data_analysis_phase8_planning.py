@@ -383,6 +383,11 @@ class _Generator:
         return self.response
 
 
+class _FailingGenerator:
+    async def ainvoke(self, _input: object, **_kwargs: object) -> object:
+        raise TimeoutError("provider request timed out")
+
+
 class _PlanningRepository:
     def __init__(self) -> None:
         self.plan = None
@@ -529,6 +534,9 @@ class Phase8PlanningServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(invocation.proposal, PlanProposal)
         self.assertEqual(invocation.token_usage.total_tokens, 125)
+        self.assertIsNotNone(invocation.stage_usage)
+        self.assertEqual(invocation.stage_usage.stage, "planning")
+        self.assertEqual(invocation.stage_usage.usage.total_tokens, 125)
 
     async def test_typed_planner_never_exposes_raw_invalid_output(self) -> None:
         planner = TypedAnalysisPlanner(
@@ -549,6 +557,34 @@ class Phase8PlanningServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("provider-secret-value", str(captured.exception))
         self.assertEqual(captured.exception.token_usage.total_tokens, 7)
+        self.assertEqual(captured.exception.stage_usage.stage, "planning")
+
+    async def test_planner_timeout_becomes_privacy_safe_structured_failure(
+        self,
+    ) -> None:
+        context = _context()
+        service = AnalysisPlanningService(
+            repository=_PlanningRepository(),
+            state_machine=object(),
+            context_builder=_ContextBuilder(context),
+            planner=TypedAnalysisPlanner(_FailingGenerator()),
+        )
+
+        result = await service.create_plan(
+            run=_run(context),
+            dataset_handles=(),
+            requirements=_requirements(),
+            profiles=object(),
+            normalization=object(),
+        )
+
+        self.assertEqual(result.outcome, PlanningOutcome.FAILED)
+        self.assertEqual(result.errors[0].code, "planner_unavailable")
+        self.assertNotIn("provider request", str(result.errors))
+        self.assertEqual(
+            result.token_usage_by_stage["planning"].call_count,
+            1,
+        )
 
     async def test_server_canonicalizes_untrusted_step_provenance(self) -> None:
         context = _context()

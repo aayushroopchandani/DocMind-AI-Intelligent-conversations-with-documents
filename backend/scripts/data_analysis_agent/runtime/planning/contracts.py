@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from ..models.plans import AnalysisPlan
 from ..models.events import AnalysisEventType
-from ..models.runs import AnalysisRunPhase, RunIssueSummary, TokenUsage
+from ..models.runs import (
+    AnalysisRunPhase,
+    RunIssueSummary,
+    StageTokenUsage,
+    TokenUsage,
+)
 
 
 class PlanValidationLayer(str, Enum):
@@ -153,6 +158,7 @@ class PlanningExecutionResult(BaseModel):
     errors: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)
     clarification: str | None = Field(default=None, max_length=1_000)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    token_usage_by_stage: dict[str, StageTokenUsage] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

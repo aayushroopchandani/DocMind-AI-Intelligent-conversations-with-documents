@@ -18,11 +18,13 @@ from pydantic import (
 )
 
 from .datasets import DatasetSourceType
-from .runs import AnalysisMode, TokenUsage
+from .privacy import PrivacySummary
+from .runs import AnalysisMode, StageTokenUsage, TokenUsage
 
 
 PLAN_VERSION = "1.0"
 PLANNER_PROMPT_VERSION = "1.0.0"
+PLAN_VALIDATOR_VERSION = "1.0.0"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,119}$")
 
@@ -849,10 +851,17 @@ class AnalysisPlan(AnalysisPlanDraft):
     diagnostics: PlanDiagnostics
     model: str = Field(min_length=1, max_length=200)
     prompt_version: str = Field(min_length=1, max_length=100)
+    validator_version: str = Field(
+        default=PLAN_VALIDATOR_VERSION,
+        min_length=1,
+        max_length=100,
+    )
+    privacy: PrivacySummary = Field(default_factory=PrivacySummary)
     plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     write_target_keys: tuple[str, ...] = Field(default=(), max_length=24)
     reservation_active: bool = False
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    token_usage_by_stage: dict[str, StageTokenUsage] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -1059,6 +1068,8 @@ def analysis_plan_hash(plan: AnalysisPlan) -> str:
         approval_policy=plan.approval_policy,
         model=plan.model,
         prompt_version=plan.prompt_version,
+        validator_version=plan.validator_version,
+        privacy=plan.privacy,
     )
 
 
@@ -1071,6 +1082,8 @@ def _canonical_plan_content_hash(
     approval_policy: ApprovalPolicy,
     model: str,
     prompt_version: str,
+    validator_version: str,
+    privacy: PrivacySummary,
 ) -> str:
     payload = {
         "plan_version": draft.plan_version,
@@ -1095,6 +1108,8 @@ def _canonical_plan_content_hash(
         "approval_policy": approval_policy.model_dump(mode="json"),
         "model": model,
         "prompt_version": prompt_version,
+        "validator_version": validator_version,
+        "privacy": privacy.model_dump(mode="json"),
     }
     return _sha256_json(payload)
 
@@ -1109,7 +1124,10 @@ def build_analysis_plan(
     diagnostics: PlanDiagnostics,
     model: str,
     prompt_version: str = PLANNER_PROMPT_VERSION,
+    validator_version: str = PLAN_VALIDATOR_VERSION,
+    privacy: PrivacySummary | None = None,
     token_usage: TokenUsage | None = None,
+    token_usage_by_stage: dict[str, StageTokenUsage] | None = None,
     now: datetime | None = None,
 ) -> AnalysisPlan:
     created_at = now or utc_now()
@@ -1138,10 +1156,13 @@ def build_analysis_plan(
         "diagnostics": diagnostics,
         "model": model,
         "prompt_version": prompt_version,
+        "validator_version": validator_version,
+        "privacy": privacy or PrivacySummary(),
         "plan_hash": "0" * 64,
         "write_target_keys": workbook_write_target_keys(draft.write_intents),
         "reservation_active": bool(workbook_write_target_keys(draft.write_intents)),
         "token_usage": token_usage or TokenUsage(),
+        "token_usage_by_stage": token_usage_by_stage or {},
         "created_at": created_at,
         "updated_at": created_at,
     }
@@ -1153,6 +1174,8 @@ def build_analysis_plan(
         approval_policy=approval_policy,
         model=model,
         prompt_version=prompt_version,
+        validator_version=validator_version,
+        privacy=privacy or PrivacySummary(),
     )
     provisional["plan_hash"] = plan_hash
     provisional["plan_id"] = str(
@@ -1200,6 +1223,7 @@ __all__ = [
     "NullPredicate",
     "PatchImpactSummary",
     "PLAN_VERSION",
+    "PLAN_VALIDATOR_VERSION",
     "PLANNER_PROMPT_VERSION",
     "PlanApprovalCommand",
     "PlanApprovalRecord",

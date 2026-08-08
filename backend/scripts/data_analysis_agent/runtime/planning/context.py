@@ -33,6 +33,12 @@ from ..models.plans import (
     compute_input_signature,
 )
 from ..models.runs import AnalysisMode, AnalysisRun
+from ..models.privacy import (
+    AnalysisPrivacyMode,
+    DataSensitivity,
+    PrivacySummary,
+)
+from ..privacy import PrivacyColumnResult, PrivacyGateway
 from .contracts import ExecutorCapabilities, PlanResourcePolicy
 
 
@@ -75,6 +81,7 @@ class PlanningColumnSummary(BaseModel):
     ] = Field(default=(), max_length=3)
     minimum: float | None = None
     maximum: float | None = None
+    privacy_classification: DataSensitivity = DataSensitivity.NONE
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -119,6 +126,7 @@ class PlanningContext(BaseModel):
     )
     capabilities: ExecutorCapabilities
     resource_policy: PlanResourcePolicy
+    privacy: PrivacySummary = Field(default_factory=PrivacySummary)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -133,9 +141,11 @@ class PlanningContextBuilder:
         *,
         capabilities: ExecutorCapabilities | None = None,
         resource_policy: PlanResourcePolicy | None = None,
+        privacy_gateway: PrivacyGateway | None = None,
     ) -> None:
         self._capabilities = capabilities or ExecutorCapabilities()
         self._resource_policy = resource_policy or PlanResourcePolicy()
+        self._privacy_gateway = privacy_gateway or PrivacyGateway()
 
     def build(
         self,
@@ -156,6 +166,7 @@ class PlanningContextBuilder:
         }
         inputs: list[PlanInputDataset] = []
         summaries: list[PlanningDatasetSummary] = []
+        privacy_decisions: list[tuple[str, PrivacyColumnResult]] = []
         guards: dict[str, WorkbookVersionGuard] = {}
         for index, normalized in enumerate(normalization.datasets, start=1):
             for dataset_id, source_version in zip(
@@ -184,6 +195,8 @@ class PlanningContextBuilder:
                     input_dataset=input_dataset,
                     normalized=normalized,
                     profile_by_dataset=profile_by_dataset,
+                    privacy_mode=run.privacy_mode,
+                    privacy_decisions=privacy_decisions,
                 )
             )
             for source in input_dataset.provenance:
@@ -218,6 +231,20 @@ class PlanningContextBuilder:
             workbook_guards=tuple(guards.values()),
             capabilities=self._capabilities,
             resource_policy=self._resource_policy,
+            privacy=_privacy_summary(
+                mode=run.privacy_mode,
+                decisions=privacy_decisions,
+                hidden_rows_excluded=sum(
+                    handle.locator.hidden_rows_excluded
+                    for handle in handles.values()
+                    if isinstance(handle.locator, SpreadsheetRangeLocator)
+                ),
+                hidden_columns_excluded=sum(
+                    handle.locator.hidden_columns_excluded
+                    for handle in handles.values()
+                    if isinstance(handle.locator, SpreadsheetRangeLocator)
+                ),
+            ),
         )
         if len(context.model_dump_json().encode("utf-8")) > (
             self._resource_policy.max_context_bytes
@@ -266,12 +293,14 @@ class PlanningContextBuilder:
             provenance=tuple(provenance),
         )
 
-    @staticmethod
     def _dataset_summary(
+        self,
         *,
         input_dataset: PlanInputDataset,
         normalized: NormalizedDatasetReference,
         profile_by_dataset: dict[str, object],
+        privacy_mode: AnalysisPrivacyMode,
+        privacy_decisions: list[tuple[str, PrivacyColumnResult]],
     ) -> PlanningDatasetSummary:
         source_profiles = [
             profile_by_dataset[dataset_id]
@@ -287,6 +316,20 @@ class PlanningContextBuilder:
         for column in input_dataset.columns:
             profile = profile_columns.get(column.key)
             numeric = profile.numeric_statistics if profile is not None else None
+            privacy = self._privacy_gateway.sanitize_examples(
+                column_key=column.key,
+                label=column.label,
+                semantic_role=(
+                    profile.semantic_role.value
+                    if profile is not None
+                    else "unknown"
+                ),
+                values=(profile.example_values if profile is not None else ()),
+                mode=privacy_mode,
+            )
+            privacy_decisions.append(
+                (f"{input_dataset.alias}.{column.key}", privacy)
+            )
             column_summaries.append(
                 PlanningColumnSummary(
                     key=column.key,
@@ -303,15 +346,11 @@ class PlanningContextBuilder:
                     ),
                     unique_count=(profile.unique_count if profile is not None else 0),
                     example_values=(
-                        tuple(
-                            " ".join(value.split())[:240]
-                            for value in profile.example_values
-                        )
-                        if profile is not None
-                        else ()
+                        privacy.examples
                     ),
                     minimum=numeric.minimum if numeric is not None else None,
                     maximum=numeric.maximum if numeric is not None else None,
+                    privacy_classification=privacy.classification,
                 )
             )
         return PlanningDatasetSummary(
@@ -333,6 +372,36 @@ class PlanningContextBuilder:
             ),
             columns=tuple(column_summaries),
         )
+
+
+def _privacy_summary(
+    *,
+    mode: AnalysisPrivacyMode,
+    decisions: list[tuple[str, PrivacyColumnResult]],
+    hidden_rows_excluded: int,
+    hidden_columns_excluded: int,
+) -> PrivacySummary:
+    sensitive = [
+        (key, result)
+        for key, result in decisions
+        if result.classification != DataSensitivity.NONE
+    ]
+    redacted_keys = [
+        key for key, result in decisions if result.redacted_count > 0
+    ]
+    return PrivacySummary(
+        mode=mode,
+        columns_inspected=len(decisions),
+        sensitive_column_count=len(sensitive),
+        examples_inspected=sum(result.inspected_count for _, result in decisions),
+        examples_redacted=sum(result.redacted_count for _, result in decisions),
+        hidden_rows_excluded=hidden_rows_excluded,
+        hidden_columns_excluded=hidden_columns_excluded,
+        redacted_column_keys=tuple(redacted_keys[:500]),
+        classifications={
+            key: result.classification for key, result in sensitive[:500]
+        },
+    )
 
 
 def _plan_data_type(

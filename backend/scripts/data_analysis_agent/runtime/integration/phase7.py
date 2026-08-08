@@ -6,7 +6,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pydantic import ValidationError
-from langchain_core.callbacks import get_usage_metadata_callback
 
 from scripts.data_analysis_agent.analysis.models import (
     AnalysisIssue,
@@ -33,6 +32,11 @@ from scripts.data_analysis_agent.runtime.models import (
     RunIssueSummary,
     TokenUsage,
 )
+from scripts.data_analysis_agent.runtime.observability import (
+    capture_llm_usage,
+    total_token_usage,
+)
+from scripts.data_analysis_agent.runtime.privacy import privacy_scope
 
 from .contracts import (
     CancellationCheck,
@@ -105,24 +109,6 @@ def _system_error(
         code=code,
         message=message,
         retryable=retryable,
-    )
-
-
-def _token_usage(values: Mapping[str, object]) -> TokenUsage:
-    input_tokens = 0
-    output_tokens = 0
-    for value in values.values():
-        if not isinstance(value, Mapping):
-            continue
-        try:
-            input_tokens += max(0, int(value.get("input_tokens") or 0))
-            output_tokens += max(0, int(value.get("output_tokens") or 0))
-        except (TypeError, ValueError):
-            continue
-    return TokenUsage(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        total_tokens=input_tokens + output_tokens,
     )
 
 
@@ -353,7 +339,7 @@ class Phase7AnalysisAdapter:
         datasets: Sequence[DatasetHandle] | None = None,
         cancellation_check: CancellationCheck | None = None,
     ) -> Phase7ExecutionResult:
-        with get_usage_metadata_callback() as usage_callback:
+        with privacy_scope(run.privacy_mode), capture_llm_usage() as usage:
             result = await self._execute(
                 run,
                 dataset_handles=dataset_handles,
@@ -362,8 +348,12 @@ class Phase7AnalysisAdapter:
                 datasets=datasets,
                 cancellation_check=cancellation_check,
             )
+        by_stage = usage.snapshot()
         return result.model_copy(
-            update={"token_usage": _token_usage(usage_callback.usage_metadata)}
+            update={
+                "token_usage": total_token_usage(by_stage),
+                "token_usage_by_stage": by_stage,
+            }
         )
 
     async def _execute(
@@ -407,6 +397,7 @@ class Phase7AnalysisAdapter:
             query=run.prompt,
             document_ids=run.selected_document_ids,
             pinned_datasets=pinned,
+            privacy_mode=run.privacy_mode,
             run_id=run.run_id,
         )
         final_state: Mapping[str, Any] | None = None

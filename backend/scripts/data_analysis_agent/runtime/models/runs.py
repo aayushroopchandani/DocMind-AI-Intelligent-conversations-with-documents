@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .privacy import AnalysisPrivacyMode, PrivacySummary
+
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
@@ -125,6 +127,21 @@ class TokenUsage(BaseModel):
         return self
 
 
+class StageTokenUsage(BaseModel):
+    """Reproducible token/cost accounting for one logical LLM stage."""
+
+    stage: str = Field(min_length=1, max_length=120)
+    model: str = Field(min_length=1, max_length=200)
+    prompt_version: str = Field(min_length=1, max_length=120)
+    pricing_version: str = Field(default="unconfigured", min_length=1, max_length=120)
+    pricing_configured: bool = False
+    call_count: int = Field(default=1, ge=1)
+    duration_ms: float = Field(default=0, ge=0)
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
+
+
 class AnalysisRun(BaseModel):
     """Durable, tenant-scoped control-plane state for one analysis request."""
 
@@ -137,6 +154,8 @@ class AnalysisRun(BaseModel):
     request_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     mode: AnalysisMode
     prompt: str = Field(min_length=1, max_length=20_000)
+    privacy_mode: AnalysisPrivacyMode = AnalysisPrivacyMode.STANDARD
+    privacy_summary: PrivacySummary = Field(default_factory=PrivacySummary)
     active_artifact_id: str | None = Field(default=None, max_length=200)
     status: AnalysisRunStatus = AnalysisRunStatus.CREATED
     phase: AnalysisRunPhase = AnalysisRunPhase.CONTEXT_RESOLUTION
@@ -189,7 +208,9 @@ class AnalysisRun(BaseModel):
     errors_summary: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)
     model_versions: dict[str, str] = Field(default_factory=dict)
     prompt_versions: dict[str, str] = Field(default_factory=dict)
+    component_versions: dict[str, str] = Field(default_factory=dict)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    token_usage_by_stage: dict[str, StageTokenUsage] = Field(default_factory=dict)
     timings_ms: dict[str, float] = Field(default_factory=dict)
 
     created_at: datetime = Field(default_factory=utc_now)
@@ -271,7 +292,7 @@ class AnalysisRun(BaseModel):
                 output.append(item)
         return tuple(output)
 
-    @field_validator("model_versions", "prompt_versions")
+    @field_validator("model_versions", "prompt_versions", "component_versions")
     @classmethod
     def validate_version_map(cls, value: dict[str, str]) -> dict[str, str]:
         if len(value) > 50:
@@ -281,6 +302,18 @@ class AnalysisRun(BaseModel):
                 raise ValueError("version map keys must be non-empty and bounded")
             if not version.strip() or len(version) > 200:
                 raise ValueError("version map values must be non-empty and bounded")
+        return value
+
+    @field_validator("token_usage_by_stage")
+    @classmethod
+    def validate_stage_usage(
+        cls,
+        value: dict[str, StageTokenUsage],
+    ) -> dict[str, StageTokenUsage]:
+        if len(value) > 50:
+            raise ValueError("token_usage_by_stage is limited to 50 entries")
+        if any(key != record.stage for key, record in value.items()):
+            raise ValueError("stage token-usage keys must match their records")
         return value
 
     @field_validator("timings_ms")
@@ -297,6 +330,8 @@ class AnalysisRun(BaseModel):
 
     @model_validator(mode="after")
     def validate_lifecycle(self) -> Self:
+        if self.privacy_summary.mode != self.privacy_mode:
+            raise ValueError("privacy summary mode must match the run")
         if self.updated_at < self.created_at:
             raise ValueError("updated_at cannot precede created_at")
         if self.started_at is not None and self.started_at < self.created_at:
@@ -433,6 +468,7 @@ __all__ = [
     "DatasetVersionReference",
     "RunIssueSummary",
     "RunApprovalStatus",
+    "StageTokenUsage",
     "TERMINAL_RUN_STATUSES",
     "TokenUsage",
 ]

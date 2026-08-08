@@ -17,6 +17,7 @@ from ..models.plans import (
     GenerateDatasetStep,
     JoinStep,
     NullPredicate,
+    PLAN_VALIDATOR_VERSION,
     PlanColumn,
     PlanDataType,
     PlanExecutor,
@@ -1477,4 +1478,8 @@ def _deduplicate_issues(
     return tuple(output)
 
 
-__all__ = ["AnalysisPlanValidator", "derive_approval_policy"]
+__all__ = [
+    "AnalysisPlanValidator",
+    "PLAN_VALIDATOR_VERSION",
+    "derive_approval_policy",
+]
