@@ -5,17 +5,42 @@ from typing import Any
 
 from db.indexes.analysis import (
     ANALYSIS_INDEX_DEFINITIONS,
+    DEPRECATED_ANALYSIS_INDEXES,
+    LEGACY_ANALYSIS_INDEX_REPLACEMENTS,
     ensure_analysis_indexes,
+    migrate_analysis_indexes,
+    verify_analysis_indexes,
 )
 
 
 class _FakeCollection:
     def __init__(self) -> None:
         self.index_batches: list[list[Any]] = []
+        self.installed: list[dict[str, Any]] = [
+            {"name": "_id_", "key": {"_id": 1}}
+        ]
 
     async def create_indexes(self, indexes: list[Any]) -> list[str]:
         self.index_batches.append(indexes)
+        self.installed.extend(dict(index.document) for index in indexes)
         return [str(index.document["name"]) for index in indexes]
+
+    def list_indexes(self) -> Any:
+        async def iterator() -> Any:
+            for document in self.installed:
+                yield document
+
+        return iterator()
+
+    async def drop_index(self, name: str) -> None:
+        before = len(self.installed)
+        self.installed = [
+            document
+            for document in self.installed
+            if document.get("name") != name
+        ]
+        if len(self.installed) == before:
+            raise AssertionError(f"index was not installed: {name}")
 
 
 class _FakeDatabase:
@@ -116,6 +141,11 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
                 ("run_id", 1),
                 ("plan_id", 1),
             ),
+            ("analysis_plans", "uq_analysis_plans_run_hash"): (
+                ("user_id", 1),
+                ("run_id", 1),
+                ("plan_hash", 1),
+            ),
             (
                 "analysis_patch_proposals",
                 "uq_analysis_patch_proposals_identity",
@@ -162,6 +192,139 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
             dict(plan_reservation.partial_filter or {}),
             {"reservation_active": True},
         )
+
+    async def test_verifier_reports_no_drift_after_install(self) -> None:
+        database = _FakeDatabase()
+
+        await ensure_analysis_indexes(database)
+        report = await verify_analysis_indexes(database)
+
+        self.assertTrue(report.ok)
+        self.assertEqual(report.drift, ())
+
+    async def test_verifier_detects_missing_index_and_unexpected_ttl(self) -> None:
+        database = _FakeDatabase()
+        await ensure_analysis_indexes(database)
+        plans = database["analysis_plans"]
+        plans.installed = [
+            document
+            for document in plans.installed
+            if document.get("name") != "uq_analysis_plans_run_hash"
+        ]
+        plans.installed.append(
+            {
+                "name": "legacy_ttl",
+                "key": {"updated_at": 1},
+                "expireAfterSeconds": 60,
+            }
+        )
+        runs = database["analysis_runs"]
+        for document in runs.installed:
+            if document.get("name") == "uq_analysis_runs_user_run":
+                document["expireAfterSeconds"] = 3600
+
+        report = await verify_analysis_indexes(database)
+
+        reasons = {
+            (item.collection_name, item.index_name, item.reason)
+            for item in report.drift
+        }
+        self.assertIn(
+            ("analysis_plans", "uq_analysis_plans_run_hash", "missing"),
+            reasons,
+        )
+        self.assertIn(
+            (
+                "analysis_runs",
+                "uq_analysis_runs_user_run",
+                "unexpected TTL index on durable collection",
+            ),
+            reasons,
+        )
+        self.assertIn(
+            (
+                "analysis_plans",
+                "legacy_ttl",
+                "unexpected TTL index on durable collection",
+            ),
+            reasons,
+        )
+
+    def test_dataset_catalog_has_no_redundant_owned_lookup(self) -> None:
+        names = {
+            definition.name
+            for definition in _definitions_by_collection()["dataset_catalog"]
+        }
+        self.assertNotIn("ix_dataset_catalog_owned_lookup", names)
+
+    async def test_migration_removes_only_known_redundant_index(self) -> None:
+        database = _FakeDatabase()
+        collection = database["dataset_catalog"]
+        collection.installed.append(
+            {
+                "name": "ix_dataset_catalog_owned_lookup",
+                "key": dict(
+                    DEPRECATED_ANALYSIS_INDEXES["dataset_catalog"][
+                        "ix_dataset_catalog_owned_lookup"
+                    ]
+                ),
+            }
+        )
+
+        report = await migrate_analysis_indexes(database)
+
+        self.assertTrue(report.ok, report.drift)
+        installed_names = {
+            str(document.get("name")) for document in collection.installed
+        }
+        self.assertNotIn("ix_dataset_catalog_owned_lookup", installed_names)
+
+    async def test_migration_refuses_changed_legacy_index(self) -> None:
+        database = _FakeDatabase()
+        collection = database["dataset_catalog"]
+        collection.installed.append(
+            {
+                "name": "ix_dataset_catalog_owned_lookup",
+                "key": {"user_id": 1, "unexpected": 1},
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "refusing to drop"):
+            await migrate_analysis_indexes(database)
+
+    async def test_migration_replaces_exact_pre_pause_queue_indexes(self) -> None:
+        database = _FakeDatabase()
+        collection = database["analysis_runs"]
+        replacements = LEGACY_ANALYSIS_INDEX_REPLACEMENTS["analysis_runs"]
+        for definitions in replacements.values():
+            legacy = definitions[0]
+            collection.installed.append(dict(legacy.build().document))
+
+        report = await migrate_analysis_indexes(database)
+
+        self.assertTrue(report.ok, report.drift)
+        installed = {
+            str(document.get("name")): document
+            for document in collection.installed
+        }
+        for index_name in replacements:
+            expected = _definition_by_name("analysis_runs", index_name)
+            self.assertEqual(
+                tuple(dict(installed[index_name]["key"]).items()),
+                expected.keys,
+            )
+
+    async def test_migration_refuses_unknown_named_queue_definition(self) -> None:
+        database = _FakeDatabase()
+        database["analysis_runs"].installed.append(
+            {
+                "name": "ix_analysis_runs_recovery_queue",
+                "key": {"status": 1, "unknown": 1},
+            }
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "refusing to replace"):
+            await migrate_analysis_indexes(database)
 
     async def test_indexes_are_durable_and_tenant_scoped_except_worker_queue(
         self,

@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from config.settings import settings
-from db.indexes import ensure_analysis_indexes
+from db.indexes import verify_analysis_indexes
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ _mongo_db: Optional["AsyncIOMotorDatabase"] = None
 
 
 async def init_mongodb() -> None:
-    """Initialize MongoDB client and ensure basic indexes exist."""
+    """Initialize MongoDB and verify the separately migrated Phase-8 schema."""
     global _mongo_client, _mongo_db
 
     if not settings.mongodb_is_configured:
@@ -172,4 +172,14 @@ async def ensure_indexes() -> None:
         partialFilterExpression={"submission_id": {"$type": "string"}},
     )
     await db.quiz_attempts.create_index("weak_topics.main_topic")
-    await ensure_analysis_indexes(db)
+    report = await verify_analysis_indexes(db)
+    if not report.ok:
+        summary = ", ".join(
+            f"{item.collection_name}.{item.index_name}: {item.reason}"
+            for item in report.drift[:10]
+        )
+        raise RuntimeError(
+            "Phase-8 MongoDB indexes require migration. Run "
+            "'.venv/bin/python -m scripts.migrate_phase8_indexes'. "
+            f"Drift: {summary}"
+        )

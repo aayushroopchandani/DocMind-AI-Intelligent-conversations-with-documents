@@ -5,6 +5,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from pymongo import ASCENDING, DESCENDING, IndexModel
+from pymongo.errors import OperationFailure
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,87 @@ class MongoIndexDefinition:
 class CollectionIndexDefinitions:
     collection_name: str
     indexes: tuple[MongoIndexDefinition, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MongoIndexDrift:
+    """One missing or incompatible durable index discovered by verification."""
+
+    collection_name: str
+    index_name: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class MongoIndexVerificationReport:
+    """Read-only comparison between declared and installed Phase-8 indexes."""
+
+    drift: tuple[MongoIndexDrift, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return not self.drift
+
+
+DEPRECATED_ANALYSIS_INDEXES: Mapping[
+    str,
+    Mapping[str, tuple[tuple[str, int], ...]],
+] = MappingProxyType(
+    {
+        "dataset_catalog": MappingProxyType(
+            {
+                "ix_dataset_catalog_owned_lookup": (
+                    ("user_id", ASCENDING),
+                    ("workspace_id", ASCENDING),
+                    ("dataset_id", ASCENDING),
+                    ("source_version", ASCENDING),
+                )
+            }
+        )
+    }
+)
+
+
+LEGACY_ANALYSIS_INDEX_REPLACEMENTS: Mapping[
+    str,
+    Mapping[str, tuple[MongoIndexDefinition, ...]],
+] = MappingProxyType(
+    {
+        "analysis_runs": MappingProxyType(
+            {
+                # Phase 8.10 added pause fencing to both worker queues. These
+                # are the exact pre-8.10 definitions that may be replaced.
+                "ix_analysis_runs_recovery_queue": (
+                    MongoIndexDefinition(
+                        keys=(
+                            ("cancellation_requested", ASCENDING),
+                            ("status", ASCENDING),
+                            ("lease_expires_at", ASCENDING),
+                            ("created_at", ASCENDING),
+                            ("run_id", ASCENDING),
+                        ),
+                        name="ix_analysis_runs_recovery_queue",
+                    ),
+                ),
+                "ix_analysis_runs_expiration_queue": (
+                    MongoIndexDefinition(
+                        keys=(
+                            ("cancellation_requested", ASCENDING),
+                            ("status", ASCENDING),
+                            ("expires_at", ASCENDING),
+                            ("run_id", ASCENDING),
+                            ("lease_expires_at", ASCENDING),
+                        ),
+                        name="ix_analysis_runs_expiration_queue",
+                        partial_filter=MappingProxyType(
+                            {"expires_at": {"$type": "date"}}
+                        ),
+                    ),
+                ),
+            }
+        )
+    }
+)
 
 
 ANALYSIS_INDEX_DEFINITIONS = (
@@ -229,6 +311,9 @@ ANALYSIS_INDEX_DEFINITIONS = (
                     ("content_hash", ASCENDING),
                 ),
                 name="ix_artifact_versions_content",
+                # Deliberately non-unique: an unchanged byte stream may be a
+                # meaningful audited version with different parent/metadata.
+                # Retry idempotency is enforced by version_id instead.
             ),
             # Internal, cross-tenant recovery queue. Status and age are the
             # complete eligibility predicate; version_id makes bounded scans
@@ -255,15 +340,6 @@ ANALYSIS_INDEX_DEFINITIONS = (
                 ),
                 name="uq_dataset_catalog_version",
                 unique=True,
-            ),
-            MongoIndexDefinition(
-                keys=(
-                    ("user_id", ASCENDING),
-                    ("workspace_id", ASCENDING),
-                    ("dataset_id", ASCENDING),
-                    ("source_version", ASCENDING),
-                ),
-                name="ix_dataset_catalog_owned_lookup",
             ),
             MongoIndexDefinition(
                 keys=(
@@ -316,6 +392,24 @@ ANALYSIS_INDEX_DEFINITIONS = (
             MongoIndexDefinition(
                 keys=(
                     ("user_id", ASCENDING),
+                    ("run_id", ASCENDING),
+                    ("plan_hash", ASCENDING),
+                ),
+                name="uq_analysis_plans_run_hash",
+                unique=True,
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("workspace_id", ASCENDING),
+                    ("created_at", DESCENDING),
+                    ("plan_id", DESCENDING),
+                ),
+                name="ix_analysis_plans_workspace_history",
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
                     ("workspace_id", ASCENDING),
                     ("write_target_keys", ASCENDING),
                 ),
@@ -362,9 +456,194 @@ async def ensure_analysis_indexes(database: Any) -> None:
         )
 
 
+async def verify_analysis_indexes(database: Any) -> MongoIndexVerificationReport:
+    """Verify index drift without creating, deleting, or rebuilding indexes.
+
+    Startup uses this read-only contract. Index installation/replacement stays
+    in the explicit migration command so serving traffic never changes schema.
+    """
+
+    drift: list[MongoIndexDrift] = []
+    for definitions in ANALYSIS_INDEX_DEFINITIONS:
+        installed = await _list_installed_indexes(
+            database[definitions.collection_name]
+        )
+        expected_names = {definition.name for definition in definitions.indexes}
+        for definition in definitions.indexes:
+            actual = installed.get(definition.name)
+            if actual is None:
+                drift.append(
+                    MongoIndexDrift(
+                        collection_name=definitions.collection_name,
+                        index_name=definition.name,
+                        reason="missing",
+                    )
+                )
+                continue
+            if _installed_index_keys(actual) != definition.keys:
+                drift.append(
+                    MongoIndexDrift(
+                        collection_name=definitions.collection_name,
+                        index_name=definition.name,
+                        reason="key pattern differs",
+                    )
+                )
+            if bool(actual.get("unique", False)) != definition.unique:
+                drift.append(
+                    MongoIndexDrift(
+                        collection_name=definitions.collection_name,
+                        index_name=definition.name,
+                        reason="unique option differs",
+                    )
+                )
+            expected_partial = dict(definition.partial_filter or {})
+            actual_partial = dict(actual.get("partialFilterExpression") or {})
+            if actual_partial != expected_partial:
+                drift.append(
+                    MongoIndexDrift(
+                        collection_name=definitions.collection_name,
+                        index_name=definition.name,
+                        reason="partial filter differs",
+                    )
+                )
+            if "expireAfterSeconds" in actual:
+                drift.append(
+                    MongoIndexDrift(
+                        collection_name=definitions.collection_name,
+                        index_name=definition.name,
+                        reason="unexpected TTL index on durable collection",
+                    )
+                )
+
+        # Phase-8 control-plane history is durable. Flag accidental TTL even
+        # when it appears on an unexpected, legacy index.
+        for name, document in installed.items():
+            if name == "_id_" or name in expected_names:
+                continue
+            if "expireAfterSeconds" in document:
+                drift.append(
+                    MongoIndexDrift(
+                        collection_name=definitions.collection_name,
+                        index_name=name,
+                        reason="unexpected TTL index on durable collection",
+                    )
+                )
+            if name in DEPRECATED_ANALYSIS_INDEXES.get(
+                definitions.collection_name,
+                {},
+            ):
+                drift.append(
+                    MongoIndexDrift(
+                        collection_name=definitions.collection_name,
+                        index_name=name,
+                        reason="deprecated redundant index",
+                    )
+                )
+    return MongoIndexVerificationReport(drift=tuple(drift))
+
+
+async def migrate_analysis_indexes(database: Any) -> MongoIndexVerificationReport:
+    """Apply only declared, exact legacy replacements and removals."""
+
+    # A changed index cannot be recreated under the same stable name until its
+    # known legacy definition is removed. Unknown drift fails closed.
+    current_definitions = {
+        group.collection_name: {
+            definition.name: definition for definition in group.indexes
+        }
+        for group in ANALYSIS_INDEX_DEFINITIONS
+    }
+    for collection_name, replacements in (
+        LEGACY_ANALYSIS_INDEX_REPLACEMENTS.items()
+    ):
+        collection = database[collection_name]
+        installed = await _list_installed_indexes(collection)
+        for index_name, legacy_definitions in replacements.items():
+            document = installed.get(index_name)
+            if document is None:
+                continue
+            current = current_definitions[collection_name][index_name]
+            if _installed_index_matches(document, current):
+                continue
+            if not any(
+                _installed_index_matches(document, legacy)
+                for legacy in legacy_definitions
+            ):
+                raise RuntimeError(
+                    f"refusing to replace unknown index definition "
+                    f"{collection_name}.{index_name}"
+                )
+            await collection.drop_index(index_name)
+
+    await ensure_analysis_indexes(database)
+    for collection_name, deprecated in DEPRECATED_ANALYSIS_INDEXES.items():
+        collection = database[collection_name]
+        installed = await _list_installed_indexes(collection)
+        for index_name, expected_keys in deprecated.items():
+            document = installed.get(index_name)
+            if document is None:
+                continue
+            if (
+                _installed_index_keys(document) != expected_keys
+                or bool(document.get("unique", False))
+                or bool(document.get("partialFilterExpression"))
+                or "expireAfterSeconds" in document
+            ):
+                raise RuntimeError(
+                    f"refusing to drop changed legacy index "
+                    f"{collection_name}.{index_name}"
+                )
+            await collection.drop_index(index_name)
+    return await verify_analysis_indexes(database)
+
+
+def _installed_index_keys(
+    document: Mapping[str, object],
+) -> tuple[tuple[str, int], ...]:
+    return tuple(
+        (str(key), int(direction))
+        for key, direction in dict(document.get("key") or {}).items()
+    )
+
+
+async def _list_installed_indexes(
+    collection: Any,
+) -> dict[str, Mapping[str, object]]:
+    try:
+        return {
+            str(document.get("name") or ""): document
+            async for document in collection.list_indexes()
+        }
+    except OperationFailure as exc:
+        # listIndexes on a not-yet-created collection is an empty definition,
+        # not an operational outage. Any other server error must remain loud.
+        if exc.code == 26:  # NamespaceNotFound
+            return {}
+        raise
+
+
+def _installed_index_matches(
+    document: Mapping[str, object],
+    definition: MongoIndexDefinition,
+) -> bool:
+    return (
+        _installed_index_keys(document) == definition.keys
+        and bool(document.get("unique", False)) == definition.unique
+        and dict(document.get("partialFilterExpression") or {})
+        == dict(definition.partial_filter or {})
+        and "expireAfterSeconds" not in document
+    )
+
+
 __all__ = [
     "ANALYSIS_INDEX_DEFINITIONS",
+    "DEPRECATED_ANALYSIS_INDEXES",
+    "LEGACY_ANALYSIS_INDEX_REPLACEMENTS",
     "CollectionIndexDefinitions",
+    "MongoIndexDrift",
     "MongoIndexDefinition",
+    "MongoIndexVerificationReport",
     "ensure_analysis_indexes",
+    "migrate_analysis_indexes",
+    "verify_analysis_indexes",
 ]
