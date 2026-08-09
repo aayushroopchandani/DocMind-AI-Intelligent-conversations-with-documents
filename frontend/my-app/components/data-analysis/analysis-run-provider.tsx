@@ -244,6 +244,7 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
           request_version: "1",
           workspace_id: state.project.id,
           mode: request.mode,
+          privacy_mode: request.privacyMode,
           prompt: request.prompt,
           active_artifact: {
             client_artifact_id: artifact.id,
@@ -260,6 +261,7 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
           request_version: "1",
           workspace_id: state.project.id,
           mode: request.mode,
+          privacy_mode: request.privacyMode,
           prompt: request.prompt,
           active_artifact: {
             client_artifact_id: artifact.id,

@@ -62,6 +62,7 @@ export function AnalystComposer({
 
     const sent = await onSubmit({
         mode: state.analystMode,
+        privacyMode: state.analysisPrivacyMode,
         prompt,
         activeArtifactId: artifact?.id ?? null,
         activeArtifactType: artifact?.type ?? null,
@@ -70,7 +71,7 @@ export function AnalystComposer({
         pdf: artifact?.type === "pdf" ? pdfContext : null,
       });
     if (sent) onDraftChange("");
-  }, [draft, onSubmit, onDraftChange, state.analystMode, state.analystContext, artifact, pdfContext]);
+  }, [draft, onSubmit, onDraftChange, state.analystMode, state.analysisPrivacyMode, state.analystContext, artifact, pdfContext]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {

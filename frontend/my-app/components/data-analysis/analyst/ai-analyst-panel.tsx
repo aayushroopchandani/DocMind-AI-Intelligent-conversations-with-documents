@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { PanelRightClose, Sparkles } from "lucide-react";
+import { PanelRightClose, ShieldCheck, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { AnalystMode } from "@/lib/data-analysis/types";
+import type { AnalysisPrivacyMode, AnalystMode } from "@/lib/data-analysis/types";
 import { activeArtifact } from "@/lib/data-analysis/workspace-state";
 import { AnalystComposer } from "@/components/data-analysis/analyst/analyst-composer";
 import { ProposedActionCard } from "@/components/data-analysis/analyst/proposed-action-card";
@@ -17,6 +17,28 @@ const MODES: Array<{ value: AnalystMode; label: string }> = [
   { value: "ask", label: "Ask" },
   { value: "analyse", label: "Analyse" },
   { value: "edit", label: "Edit" },
+];
+
+const PRIVACY_MODES: Array<{
+  value: AnalysisPrivacyMode;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "standard",
+    label: "Standard",
+    description: "Send bounded, non-sensitive examples after redaction.",
+  },
+  {
+    value: "schema_only",
+    label: "Schema only",
+    description: "Send column types and statistics without example values.",
+  },
+  {
+    value: "local_only",
+    label: "Local data",
+    description: "Keep all dataset values out of external model payloads.",
+  },
 ];
 
 /**
@@ -53,8 +75,7 @@ interface AiAnalystPanelProps {
 }
 
 /**
- * Right panel: the AI analyst shell. Fully client-side in this milestone —
- * no requests leave the browser and no analysis output is fabricated.
+ * Right panel for durable analysis runs, typed plans, approval, and privacy.
  */
 export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
   const { state, actions } = useWorkspace();
@@ -143,6 +164,36 @@ export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
               ))}
             </div>
           </div>
+
+          <fieldset className="rounded-lg border border-border/70 bg-card/40 p-2.5">
+            <legend className="flex items-center gap-1.5 px-1 text-[11px] font-medium text-muted-foreground">
+              <ShieldCheck className="size-3.5" />
+              Dataset privacy
+            </legend>
+            <div className="mt-1 grid grid-cols-3 gap-1" role="radiogroup" aria-label="Dataset privacy mode">
+              {PRIVACY_MODES.map((mode) => (
+                <button
+                  key={mode.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={state.analysisPrivacyMode === mode.value}
+                  title={mode.description}
+                  onClick={() => actions.setAnalysisPrivacyMode(mode.value)}
+                  className={cn(
+                    "rounded-md border px-1.5 py-1 text-[10px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50",
+                    state.analysisPrivacyMode === mode.value
+                      ? "border-[color:var(--accent-cyan)]/50 bg-muted text-foreground"
+                      : "border-transparent text-muted-foreground hover:border-border hover:text-foreground",
+                  )}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">
+              {PRIVACY_MODES.find((mode) => mode.value === state.analysisPrivacyMode)?.description}
+            </p>
+          </fieldset>
 
           {runs.activeRun ? (
             <div className="rounded-lg border border-border/70 bg-muted/20 p-2.5">

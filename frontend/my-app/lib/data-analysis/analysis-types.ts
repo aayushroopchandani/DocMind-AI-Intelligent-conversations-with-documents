@@ -22,12 +22,39 @@ export type AnalysisRunPhase =
   | "application"
   | "completed";
 
+export type AnalysisPrivacyMode = "standard" | "schema_only" | "local_only";
+
+export interface PrivacySummary {
+  mode: AnalysisPrivacyMode;
+  columns_inspected: number;
+  sensitive_column_count: number;
+  examples_inspected: number;
+  examples_redacted: number;
+  hidden_rows_excluded: number;
+  hidden_columns_excluded: number;
+  redacted_column_keys: string[];
+  classifications: Record<string, string>;
+}
+
+export interface StageTokenUsage {
+  stage: string;
+  model: string;
+  prompt_version: string;
+  pricing_version: string;
+  pricing_configured: boolean;
+  call_count: number;
+  duration_ms: number;
+  usage: AnalysisRun["token_usage"];
+}
+
 export interface AnalysisRun {
   run_id: string;
   workspace_id: string;
   chat_id: string;
   mode: "ask" | "analyse" | "edit";
   prompt: string;
+  privacy_mode: AnalysisPrivacyMode;
+  privacy_summary: PrivacySummary;
   active_artifact_id: string | null;
   status: AnalysisRunStatus;
   phase: AnalysisRunPhase;
@@ -57,6 +84,8 @@ export interface AnalysisRun {
     total_tokens: number;
     estimated_cost_usd: number;
   };
+  token_usage_by_stage: Record<string, StageTokenUsage>;
+  component_versions: Record<string, string>;
   timings_ms: Record<string, number>;
   created_at: string;
   updated_at: string;
@@ -148,8 +177,11 @@ export interface AnalysisPlan {
     validation_warning_count: number;
     validation_error_count: number;
   };
+  validator_version: string;
+  privacy: PrivacySummary;
   plan_hash: string;
   token_usage: AnalysisRun["token_usage"];
+  token_usage_by_stage: Record<string, StageTokenUsage>;
   created_at: string;
   updated_at: string;
 }

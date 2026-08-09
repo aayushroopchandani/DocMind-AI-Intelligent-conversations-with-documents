@@ -50,6 +50,7 @@ import {
 } from "@/lib/data-analysis/pdf/pdf-validation";
 import type {
   AnalystMode,
+  AnalysisPrivacyMode,
   ArtifactMeta,
   LayoutState,
   WorkspaceState,
@@ -94,6 +95,7 @@ interface WorkspaceActions {
   setProjectName: (name: string) => void;
   setAnalysisChatId: (chatId: string) => void;
   setAnalystMode: (mode: AnalystMode) => void;
+  setAnalysisPrivacyMode: (mode: AnalysisPrivacyMode) => void;
   undo: () => void;
   redo: () => void;
 }
@@ -183,6 +185,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         openTabIds: state.openTabIds,
         activeTabId: state.activeTabId,
         spreadsheetCounter: state.spreadsheetCounter,
+        analysisPrivacyMode: state.analysisPrivacyMode,
       });
     }, METADATA_SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
@@ -193,6 +196,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     state.openTabIds,
     state.activeTabId,
     state.spreadsheetCounter,
+    state.analysisPrivacyMode,
   ]);
 
   /* ---------------- debounced layout persistence ---------------- */
@@ -416,6 +420,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "SET_ANALYST_MODE", mode });
   }, []);
 
+  const setAnalysisPrivacyMode = useCallback((mode: AnalysisPrivacyMode) => {
+    dispatch({ type: "SET_ANALYSIS_PRIVACY_MODE", mode });
+  }, []);
+
   const undo = useCallback(() => {
     getUniverBridge().api?.getActiveWorkbook()?.undo();
   }, []);
@@ -438,6 +446,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setProjectName,
       setAnalysisChatId,
       setAnalystMode,
+      setAnalysisPrivacyMode,
       undo,
       redo,
     }),
@@ -454,6 +463,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setProjectName,
       setAnalysisChatId,
       setAnalystMode,
+      setAnalysisPrivacyMode,
       undo,
       redo,
     ],

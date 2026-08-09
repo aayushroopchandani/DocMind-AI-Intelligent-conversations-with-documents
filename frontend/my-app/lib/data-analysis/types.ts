@@ -73,6 +73,7 @@ export interface ProjectMeta {
 export type SaveStatus = "draft" | "saving" | "saved";
 
 export type AnalystMode = "ask" | "analyse" | "edit";
+export type AnalysisPrivacyMode = "standard" | "schema_only" | "local_only";
 
 /** Live spreadsheet context mirrored into the AI analyst panel. */
 export interface AnalystContext {
@@ -86,6 +87,7 @@ export interface AnalystContext {
  */
 export interface AnalystRequestContext {
   mode: AnalystMode;
+  privacyMode: AnalysisPrivacyMode;
   prompt: string;
   activeArtifactId: string | null;
   activeArtifactType: ArtifactType | null;
@@ -106,6 +108,7 @@ export interface WorkspaceState {
   spreadsheetCounter: number;
   saveStatus: SaveStatus;
   analystMode: AnalystMode;
+  analysisPrivacyMode: AnalysisPrivacyMode;
   analystContext: AnalystContext;
 }
 
@@ -117,6 +120,7 @@ export interface PersistedWorkspaceState {
   openTabIds: string[];
   activeTabId: string | null;
   spreadsheetCounter: number;
+  analysisPrivacyMode?: AnalysisPrivacyMode;
 }
 
 /** Panel layout, persisted separately so drags don't rewrite workbook data. */

@@ -6,6 +6,7 @@ import type { PdfArtifactMeta } from "@/lib/data-analysis/pdf/pdf-types";
 import type {
   AnalystContext,
   AnalystMode,
+  AnalysisPrivacyMode,
   ArtifactMeta,
   PersistedWorkspaceState,
   SaveStatus,
@@ -34,6 +35,7 @@ export type WorkspaceAction =
   | { type: "SET_PROJECT_NAME"; name: string }
   | { type: "SET_ANALYSIS_CHAT_ID"; chatId: string }
   | { type: "SET_ANALYST_MODE"; mode: AnalystMode }
+  | { type: "SET_ANALYSIS_PRIVACY_MODE"; mode: AnalysisPrivacyMode }
   | { type: "SET_ANALYST_CONTEXT"; context: Partial<AnalystContext> }
   | { type: "SET_UNIVER_READY"; ready: boolean };
 
@@ -52,6 +54,7 @@ export function createInitialWorkspaceState(): WorkspaceState {
     spreadsheetCounter: 0,
     saveStatus: "draft",
     analystMode: "ask",
+    analysisPrivacyMode: "standard",
     analystContext: { worksheetName: null, selectedRange: null },
   };
 }
@@ -137,6 +140,12 @@ export function workspaceReducer(
             ? activeTabId
             : (tabs[0] ?? null),
         spreadsheetCounter,
+        analysisPrivacyMode: (
+          action.payload.analysisPrivacyMode === "schema_only" ||
+          action.payload.analysisPrivacyMode === "local_only"
+            ? action.payload.analysisPrivacyMode
+            : "standard"
+        ),
         saveStatus: artifacts.length > 0 ? "saved" : "draft",
       };
     }
@@ -300,6 +309,9 @@ export function workspaceReducer(
 
     case "SET_ANALYST_MODE":
       return { ...state, analystMode: action.mode };
+
+    case "SET_ANALYSIS_PRIVACY_MODE":
+      return { ...state, analysisPrivacyMode: action.mode };
 
     case "SET_UNIVER_READY": {
       if (state.univerReady === action.ready) return state;
