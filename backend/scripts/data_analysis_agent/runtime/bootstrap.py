@@ -27,6 +27,7 @@ from .services.worker import (
     AnalysisWorkerConfig,
     DurableAnalysisWorker,
 )
+from .services.diagnostics import AnalysisDiagnosticsService
 from .services.workbook_context import (
     WorkbookContextLimits,
     WorkbookContextService,
@@ -45,6 +46,7 @@ class AnalysisRuntime:
     artifact_service: ArtifactVersionService | None
     planning_service: AnalysisPlanningService | None = None
     artifact_reconciler: ArtifactUploadReconciler | None = None
+    diagnostics_service: AnalysisDiagnosticsService | None = None
 
     async def start(self) -> None:
         if self.artifact_reconciler is not None:
@@ -222,6 +224,10 @@ def build_analysis_runtime(
         artifact_service=artifact_service,
         planning_service=planning_service,
         artifact_reconciler=artifact_reconciler,
+        diagnostics_service=AnalysisDiagnosticsService(
+            database=database,
+            worker=worker,
+        ),
     )
 
 

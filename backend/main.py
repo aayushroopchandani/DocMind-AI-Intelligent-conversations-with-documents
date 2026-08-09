@@ -10,6 +10,7 @@ from apis.tables import router as tables_router
 from apis.analysis_runs import router as analysis_runs_router
 from apis.analysis_artifacts import router as analysis_artifacts_router
 from apis.analysis_plans import router as analysis_plans_router
+from apis.analysis_diagnostics import router as analysis_diagnostics_router
 from config.settings import settings
 from db.mongodb import init_mongodb, close_mongodb
 from services.cloudinary_setup import init_cloudinary
@@ -23,6 +24,9 @@ from scripts.data_analysis_agent.runtime.bootstrap import (
 from scripts.data_analysis_agent.runtime.http import (
     AnalysisRequestBodyLimitMiddleware,
     RequestBodyLimit,
+)
+from scripts.data_analysis_agent.runtime.observability import (
+    configure_analysis_json_logging,
 )
 from scripts.data_analysis_agent.runtime.services.sse_connections import (
     SSEConnectionLimiter,
@@ -74,10 +78,12 @@ app.include_router(tables_router)
 app.include_router(analysis_runs_router)
 app.include_router(analysis_plans_router)
 app.include_router(analysis_artifacts_router)
+app.include_router(analysis_diagnostics_router)
 app.state.analysis_runtime = None
 app.state.analysis_run_service = None
 app.state.analysis_artifact_service = None
 app.state.analysis_planning_service = None
+app.state.analysis_diagnostics_service = None
 app.state.analysis_sse_limiter = SSEConnectionLimiter(
     SSEConnectionLimits(
         total=settings.analysis_sse_max_connections,
@@ -90,6 +96,7 @@ app.state.analysis_sse_limiter = SSEConnectionLimiter(
 @app.on_event("startup")
 async def on_startup() -> None:
     # Setup only: initializes connections/config if env vars are present.
+    configure_analysis_json_logging()
     await init_mongodb()
     init_cloudinary()
     if settings.mongodb_is_configured:
@@ -103,6 +110,7 @@ async def on_startup() -> None:
             app.state.analysis_run_service = runtime.run_service
             app.state.analysis_artifact_service = runtime.artifact_service
             app.state.analysis_planning_service = runtime.planning_service
+            app.state.analysis_diagnostics_service = runtime.diagnostics_service
 
 
 @app.on_event("shutdown")
@@ -114,5 +122,6 @@ async def on_shutdown() -> None:
     app.state.analysis_run_service = None
     app.state.analysis_artifact_service = None
     app.state.analysis_planning_service = None
+    app.state.analysis_diagnostics_service = None
     await cancel_docling_table_fallbacks()
     await close_mongodb()
