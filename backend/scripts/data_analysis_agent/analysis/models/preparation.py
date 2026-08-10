@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .profile import SemanticRole
 
-DATASET_NORMALIZER_VERSION = "1.2.0"
+DATASET_NORMALIZER_VERSION = "1.3.0"
 
 
 def preparation_utc_now() -> datetime:
@@ -142,7 +142,10 @@ class NormalizedDatasetReference(BaseModel):
         pattern=r"^[a-f0-9]{64}$",
     )
     title: str = Field(min_length=1, max_length=240)
-    requirement_ids: tuple[str, ...] = Field(min_length=1, max_length=48)
+    # Context-only datasets (for example, a workbook used as the destination for
+    # generated data) do not satisfy source-evidence requirements. They still
+    # need preparation so the planner receives versioned, profiled context.
+    requirement_ids: tuple[str, ...] = Field(default=(), max_length=48)
     # Keep this aligned with the source-neutral DatasetHandle contract and the
     # Phase 8 workbook adapter. Rejecting columns 129–500 only after profiling
     # wastes the expensive part of the pipeline and makes an accepted workbook

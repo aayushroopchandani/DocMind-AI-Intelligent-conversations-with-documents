@@ -58,6 +58,7 @@ _ANOMALY_RE = re.compile(
 )
 _ALL_DOCUMENTS_RE = re.compile(
     r"\b(?:all|both|each)\s+(?:documents?|reports?|companies?)\b"
+    r"|\b(?:the\s+)?two\s+reports?\b"
     r"|\bacross\s+(?:the\s+)?(?:documents?|reports?|companies?)\b",
     re.IGNORECASE,
 )
@@ -107,6 +108,58 @@ _GENERIC_TOPIC_TOKENS = frozenset(
 )
 _ENTITY_SCOPE_SPLIT_RE = re.compile(
     r"\b(?:with|versus|vs\.?|compared\s+(?:with|to))\b",
+    re.IGNORECASE,
+)
+_SYNTHETIC_DATASET_RE = re.compile(
+    r"\b(?:generate|create|synthesi[sz]e|make)\b.{0,80}"
+    r"\b(?:random|synthetic|sample|mock|dummy|fake)\b.{0,60}"
+    r"\b(?:data|dataset|rows?|table|records?)\b"
+    r"|\b(?:random|synthetic|sample|mock|dummy|fake)\b.{0,60}"
+    r"\b(?:data|dataset|rows?|table|records?)\b",
+    re.IGNORECASE,
+)
+_SCHEMA_ONLY_RE = re.compile(
+    r"\b(?:describe|inspect|list|show|summari[sz]e)\b.{0,80}"
+    r"\b(?:schema|columns?|data\s+types?|dataset\s+profile)\b"
+    r"|\brecommend\b.{0,50}\b(?:safe\s+)?analys(?:is|es)\b"
+    r".{0,80}\bwithout\b.{0,30}\b(?:raw|cell)\s+values?\b",
+    re.IGNORECASE,
+)
+_WORKBOOK_DESTINATION_RE = re.compile(
+    r"\b(?:put|write|place|insert|attach|copy|export|add)\b.{0,100}"
+    r"\b(?:sheet|spreadsheet|workbook|cells?|range|table)\b"
+    r"|\b(?:next\s+to|beside)\b.{0,60}\b(?:table|spreadsheet|cells?)\b",
+    re.IGNORECASE,
+)
+_DERIVED_OUTPUT_RE = re.compile(
+    r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=",
+)
+_PREDICTION_TARGET_RE = re.compile(
+    r"\bpredict\s+(?P<name>[A-Za-z_][A-Za-z0-9_ ]{0,60}?)\s+from\b",
+    re.IGNORECASE,
+)
+_PLANNING_OUTPUT_TOPIC_RE = re.compile(
+    r"\b(?:charts?|plots?|graphs?|visuali[sz]ations?|confusion\s+matri(?:x|ces)|"
+    r"trend\s+lines?|confidence(?:\s+and\s+significance)?\s+statistics?|"
+    r"significance\s+statistics?|provenance|destination\s+ranges?)\b",
+    re.IGNORECASE,
+)
+_NEGATED_METRIC_PREFIX_RE = re.compile(
+    r"\b(?:do\s+not|don't|without|never)\b.{0,40}"
+    r"\b(?:substitute|use|derive|replace|include)?\s*$",
+    re.IGNORECASE,
+)
+_TABLE_ACTION_RE = re.compile(r"\btable\s+to\s+", re.IGNORECASE)
+_FLEXIBLE_DISCOVERY_RE = re.compile(
+    r"\b(?:available|retrieved)\s+tables?\b"
+    r"|\bmost\s+relevant\b.{0,50}\bmetrics?\b",
+    re.IGNORECASE,
+)
+_BY_DIMENSION_RE = re.compile(
+    r"(?:\bby\s+|[-_]by[-_])"
+    r"(?P<name>[A-Za-z][A-Za-z0-9 _-]{0,50}?)"
+    r"(?=\s+(?:charts?|plots?|graphs?|breakdowns?|visuali[sz]ations?)\b|"
+    r"[,.;!?]|$)",
     re.IGNORECASE,
 )
 
@@ -477,6 +530,82 @@ def _has_valid_unit(value: str) -> bool:
     return bool(_VALID_UNIT_RE.search(value))
 
 
+def _source_evidence_required(query: str) -> bool:
+    """Return whether source values, rather than metadata, must support intent."""
+
+    return not (
+        _SYNTHETIC_DATASET_RE.search(query)
+        or _SCHEMA_ONLY_RE.search(query)
+    )
+
+
+def _derived_output_names(query: str) -> frozenset[str]:
+    return frozenset(
+        canonical_requirement_text(match.group("name"))
+        for match in _DERIVED_OUTPUT_RE.finditer(query)
+    )
+
+
+def _prediction_target(query: str) -> str | None:
+    match = _PREDICTION_TARGET_RE.search(query)
+    if match is None:
+        return None
+    return canonical_requirement_text(match.group("name"))
+
+
+def _explicit_dimension_names(query: str) -> frozenset[str]:
+    """Return grouping fields explicitly named in ``... by <field>`` cues."""
+
+    return frozenset(
+        canonical_requirement_text(match.group("name"))
+        for match in _BY_DIMENSION_RE.finditer(query)
+        if canonical_requirement_text(match.group("name"))
+    )
+
+
+def _is_planning_output_requirement(
+    item: ExtractedRequirement,
+    *,
+    derived_outputs: frozenset[str],
+) -> bool:
+    name = canonical_requirement_text(item.name)
+    if name in {"provenance", "source provenance"}:
+        return True
+    if item.kind == RequirementKind.METRIC and name in derived_outputs:
+        return True
+    if item.kind == RequirementKind.TOPIC and _PLANNING_OUTPUT_TOPIC_RE.search(
+        item.name
+    ):
+        return True
+    if (
+        item.kind == RequirementKind.FILTER
+        and "raw" in name
+        and "value" in name
+    ):
+        return True
+    return False
+
+
+def _metric_guard_scope(query: str) -> str:
+    """Exclude a leading table title from deterministic metric restoration."""
+
+    match = _TABLE_ACTION_RE.search(query)
+    return query[match.end() :] if match is not None else query
+
+
+def _metric_mention_is_excluded(
+    query: str,
+    match: re.Match[str],
+    *,
+    derived_outputs: frozenset[str],
+) -> bool:
+    metric = canonical_requirement_text(match.group(0))
+    if metric == "return" or metric in derived_outputs:
+        return True
+    prefix = query[max(0, match.start() - 70) : match.start()]
+    return bool(_NEGATED_METRIC_PREFIX_RE.search(prefix))
+
+
 def _is_optional(query: str, name: str) -> bool:
     normalized_name = normalize_requirement_text(name)
     if not normalized_name:
@@ -492,7 +621,24 @@ def _is_optional(query: str, name: str) -> bool:
         rf"(?:if\s+(?:possible|available)|where\s+available|optional)\b",
         re.IGNORECASE,
     )
-    return bool(optional_before.search(query) or optional_after.search(query))
+    if optional_before.search(query) or optional_after.search(query):
+        return True
+    # A trailing availability qualifier commonly applies to the whole
+    # coordinated list: "including revenue, profit and income when available".
+    list_scope = re.search(
+        r"\b(?:include|including|show|provide|extract)\b"
+        r"(?P<items>.{0,320}?)\b(?:if|when|where)\s+available\b",
+        query,
+        re.IGNORECASE | re.DOTALL,
+    )
+    return bool(
+        list_scope
+        and re.search(
+            rf"\b{target}\b",
+            list_scope.group("items"),
+            re.IGNORECASE,
+        )
+    )
 
 
 def _validated_aliases(
@@ -523,6 +669,7 @@ def _is_grounded(item: ExtractedRequirement, query: str) -> bool:
         )
     if item.kind in {
         RequirementKind.METRIC,
+        RequirementKind.TARGET,
         RequirementKind.ENTITY,
         RequirementKind.DIMENSION,
     }:
@@ -671,8 +818,52 @@ def validate_requirements_extraction(
 
     query = request.query
     adjustments: list[str] = []
+    source_evidence_required = _source_evidence_required(query)
+    if source_evidence_required != extraction.source_evidence_required:
+        adjustments.append(
+            "source_evidence_requirement_aligned_to_explicit_intent:"
+            f"{str(source_evidence_required).casefold()}"
+        )
+    derived_outputs = _derived_output_names(query)
+    prediction_target = _prediction_target(query)
+    explicit_dimension_names = _explicit_dimension_names(query)
     grounded: list[ExtractedRequirement] = []
     for item in extraction.requirements:
+        if _is_planning_output_requirement(
+            item,
+            derived_outputs=derived_outputs,
+        ):
+            adjustments.append(
+                f"dropped_planning_output:{item.kind.value}:"
+                f"{canonical_requirement_text(item.name)}"
+            )
+            continue
+        if (
+            prediction_target is not None
+            and canonical_requirement_text(item.name) == prediction_target
+            and item.kind != RequirementKind.TARGET
+        ):
+            item = item.model_copy(
+                update={
+                    "kind": RequirementKind.TARGET,
+                    "expected_data_type": ExpectedDataType.ANY,
+                }
+            )
+            adjustments.append(
+                f"classified_prediction_target:{prediction_target}"
+            )
+        item_name = canonical_requirement_text(item.name)
+        if (
+            item_name in explicit_dimension_names
+            and item.kind != RequirementKind.DIMENSION
+        ):
+            item = item.model_copy(
+                update={
+                    "kind": RequirementKind.DIMENSION,
+                    "expected_data_type": ExpectedDataType.ANY,
+                }
+            )
+            adjustments.append(f"classified_explicit_dimension:{item_name}")
         if item.kind == RequirementKind.UNIT and not _has_valid_unit(item.name):
             adjustments.append(
                 f"dropped_invalid_unit:{canonical_requirement_text(item.name)}"
@@ -793,7 +984,14 @@ def validate_requirements_extraction(
                 filtered_grounded.append(item)
         grounded = filtered_grounded
     seen_metrics: set[str] = set()
-    for match in _METRIC_WORD_RE.finditer(query):
+    metric_scope = _metric_guard_scope(query)
+    for match in _METRIC_WORD_RE.finditer(metric_scope):
+        if _metric_mention_is_excluded(
+            metric_scope,
+            match,
+            derived_outputs=derived_outputs,
+        ):
+            continue
         metric = normalize_requirement_text(match.group(0))
         canonical = canonical_requirement_text(metric)
         if (
@@ -892,6 +1090,19 @@ def validate_requirements_extraction(
                 )
             )
             grouping_names.add(canonical_requirement_text(grouping))
+    for grouping in sorted(explicit_dimension_names):
+        if grouping in grouping_names:
+            continue
+        grounded.append(
+            ExtractedRequirement(
+                kind=RequirementKind.DIMENSION,
+                name=grouping,
+                required=True,
+            )
+        )
+        valid_groupings.append(grouping)
+        grouping_names.add(grouping)
+        adjustments.append(f"restored_explicit_grouping:{grouping}")
     for grouping in explicit_category_names:
         canonical_grouping = canonical_requirement_text(grouping)
         if canonical_grouping not in {
@@ -904,7 +1115,7 @@ def validate_requirements_extraction(
             ExtractedRequirement(
                 kind=RequirementKind.TOPIC,
                 name=query,
-                required=True,
+                required=source_evidence_required,
             )
         )
         used_fallback = True
@@ -941,6 +1152,15 @@ def validate_requirements_extraction(
         )
         for item in merged
     )
+    if not source_evidence_required:
+        items = tuple(
+            item.model_copy(update={"required": False}) for item in items
+        )
+    elif _FLEXIBLE_DISCOVERY_RE.search(query):
+        items = tuple(
+            item.model_copy(update={"required": False}) for item in items
+        )
+        adjustments.append("marked_exploratory_requirements_optional")
     operation = _resolved_operation(query, extraction.operation, adjustments)
     multi_document = len(request.selected_source_ids) > 1
     scoped_entity_names = {
@@ -965,20 +1185,22 @@ def validate_requirements_extraction(
         adjustments.append("enforced_all_selected_document_coverage")
 
     has_metric = any(item.kind == RequirementKind.METRIC for item in items)
-    table_required = extraction.table_evidence_required or bool(
-        has_metric
-        and (
-            operation
-            in {
-                AnalysisOperation.COMPARISON,
-                AnalysisOperation.TREND,
-                AnalysisOperation.CORRELATION,
-                AnalysisOperation.ANOMALY_DETECTION,
-                AnalysisOperation.AGGREGATION,
-                AnalysisOperation.RANKING,
-                AnalysisOperation.DISTRIBUTION,
-            }
-            or _TABLE_REQUIRED_RE.search(query)
+    table_required = source_evidence_required and (
+        extraction.table_evidence_required or bool(
+            has_metric
+            and (
+                operation
+                in {
+                    AnalysisOperation.COMPARISON,
+                    AnalysisOperation.TREND,
+                    AnalysisOperation.CORRELATION,
+                    AnalysisOperation.ANOMALY_DETECTION,
+                    AnalysisOperation.AGGREGATION,
+                    AnalysisOperation.RANKING,
+                    AnalysisOperation.DISTRIBUTION,
+                }
+                or _TABLE_REQUIRED_RE.search(query)
+            )
         )
     )
     if table_required and not extraction.table_evidence_required:
@@ -993,6 +1215,8 @@ def validate_requirements_extraction(
         expected_granularity=extraction.expected_granularity,
         requires_join=extraction.requires_join,
         requires_all_selected_documents=requires_all_documents,
+        source_evidence_required=source_evidence_required,
+        workbook_context_required=bool(_WORKBOOK_DESTINATION_RE.search(query)),
         table_evidence_required=table_required,
         text_evidence_acceptable=extraction.text_evidence_acceptable,
         diagnostics=RequirementsDiagnostics(
@@ -1034,6 +1258,7 @@ def fallback_extraction(request: AnalysisRequest) -> RequirementsExtraction:
             len(request.selected_source_ids) > 1
             and bool(_ALL_DOCUMENTS_RE.search(request.query))
         ),
+        source_evidence_required=_source_evidence_required(request.query),
         table_evidence_required=bool(_TABLE_REQUIRED_RE.search(request.query)),
         text_evidence_acceptable=True,
     )

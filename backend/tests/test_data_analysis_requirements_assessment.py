@@ -911,6 +911,103 @@ class RequirementsRunnerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class EvidenceAssessmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_supported_optional_evidence_can_proceed_when_none_is_required(
+        self,
+    ) -> None:
+        item = _raw_table(
+            table_id="optional-financials",
+            document_id=DOCUMENT_A,
+            title="Financials",
+            document_name="annual-report.pdf",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[{"metric": "Total", "revenue": 100}],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(
+                _AmbiguityGenerator(),
+                model="test-model",
+            ),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_metric_revenue",
+                kind=RequirementKind.METRIC,
+                name="Revenue",
+                required=False,
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+            RequirementItem(
+                requirement_id="req_metric_profit",
+                kind=RequirementKind.METRIC,
+                name="Profit",
+                required=False,
+                expected_data_type=ExpectedDataType.NUMBER,
+            ),
+        )
+
+        outcome = await runner.run(
+            request=_request("Include revenue and profit when available."),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(outcome.artifact.required_count, 0)
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+
+    async def test_categorical_prediction_target_matches_source_column(
+        self,
+    ) -> None:
+        item = _raw_table(
+            table_id="sales",
+            document_id=DOCUMENT_A,
+            title="Sales",
+            document_name="workbook.xlsx",
+            columns=[
+                {"key": "product", "label": "Product", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[
+                {"product": "A", "revenue": 60_000},
+                {"product": "B", "revenue": 45_000},
+            ],
+        )
+        evidence, profiles, metadata = _evidence_and_profiles(item)
+        runner = EvidenceAssessmentRunner(
+            metadata_repository=_MetadataRepository(metadata),
+            cache=_ArtifactCache(),
+            resolver=AmbiguityResolver(
+                _AmbiguityGenerator(),
+                model="test-model",
+            ),
+        )
+        requirements = _requirements(
+            RequirementItem(
+                requirement_id="req_target_product",
+                kind=RequirementKind.TARGET,
+                name="Product",
+                expected_data_type=ExpectedDataType.ANY,
+            )
+        )
+
+        outcome = await runner.run(
+            request=_request("Predict Product from Revenue"),
+            requirements=requirements,
+            retrieval=_retrieval(),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(outcome.artifact.coverage[0].status, CoverageStatus.SUPPORTED)
+        self.assertEqual(outcome.artifact.decision, ReadinessDecision.READY)
+
     async def test_irrelevant_column_unit_does_not_create_metric_conflict(
         self,
     ) -> None:
@@ -1925,6 +2022,194 @@ class MongoPhaseFourAndFiveRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(query["user_id"], "user-1")
         self.assertNotIn("rows", projection)
         self.assertEqual(metadata["table-1"].summary, "Revenue by year.")
+
+
+class PlanningBoundaryRequirementRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _validate(
+        query: str,
+        items: tuple[ExtractedRequirement, ...],
+        *,
+        operation: AnalysisOperation = AnalysisOperation.OTHER,
+        document_ids: tuple[str, ...] = (DOCUMENT_A,),
+    ) -> AnalysisRequirements:
+        return validate_requirements_extraction(
+            request=_request(query, document_ids=document_ids),
+            extraction=RequirementsExtraction(
+                operation=operation,
+                requirements=items,
+            ),
+            model="test-model",
+            extraction_attempts=1,
+        ).requirements
+
+    def test_derived_fields_and_chart_outputs_are_not_source_requirements(self) -> None:
+        artifact = self._validate(
+            "Create derived Profit = Revenue - Cost and Margin = Profit / "
+            "Revenue columns, then create a revenue-by-region chart.",
+            (
+                ExtractedRequirement(kind="metric", name="Revenue"),
+                ExtractedRequirement(kind="metric", name="Cost"),
+                ExtractedRequirement(kind="metric", name="Profit"),
+                ExtractedRequirement(kind="metric", name="Margin"),
+                ExtractedRequirement(kind="dimension", name="Region"),
+                ExtractedRequirement(kind="topic", name="revenue-by-region chart"),
+            ),
+        )
+
+        self.assertEqual(
+            {(item.kind.value, item.name) for item in artifact.requirements},
+            {("metric", "Revenue"), ("metric", "Cost"), ("dimension", "Region")},
+        )
+
+    def test_chart_by_field_repairs_llm_metric_misclassification(self) -> None:
+        artifact = self._validate(
+            "Create a revenue-by-region chart next to the spreadsheet.",
+            (
+                ExtractedRequirement(kind="metric", name="Revenue"),
+                ExtractedRequirement(kind="metric", name="Region"),
+            ),
+        )
+
+        by_name = {item.name.casefold(): item for item in artifact.requirements}
+        self.assertEqual(by_name["region"].kind, RequirementKind.DIMENSION)
+        self.assertEqual(
+            by_name["region"].expected_data_type,
+            ExpectedDataType.ANY,
+        )
+
+    def test_workbook_context_is_retained_only_for_explicit_destinations(self) -> None:
+        item = (ExtractedRequirement(kind="metric", name="Revenue"),)
+        edit = self._validate(
+            "Extract revenue and put the result next to the spreadsheet at G1.",
+            item,
+        )
+        analysis = self._validate(
+            "Compare revenue in the selected reports.",
+            item,
+        )
+
+        self.assertTrue(edit.workbook_context_required)
+        self.assertFalse(analysis.workbook_context_required)
+
+    def test_prediction_target_and_statistical_outputs_are_classified(self) -> None:
+        prediction = self._validate(
+            "Use Python KNN to predict Product from Revenue, Cost and Units and "
+            "generate a confusion-matrix visualization.",
+            (
+                ExtractedRequirement(kind="metric", name="Product"),
+                ExtractedRequirement(kind="metric", name="Revenue"),
+                ExtractedRequirement(kind="metric", name="Cost"),
+                ExtractedRequirement(kind="metric", name="Units"),
+                ExtractedRequirement(kind="topic", name="confusion-matrix visualization"),
+            ),
+        )
+        by_name = {item.name: item for item in prediction.requirements}
+        self.assertEqual(by_name["Product"].kind, RequirementKind.TARGET)
+        self.assertEqual(by_name["Product"].expected_data_type, ExpectedDataType.ANY)
+        self.assertNotIn("confusion-matrix visualization", by_name)
+
+        correlation = self._validate(
+            "Run a Pearson correlation between Revenue and Units, include "
+            "confidence and significance statistics, and generate a scatter plot.",
+            (
+                ExtractedRequirement(kind="metric", name="Revenue"),
+                ExtractedRequirement(kind="metric", name="Units"),
+                ExtractedRequirement(
+                    kind="topic",
+                    name="confidence and significance statistics",
+                ),
+                ExtractedRequirement(kind="topic", name="scatter plot"),
+            ),
+            operation=AnalysisOperation.CORRELATION,
+        )
+        self.assertEqual(
+            {item.name for item in correlation.requirements},
+            {"Revenue", "Units"},
+        )
+
+    def test_synthetic_and_schema_only_requests_do_not_require_source_values(self) -> None:
+        for query in (
+            "Generate 25 reproducible synthetic monthly sales rows.",
+            "Describe the dataset schema and recommend safe analyses without "
+            "using raw cell values.",
+        ):
+            with self.subTest(query=query):
+                artifact = self._validate(
+                    query,
+                    (ExtractedRequirement(kind="topic", name=query),),
+                )
+                self.assertFalse(artifact.source_evidence_required)
+                self.assertFalse(any(item.required for item in artifact.requirements))
+                self.assertFalse(artifact.table_evidence_required)
+
+    def test_available_cross_report_metrics_are_exploratory_not_exact_fields(
+        self,
+    ) -> None:
+        artifact = self._validate(
+            "Compare the two reports using their available tables. Return the "
+            "most relevant financial and operational metrics with provenance.",
+            (
+                ExtractedRequirement(kind="metric", name="financial metrics"),
+                ExtractedRequirement(kind="metric", name="operational metrics"),
+                ExtractedRequirement(kind="dimension", name="provenance"),
+            ),
+            operation=AnalysisOperation.COMPARISON,
+            document_ids=(DOCUMENT_A, DOCUMENT_B),
+        )
+
+        self.assertTrue(artifact.source_evidence_required)
+        self.assertTrue(artifact.requires_all_selected_documents)
+        self.assertFalse(any(item.required for item in artifact.requirements))
+        self.assertNotIn(
+            "provenance",
+            {item.name.casefold() for item in artifact.requirements},
+        )
+
+    def test_table_titles_and_response_verbs_do_not_create_metrics(self) -> None:
+        artifact = self._validate(
+            "Use the STATEMENTS OF COMPREHENSIVE INCOME (LOSS) table to "
+            "compare total revenues and net income for 2024 and 2023. "
+            "Return a clean table.",
+            (
+                ExtractedRequirement(kind="metric", name="Total Revenues"),
+                ExtractedRequirement(kind="metric", name="Net Income"),
+                ExtractedRequirement(kind="period", name="2024"),
+                ExtractedRequirement(kind="period", name="2023"),
+            ),
+            operation=AnalysisOperation.COMPARISON,
+        )
+        names = {item.name.casefold() for item in artifact.requirements}
+        self.assertNotIn("loss", names)
+        self.assertNotIn("return", names)
+        self.assertIn("total revenues", names)
+        self.assertIn("net income", names)
+
+    def test_trailing_when_available_applies_to_the_metric_list(self) -> None:
+        artifact = self._validate(
+            "Extract data including revenue, gross profit, operating income "
+            "and net income when available for 2024 and 2023.",
+            tuple(
+                ExtractedRequirement(
+                    kind="metric",
+                    name=name,
+                    required=True,
+                    expected_data_type="number",
+                )
+                for name in (
+                    "revenue",
+                    "gross profit",
+                    "operating income",
+                    "net income",
+                )
+            ),
+            operation=AnalysisOperation.COMPARISON,
+        )
+        metrics = tuple(
+            item for item in artifact.requirements if item.kind == RequirementKind.METRIC
+        )
+        self.assertTrue(metrics)
+        self.assertFalse(any(item.required for item in metrics))
 
 
 if __name__ == "__main__":

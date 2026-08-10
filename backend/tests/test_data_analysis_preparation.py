@@ -35,6 +35,7 @@ from scripts.data_analysis_agent.analysis.models import (
     RequirementOrigin,
     SourceRegion,
     TableOrientation,
+    TransformationOperation,
 )
 from scripts.data_analysis_agent.analysis.repositories import (
     NormalizedDatasetWrite,
@@ -277,6 +278,397 @@ class _NormalizedRepository:
 
 
 class DatasetPreparationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spreadsheet_destination_is_retained_as_context_only(self) -> None:
+        raw = _raw_table(
+            "pdf-evidence",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[{"metric": "Total", "revenue": 100}],
+        )
+        pdf_dataset, pdf_profile = _dataset_and_profile(raw)
+        workbook = pdf_dataset.model_copy(
+            update={
+                "dataset_id": "workbook_context_dataset",
+                "source_type": "spreadsheet_range",
+                "table_id": "workbook-context",
+                "document_id": "workbook-artifact",
+                "document_name": "workbook.xlsx",
+                "workspace_id": "workspace-1",
+                "artifact_id": "workbook-artifact",
+                "artifact_version_id": "workbook-version-1",
+                "worksheet_id": "sheet-1",
+                "worksheet_name": "Sheet1",
+                "range_a1": "Sheet1!A1:B2",
+                "workbook_revision": 1,
+                "snapshot_hash": "a" * 64,
+                "page_start": None,
+                "page_end": None,
+                "source_regions": (),
+                "extraction_method": "spreadsheet",
+                "access": DatasetAccessReference(
+                    provider="blob",
+                    collection="dataset_catalog",
+                    record_id="workbook-context",
+                    artifact_version_id="workbook-version-1",
+                    blob={"storage": "test"},
+                ),
+            }
+        )
+        workbook_profile = pdf_profile.model_copy(
+            update={
+                "dataset_id": workbook.dataset_id,
+                "table_id": workbook.table_id,
+                "document_id": workbook.document_id,
+            }
+        )
+        evidence = EvidencePackage(
+            run_id="run-pdf-to-sheet",
+            status="complete",
+            datasets=(pdf_dataset, workbook),
+            retrieved_table_count=2,
+            hydrated_table_count=2,
+        )
+        profiles = DatasetProfiles(
+            profiler_version=pdf_profile.profiler_version,
+            status="complete",
+            profiles=(pdf_profile, workbook_profile),
+            requested_count=2,
+            profiled_count=2,
+            cache_hit_count=0,
+            generated_count=2,
+        )
+
+        selection = select_preparation_evidence(
+            requirements=_requirements().model_copy(
+                update={"workbook_context_required": True}
+            ),
+            assessment=_assessment(pdf_dataset),
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        by_id = {item.dataset.dataset_id: item for item in selection.datasets}
+        self.assertIn(pdf_dataset.dataset_id, by_id)
+        self.assertIn(workbook.dataset_id, by_id)
+        self.assertEqual(by_id[workbook.dataset_id].requirement_ids, ())
+
+    async def test_spreadsheet_is_not_added_to_read_only_pdf_analysis(self) -> None:
+        raw = _raw_table(
+            "pdf-only",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[{"metric": "Total", "revenue": 100}],
+        )
+        pdf_dataset, pdf_profile = _dataset_and_profile(raw)
+        workbook = pdf_dataset.model_copy(
+            update={
+                "dataset_id": "unselected_workbook_context",
+                "source_type": "spreadsheet_range",
+                "workspace_id": "workspace-1",
+                "artifact_id": "workbook-artifact",
+                "artifact_version_id": "workbook-version-1",
+                "worksheet_id": "sheet-1",
+                "worksheet_name": "Sheet1",
+                "range_a1": "Sheet1!A1:B2",
+                "workbook_revision": 1,
+                "snapshot_hash": "a" * 64,
+                "page_start": None,
+                "page_end": None,
+                "source_regions": (),
+                "extraction_method": "spreadsheet",
+                "access": DatasetAccessReference(
+                    provider="blob",
+                    collection="dataset_catalog",
+                    record_id="unselected-workbook-context",
+                    artifact_version_id="workbook-version-1",
+                    blob={"storage": "test"},
+                ),
+            }
+        )
+        workbook_profile = pdf_profile.model_copy(
+            update={"dataset_id": workbook.dataset_id}
+        )
+
+        selection = select_preparation_evidence(
+            requirements=_requirements(),
+            assessment=_assessment(pdf_dataset),
+            evidence=EvidencePackage(
+                run_id="run-read-only-pdf",
+                status="complete",
+                datasets=(pdf_dataset, workbook),
+                retrieved_table_count=2,
+                hydrated_table_count=2,
+            ),
+            profiles=DatasetProfiles(
+                profiler_version=pdf_profile.profiler_version,
+                status="complete",
+                profiles=(pdf_profile, workbook_profile),
+                requested_count=2,
+                profiled_count=2,
+                cache_hit_count=0,
+                generated_count=2,
+            ),
+        )
+
+        self.assertEqual(
+            tuple(item.dataset.dataset_id for item in selection.datasets),
+            (pdf_dataset.dataset_id,),
+        )
+
+    async def test_exploratory_comparison_selects_one_table_per_required_document(
+        self,
+    ) -> None:
+        raw = _raw_table(
+            "exploratory-a",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "value", "label": "Value", "type": "number"},
+            ],
+            rows=[{"metric": "Revenue", "value": 100}],
+        )
+        first, first_profile = _dataset_and_profile(raw)
+        second_document = "e" * 64
+        second = first.model_copy(
+            update={
+                "dataset_id": "raw_exploratory_b",
+                "table_id": "exploratory-b",
+                "document_id": second_document,
+                "document_name": "second-report.pdf",
+                "retrieval_score": 0.9,
+            }
+        )
+        second_profile = first_profile.model_copy(
+            update={
+                "dataset_id": second.dataset_id,
+                "table_id": second.table_id,
+                "document_id": second.document_id,
+            }
+        )
+        requirements = AnalysisRequirements(
+            model="test-model",
+            operation=AnalysisOperation.COMPARISON,
+            selected_document_ids=(DOCUMENT_ID, second_document),
+            requirements=(
+                RequirementItem(
+                    requirement_id="req_metric_financial_metrics",
+                    kind=RequirementKind.METRIC,
+                    name="financial metrics",
+                    required=False,
+                ),
+            ),
+            requires_all_selected_documents=True,
+            source_evidence_required=True,
+        )
+        assessment = EvidenceAssessment(
+            ambiguity_model="test",
+            decision=ReadinessDecision.READY,
+            coverage=(
+                RequirementCoverage(
+                    requirement_id="req_metric_financial_metrics",
+                    status=CoverageStatus.MISSING,
+                    confidence=0,
+                    reason="No exact field was requested.",
+                ),
+            ),
+            document_coverage=(
+                DocumentCoverage(
+                    document_id=DOCUMENT_ID,
+                    required=True,
+                    status=CoverageStatus.SUPPORTED,
+                    dataset_ids=(first.dataset_id,),
+                ),
+                DocumentCoverage(
+                    document_id=second_document,
+                    required=True,
+                    status=CoverageStatus.SUPPORTED,
+                    dataset_ids=(second.dataset_id,),
+                ),
+            ),
+            required_count=0,
+            supported_count=0,
+            partial_count=0,
+            missing_count=1,
+            conflicting_count=0,
+            ambiguous_count=0,
+        )
+        evidence = EvidencePackage(
+            run_id="run-exploratory",
+            status="complete",
+            datasets=(first, second),
+            retrieved_table_count=2,
+            hydrated_table_count=2,
+        )
+        profiles = DatasetProfiles(
+            profiler_version=first_profile.profiler_version,
+            status="complete",
+            profiles=(first_profile, second_profile),
+            requested_count=2,
+            profiled_count=2,
+            cache_hit_count=0,
+            generated_count=2,
+        )
+
+        selection = select_preparation_evidence(
+            requirements=requirements,
+            assessment=assessment,
+            evidence=evidence,
+            profiles=profiles,
+        )
+
+        self.assertEqual(
+            {item.dataset.document_id for item in selection.datasets},
+            {DOCUMENT_ID, second_document},
+        )
+        self.assertTrue(
+            all(not item.requirement_ids for item in selection.datasets)
+        )
+
+    async def test_supported_optional_requirements_select_source_data(self) -> None:
+        raw = _raw_table(
+            "optional-source",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[{"metric": "Total", "revenue": 100}],
+        )
+        dataset, profile = _dataset_and_profile(raw)
+        requirements = _requirements().model_copy(
+            update={
+                "requirements": tuple(
+                    item.model_copy(update={"required": False})
+                    for item in _requirements().requirements
+                )
+            }
+        )
+        assessment = _assessment(dataset).model_copy(
+            update={"required_count": 0}
+        )
+
+        selection = select_preparation_evidence(
+            requirements=requirements,
+            assessment=assessment,
+            evidence=_evidence(dataset),
+            profiles=_profiles(profile),
+        )
+
+        self.assertEqual(
+            tuple(item.dataset.dataset_id for item in selection.datasets),
+            (dataset.dataset_id,),
+        )
+        self.assertEqual(
+            selection.datasets[0].requirement_ids,
+            ("req_metric_revenue",),
+        )
+
+    async def test_record_oriented_spreadsheet_keeps_named_measure_columns(
+        self,
+    ) -> None:
+        raw = _raw_table(
+            "spreadsheet-records",
+            columns=[
+                {"key": "region", "label": "Region", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+                {"key": "cost", "label": "Cost", "type": "number"},
+                {"key": "units", "label": "Units", "type": "number"},
+            ],
+            rows=[
+                {"region": "APAC", "revenue": 60, "cost": 40, "units": 12},
+                {"region": "EMEA", "revenue": 45, "cost": 30, "units": 8},
+            ],
+        )
+        dataset, profile = _dataset_and_profile(raw)
+        self.assertEqual(profile.orientation, TableOrientation.MATRIX)
+        spreadsheet_dataset = dataset.model_copy(
+            update={"source_type": "spreadsheet_range"}
+        )
+
+        recipe = build_cleaning_recipe(
+            dataset=spreadsheet_dataset,
+            profile=profile,
+        )
+
+        operations = {item.operation for item in recipe.transformations}
+        self.assertNotIn(TransformationOperation.RESHAPE_MATRIX_TO_LONG, operations)
+        self.assertEqual(
+            tuple(column.key for column in recipe.output_columns),
+            ("region", "revenue", "cost", "units"),
+        )
+
+    async def test_context_only_dataset_prepares_without_requirement_links(
+        self,
+    ) -> None:
+        raw = _raw_table(
+            "context-only-table",
+            columns=[
+                {"key": "region", "label": "Region", "type": "string"},
+                {"key": "revenue", "label": "Revenue", "type": "number"},
+            ],
+            rows=[{"region": "APAC", "revenue": 10}],
+        )
+        dataset, profile = _dataset_and_profile(raw)
+        requirements = AnalysisRequirements(
+            model="test-model",
+            operation=AnalysisOperation.OTHER,
+            selected_document_ids=(DOCUMENT_ID,),
+            requirements=(
+                RequirementItem(
+                    requirement_id="req_topic_generate_data",
+                    kind=RequirementKind.TOPIC,
+                    name="generate synthetic data",
+                    required=False,
+                ),
+            ),
+            source_evidence_required=False,
+        )
+        assessment = EvidenceAssessment(
+            ambiguity_model="test",
+            decision=ReadinessDecision.READY,
+            coverage=(
+                RequirementCoverage(
+                    requirement_id="req_topic_generate_data",
+                    status=CoverageStatus.MISSING,
+                    confidence=0,
+                    reason="No source values are required.",
+                ),
+            ),
+            document_coverage=(
+                DocumentCoverage(
+                    document_id=DOCUMENT_ID,
+                    required=False,
+                    status=CoverageStatus.SUPPORTED,
+                    dataset_ids=(dataset.dataset_id,),
+                ),
+            ),
+            required_count=0,
+            supported_count=0,
+            partial_count=0,
+            missing_count=1,
+            conflicting_count=0,
+            ambiguous_count=0,
+        )
+
+        outcome = await DatasetPreparationRunner(
+            dataset_repository=_DatasetRepository(raw),
+            normalized_repository=_NormalizedRepository(),
+        ).run(
+            run_id="run-context-only",
+            user_id="user-1",
+            document_ids=(DOCUMENT_ID,),
+            requirements=requirements,
+            assessment=assessment,
+            evidence=_evidence(dataset),
+            profiles=_profiles(profile),
+        )
+
+        self.assertEqual(outcome.artifact.status, NormalizationStatus.READY)
+        self.assertTrue(outcome.artifact.can_analyze)
+        self.assertEqual(outcome.artifact.datasets[0].requirement_ids, ())
+
     async def test_clean_key_value_table_uses_cached_source_passthrough(
         self,
     ) -> None:

@@ -22,6 +22,7 @@ from ...models import (
 _PREPARABLE_REQUIREMENT_KINDS = frozenset(
     {
         RequirementKind.METRIC,
+        RequirementKind.TARGET,
         RequirementKind.PERIOD,
         RequirementKind.DIMENSION,
         RequirementKind.UNIT,
@@ -80,6 +81,29 @@ def _effective_profiles(
     return values
 
 
+def _with_spreadsheet_context(
+    selected: tuple[SelectedDataset, ...],
+    *,
+    datasets: dict[str, HydratedDatasetReference],
+    profiles_by_id: dict[str, DatasetProfile],
+    base_dataset_ids: set[str],
+) -> tuple[SelectedDataset, ...]:
+    selected_ids = {item.dataset.dataset_id for item in selected}
+    context = tuple(
+        SelectedDataset(
+            dataset=dataset,
+            profile=profiles_by_id.get(dataset.dataset_id),
+            requirement_ids=(),
+            is_base_evidence=dataset.dataset_id in base_dataset_ids,
+        )
+        for dataset in datasets.values()
+        if dataset.source_type == "spreadsheet_range"
+        and dataset.dataset_id in profiles_by_id
+        and dataset.dataset_id not in selected_ids
+    )
+    return (*selected, *context)
+
+
 def _requirement_obligations(
     *,
     requirements: AnalysisRequirements,
@@ -116,6 +140,29 @@ def select_preparation_evidence(
 
     datasets, base_dataset_ids = _effective_datasets(evidence, augmented)
     profiles_by_id = _effective_profiles(profiles, augmented)
+    if not requirements.source_evidence_required:
+        # Keep bounded immutable source context for workbook guards and schema
+        # inspection without pretending generated/output fields already exist.
+        selected = tuple(
+            SelectedDataset(
+                dataset=dataset,
+                profile=profiles_by_id.get(dataset.dataset_id),
+                requirement_ids=(),
+                is_base_evidence=dataset.dataset_id in base_dataset_ids,
+            )
+            for dataset in datasets.values()
+            if dataset.dataset_id in profiles_by_id
+        )
+        selected_ids = {item.dataset.dataset_id for item in selected}
+        return PreparationSelection(
+            datasets=selected,
+            facts=(),
+            derived_datasets=(),
+            non_tabular_requirement_ids=(),
+            rejected_dataset_ids=tuple(
+                sorted(set(datasets).difference(selected_ids))
+            ),
+        )
     facts = {
         item.fact_id: item
         for item in (augmented.facts if augmented is not None else ())
@@ -123,6 +170,81 @@ def select_preparation_evidence(
     requirements_by_id = {
         item.requirement_id: item for item in requirements.requirements
     }
+    required_requirement_ids = {
+        item.requirement_id
+        for item in requirements.requirements
+        if item.required
+    }
+    supported_requirement_ids = {
+        item.requirement_id
+        for item in assessment.coverage
+        if item.status == CoverageStatus.SUPPORTED
+    }
+    eligible_requirement_ids = (
+        required_requirement_ids
+        if required_requirement_ids
+        else supported_requirement_ids
+    )
+    if not eligible_requirement_ids:
+        required_documents = {
+            item.document_id
+            for item in assessment.document_coverage
+            if item.required and item.status == CoverageStatus.SUPPORTED
+        }
+        best_by_document: dict[str, HydratedDatasetReference] = {}
+        for dataset in datasets.values():
+            if dataset.document_id not in required_documents:
+                continue
+            current = best_by_document.get(dataset.document_id)
+            candidate_profile = profiles_by_id.get(dataset.dataset_id)
+            current_profile = (
+                profiles_by_id.get(current.dataset_id)
+                if current is not None
+                else None
+            )
+            candidate_rank = (
+                candidate_profile.quality_score if candidate_profile else 0.0,
+                dataset.retrieval_score or 0.0,
+                dataset.dataset_id,
+            )
+            current_rank = (
+                (
+                    current_profile.quality_score
+                    if current_profile is not None
+                    else 0.0
+                ),
+                current.retrieval_score or 0.0,
+                current.dataset_id,
+            ) if current is not None else (-1.0, -1.0, "")
+            if candidate_rank > current_rank:
+                best_by_document[dataset.document_id] = dataset
+        selected_ids = {
+            dataset.dataset_id for dataset in best_by_document.values()
+        }
+        selected = tuple(
+            SelectedDataset(
+                dataset=dataset,
+                profile=profiles_by_id.get(dataset.dataset_id),
+                requirement_ids=(),
+                is_base_evidence=dataset.dataset_id in base_dataset_ids,
+            )
+            for _, dataset in sorted(best_by_document.items())
+        )
+        if requirements.workbook_context_required:
+            selected = _with_spreadsheet_context(
+                selected,
+                datasets=datasets,
+                profiles_by_id=profiles_by_id,
+                base_dataset_ids=base_dataset_ids,
+            )
+        selected_ids = {item.dataset.dataset_id for item in selected}
+        return PreparationSelection(
+            datasets=selected,
+            facts=(),
+            derived_datasets=(),
+            non_tabular_requirement_ids=(),
+            rejected_dataset_ids=tuple(sorted(set(datasets) - selected_ids)),
+        )
 
     universe: set[tuple[str, str | None]] = set()
     candidates: dict[str, _Candidate] = {}
@@ -132,7 +254,7 @@ def select_preparation_evidence(
         requirement = requirements_by_id.get(coverage.requirement_id)
         if (
             requirement is None
-            or not requirement.required
+            or requirement.requirement_id not in eligible_requirement_ids
             or coverage.status != CoverageStatus.SUPPORTED
             or requirement.kind not in _PREPARABLE_REQUIREMENT_KINDS
         ):
@@ -198,11 +320,6 @@ def select_preparation_evidence(
             augmented.derived_datasets if augmented is not None else ()
         )
     }
-    supported_requirement_ids = {
-        item.requirement_id
-        for item in assessment.coverage
-        if item.status == CoverageStatus.SUPPORTED
-    }
     for derived in derived_datasets.values():
         obligations: set[tuple[str, str | None]] = set()
         confidence = 0.0
@@ -210,7 +327,7 @@ def select_preparation_evidence(
             requirement = requirements_by_id.get(requirement_id)
             if (
                 requirement is None
-                or not requirement.required
+                or requirement.requirement_id not in eligible_requirement_ids
                 or requirement_id not in supported_requirement_ids
                 or requirement.kind not in _PREPARABLE_REQUIREMENT_KINDS
             ):
@@ -283,7 +400,7 @@ def select_preparation_evidence(
         requirement = requirements_by_id.get(coverage.requirement_id)
         if (
             requirement is None
-            or not requirement.required
+            or requirement.requirement_id not in eligible_requirement_ids
             or coverage.status != CoverageStatus.SUPPORTED
         ):
             continue
@@ -305,6 +422,16 @@ def select_preparation_evidence(
         for dataset_id in selected_ids
         if dataset_id in selected_dataset_ids
     )
+    if requirements.workbook_context_required:
+        selected_datasets = _with_spreadsheet_context(
+            selected_datasets,
+            datasets=datasets,
+            profiles_by_id=profiles_by_id,
+            base_dataset_ids=base_dataset_ids,
+        )
+    final_selected_dataset_ids = {
+        item.dataset.dataset_id for item in selected_datasets
+    }
     selected_facts = tuple(
         facts[fact_id]
         for fact_id in selected_ids
@@ -315,10 +442,11 @@ def select_preparation_evidence(
         for dataset_id in selected_ids
         if dataset_id in selected_derived_ids
     )
-    analytical_required_ids = {
+    analytical_requirement_ids = {
         item.requirement_id
         for item in requirements.requirements
-        if item.required and item.kind in _PREPARABLE_REQUIREMENT_KINDS
+        if item.requirement_id in eligible_requirement_ids
+        and item.kind in _PREPARABLE_REQUIREMENT_KINDS
     }
     prepared_requirement_ids = {
         requirement_id
@@ -332,10 +460,10 @@ def select_preparation_evidence(
         for requirement_id in item.requirement_ids
     }
     non_tabular = tuple(
-        sorted(analytical_required_ids - prepared_requirement_ids)
+        sorted(analytical_requirement_ids - prepared_requirement_ids)
     )
     rejected = tuple(
-        sorted(set(datasets) - selected_dataset_ids)
+        sorted(set(datasets) - final_selected_dataset_ids)
     )
     return PreparationSelection(
         datasets=selected_datasets,

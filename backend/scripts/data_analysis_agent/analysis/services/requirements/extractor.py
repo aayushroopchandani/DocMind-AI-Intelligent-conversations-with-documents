@@ -24,11 +24,18 @@ structured schema. Return analytical intent, independently assessable requiremen
 groupings, expected granularity, join need, evidence modality, and whether every
 selected document must be covered.
 
-Preserve every explicit metric, entity, period, dimension, filter, unit, and constraint.
-Mark a requirement optional only when the user makes it optional. Never invent an
-entity, period, unit, metric, or filter. Closely related financial concepts are not
-aliases: revenue is not income, earnings, profit, or cash flow. Aliases must be strictly
-equivalent (for example, earnings per share and EPS).
+Extract only evidence that must already exist in the selected input sources. Do not
+treat requested outputs, derived columns, formulas, models, confidence statistics,
+charts, provenance formatting, or destination ranges as source requirements. For
+example, in "derive Profit = Revenue - Cost", Revenue and Cost are source metrics but
+Profit is an output. Use kind "target" for a prediction target and do not assume that
+it is numeric.
+
+Preserve every explicit source metric, entity, period, dimension, filter, unit, and
+constraint. Mark a requirement optional when the user says "if/when available".
+Never invent an entity, period, unit, metric, or filter. Closely related financial
+concepts are not aliases: revenue is not income, earnings, profit, or cash flow.
+Aliases must be strictly equivalent (for example, earnings per share and EPS).
 
 Attach entity_names to a metric when the request requires that metric separately for
 specific entities. Use table_evidence_required for exact multi-value calculations,
@@ -36,13 +43,17 @@ comparisons, trends, correlations, anomaly detection, rankings, or aggregations.
 may still be acceptable as supporting evidence. Set requires_all_selected_documents
 only when the request explicitly compares or covers all selected documents.
 
+Set source_evidence_required to false only for a source-independent synthetic/random
+dataset request or a schema/profile-only recommendation that does not require cell
+values. Otherwise set it to true.
+
 Do not answer the request and do not produce an analysis plan."""
 
 REQUIREMENTS_JSON_INSTRUCTIONS = """Return one JSON object with this exact shape:
 {
   "operation": "comparison|trend|aggregation|correlation|anomaly_detection|ranking|distribution|lookup|summarization|other",
   "requirements": [{
-    "kind": "metric|entity|period|dimension|unit|filter|topic",
+    "kind": "metric|target|entity|period|dimension|unit|filter|topic",
     "name": "string",
     "aliases": ["strictly equivalent alias"],
     "required": true,
@@ -56,6 +67,7 @@ REQUIREMENTS_JSON_INSTRUCTIONS = """Return one JSON object with this exact shape
   "expected_granularity": null,
   "requires_join": false,
   "requires_all_selected_documents": false,
+  "source_evidence_required": true,
   "table_evidence_required": false,
   "text_evidence_acceptable": true
 }

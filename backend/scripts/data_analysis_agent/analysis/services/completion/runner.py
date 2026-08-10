@@ -401,7 +401,6 @@ class EvidenceCompletionRunner:
 
         # 3. Search only for requirements that remain incomplete.
         attempted_queries: set[str] = set()
-        successful_repairs = 0
         for repair_number in range(1, _maximum_repair_attempts() + 1):
             if _is_terminal(working_assessment.decision):
                 break
@@ -441,7 +440,6 @@ class EvidenceCompletionRunner:
                 continue
             if not repair.queries:
                 break
-            successful_repairs += 1
             new_candidates = tuple(
                 item
                 for item in repair.table_candidates
@@ -529,7 +527,6 @@ class EvidenceCompletionRunner:
         remaining = _remaining_required_ids(requirements, working_assessment)
         if (
             remaining
-            and successful_repairs
             and not any(
                 item.code in _UNANSWERABLE_BLOCKING_ISSUES
                 for item in warnings

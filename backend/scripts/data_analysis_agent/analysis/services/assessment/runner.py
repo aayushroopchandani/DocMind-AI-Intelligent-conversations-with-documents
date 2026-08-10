@@ -540,6 +540,14 @@ def _readiness(
     profiles: DatasetProfiles,
     combination_coverage: tuple[RequirementCombinationCoverage, ...] = (),
 ) -> ReadinessDecision:
+    if not requirements.source_evidence_required:
+        # Synthetic generation and schema/profile-only requests need a stable
+        # workbook context, but their requested outputs must not be searched
+        # for as if they were existing source values.
+        profiled_ids = {item.dataset_id for item in profiles.profiles}
+        if any(item.dataset_id in profiled_ids for item in evidence.datasets):
+            return ReadinessDecision.READY
+        return ReadinessDecision.NEEDS_CLARIFICATION
     if requirements.diagnostics.validation_conflicts:
         return ReadinessDecision.NEEDS_CLARIFICATION
     required_ids = {
@@ -551,6 +559,24 @@ def _readiness(
         item for item in coverage if item.requirement_id in required_ids
     ]
     if not required_coverage:
+        required_documents_ready = all(
+            item.status == CoverageStatus.SUPPORTED
+            for item in document_coverage
+            if item.required
+        )
+        has_supported_optional_evidence = any(
+            item.status == CoverageStatus.SUPPORTED for item in coverage
+        )
+        if (
+            required_documents_ready
+            and (has_supported_optional_evidence or bool(document_coverage))
+            and _join_is_supported(
+                requirements=requirements,
+                evidence=evidence,
+                profiles=profiles,
+            )
+        ):
+            return ReadinessDecision.READY
         return ReadinessDecision.NEEDS_CLARIFICATION
     if any(
         item.status in {CoverageStatus.CONFLICTING, CoverageStatus.AMBIGUOUS}

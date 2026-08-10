@@ -253,6 +253,8 @@ def _column_role_compatible(
     requirement: RequirementItem,
     column: ColumnProfile,
 ) -> bool:
+    if requirement.kind == RequirementKind.TARGET:
+        return True
     if requirement.kind == RequirementKind.METRIC:
         return (
             column.semantic_role in {SemanticRole.METRIC, SemanticRole.UNKNOWN}
@@ -1002,6 +1004,7 @@ class DeterministicEvidenceMatcher:
                     RequirementKind.DIMENSION,
                     RequirementKind.FILTER,
                     RequirementKind.TOPIC,
+                    RequirementKind.TARGET,
                 }:
                     match_start = len(dataset_matches)
                     (

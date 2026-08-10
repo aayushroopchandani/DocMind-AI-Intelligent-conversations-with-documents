@@ -371,10 +371,10 @@ def build_cleaning_recipe(
                     reason="Period headers are normalized into one period/value axis.",
                 )
             )
-    elif profile.orientation in {
-        TableOrientation.TRANSPOSED,
-        TableOrientation.MATRIX,
-    }:
+    elif profile.orientation == TableOrientation.TRANSPOSED or (
+        profile.orientation == TableOrientation.MATRIX
+        and dataset.source_type == "pdf_table"
+    ):
         dimension_keys = tuple(
             column.key
             for column in dataset.columns

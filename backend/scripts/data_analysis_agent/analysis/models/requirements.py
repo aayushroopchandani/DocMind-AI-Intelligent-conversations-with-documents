@@ -10,8 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from ...cache_normalization import canonical_query_cache_text
 
-ANALYSIS_REQUIREMENTS_VERSION = "1.6.0"
-REQUIREMENTS_PROMPT_VERSION = "1.3.0"
+ANALYSIS_REQUIREMENTS_VERSION = "1.9.0"
+REQUIREMENTS_PROMPT_VERSION = "1.4.0"
 
 _SPACE_RE = re.compile(r"\s+")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -56,6 +56,7 @@ class AnalysisOperation(str, Enum):
 
 class RequirementKind(str, Enum):
     METRIC = "metric"
+    TARGET = "target"
     ENTITY = "entity"
     PERIOD = "period"
     DIMENSION = "dimension"
@@ -162,6 +163,8 @@ class AnalysisRequirements(BaseModel):
     expected_granularity: str | None = Field(default=None, max_length=160)
     requires_join: bool = False
     requires_all_selected_documents: bool = False
+    source_evidence_required: bool = True
+    workbook_context_required: bool = False
     table_evidence_required: bool = False
     text_evidence_acceptable: bool = True
     diagnostics: RequirementsDiagnostics = RequirementsDiagnostics()
@@ -245,6 +248,7 @@ class RequirementsExtraction(BaseModel):
     expected_granularity: str | None = Field(default=None, max_length=160)
     requires_join: bool = False
     requires_all_selected_documents: bool = False
+    source_evidence_required: bool = True
     table_evidence_required: bool = False
     text_evidence_acceptable: bool = True
 
