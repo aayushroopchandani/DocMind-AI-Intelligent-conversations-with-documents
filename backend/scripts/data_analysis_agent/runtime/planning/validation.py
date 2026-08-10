@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import date
 
@@ -60,6 +61,10 @@ _ORDERABLE_TYPES = _NUMERIC_TYPES | {
     PlanDataType.DATE,
     PlanDataType.PERIOD,
 }
+_PERIOD_LITERAL_RE = re.compile(
+    r"^(?:(?:FY\s*)?\d{4}|Q[1-4]\s*\d{4}|\d{4}\s*Q[1-4]|\d{4}-\d{2})$",
+    re.IGNORECASE,
+)
 _SUPERVISED_MODELS = frozenset(
     {
         "linear_regression",
@@ -86,6 +91,7 @@ _SPECIAL_PYTHON_CHARTS = frozenset(
         "knn_decision_boundary",
         "cluster_plot",
         "correlation_matrix",
+        "confusion_matrix",
     }
 )
 
@@ -593,6 +599,7 @@ class AnalysisPlanValidator:
                     if step.chart_type in {
                         "knn_decision_boundary",
                         "cluster_plot",
+                        "confusion_matrix",
                     }:
                         required_packages.add("scikit-learn")
                 elif isinstance(step, DeriveColumnStep):
@@ -1358,7 +1365,7 @@ def _predicate_literal_matches(
         try:
             date.fromisoformat(value[:10])
         except ValueError:
-            return False
+            return bool(_PERIOD_LITERAL_RE.fullmatch(value.strip()))
         return True
     return isinstance(value, str)
 

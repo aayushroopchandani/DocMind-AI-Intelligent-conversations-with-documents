@@ -21,6 +21,8 @@ from scripts.data_analysis_agent.runtime.models.plans import (
     ApprovalReason,
     ComparisonOperator,
     ComparisonPredicate,
+    ComposeResponseStep,
+    DeriveColumnStep,
     FilterRowsStep,
     FinalPatchApprovalCommand,
     FinalPatchProposal,
@@ -37,7 +39,10 @@ from scripts.data_analysis_agent.runtime.models.plans import (
     PlanProposal,
     PlanStepEstimate,
     PredicateValueType,
+    SetPredicate,
     StepProvenance,
+    TrainModelStep,
+    VisualizationStep,
     WorkbookCollisionPolicy,
     WorkbookPlacementPolicy,
     WorkbookVersionGuard,
@@ -77,6 +82,7 @@ from scripts.data_analysis_agent.runtime.planning.planner import (
 )
 from scripts.data_analysis_agent.runtime.planning.service import (
     AnalysisPlanningService,
+    _draft as _service_draft,
 )
 from scripts.data_analysis_agent.runtime.planning.validation import (
     AnalysisPlanValidator,
@@ -430,6 +436,245 @@ class _WorkerPlanningService:
 
 
 class Phase8TypedPlanTests(unittest.TestCase):
+    def test_normalized_internal_columns_are_valid_plan_symbols(self) -> None:
+        column = PlanColumn(
+            key="__series",
+            label="Series",
+            data_type=PlanDataType.STRING,
+        )
+        self.assertEqual(column.key, "__series")
+
+    def test_malformed_write_ranges_fail_at_the_typed_boundary(self) -> None:
+        with self.assertRaises(ValueError):
+            WorkbookWriteTarget(
+                workbook_id="workbook-1",
+                worksheet_id="sheet-1",
+                base_workbook_revision=12,
+                base_snapshot_hash=_HASH_A,
+                source_range_a1="Sheet1!A1:E8",
+                placement_policy=WorkbookPlacementPolicy.EXACT_RANGE,
+                exact_target_range_a1="the current table",
+            )
+
+    def test_visualization_artifacts_do_not_require_tabular_output_schema(self) -> None:
+        step = VisualizationStep(
+            step_id="plot_revenue",
+            executor=PlanExecutor.PYTHON,
+            output_alias="revenue_chart",
+            expected_schema=(),
+            input_alias="input_1",
+            chart_type="scatter",
+            x_column="company",
+            y_columns=("revenue",),
+            title="Revenue by company",
+            python_reason="Generate a fitted analytical visualization.",
+        )
+
+        self.assertEqual(step.expected_schema, ())
+
+    def test_model_artifacts_do_not_require_tabular_output_schema(self) -> None:
+        step = TrainModelStep(
+            step_id="train_knn",
+            executor=PlanExecutor.PYTHON,
+            output_alias="knn_model",
+            expected_schema=(),
+            input_alias="input_1",
+            model_type="knn",
+            feature_columns=("revenue",),
+            target_column="company",
+            python_reason="Train and evaluate the requested KNN model.",
+        )
+
+        self.assertEqual(step.expected_schema, ())
+
+    def test_constant_derived_columns_do_not_require_source_column_reads(self) -> None:
+        source = _input_dataset()
+        output_column = PlanColumn(
+            key="source_report",
+            label="Source report",
+            data_type=PlanDataType.STRING,
+            nullable=False,
+        )
+        step = DeriveColumnStep(
+            step_id="add_source_report",
+            executor=PlanExecutor.NATIVE,
+            output_alias="labeled_rows",
+            input_alias="input_1",
+            output_column=output_column,
+            expression='"Amazon report"',
+            referenced_columns=(),
+            expression_language="native",
+            expected_schema=(*source.columns, output_column),
+        )
+
+        self.assertEqual(step.referenced_columns, ())
+
+    def test_server_canonicalizes_unambiguous_workbook_identity(self) -> None:
+        context = _context()
+        proposal = _proposal()
+        intent = proposal.write_intents[0]
+        assert isinstance(intent, WorkbookWriteIntent)
+        untrusted = proposal.model_copy(
+            update={
+                "write_intents": (
+                    intent.model_copy(
+                        update={
+                            "target": intent.target.model_copy(
+                                update={
+                                    "workbook_id": "invented-workbook",
+                                    "worksheet_id": "invented-sheet",
+                                    "base_workbook_revision": 999,
+                                    "base_snapshot_hash": _HASH_A,
+                                    "source_range_a1": "Other!C3:D4",
+                                }
+                            )
+                        }
+                    ),
+                )
+            }
+        )
+
+        draft = _service_draft(context, untrusted)
+        target = draft.write_intents[0].target
+
+        self.assertEqual(target.workbook_id, "workbook-1")
+        self.assertEqual(target.worksheet_id, "sheet-1")
+        self.assertEqual(target.base_workbook_revision, 12)
+        self.assertEqual(target.base_snapshot_hash, _HASH_B)
+        self.assertEqual(target.source_range_a1, "Sheet1!A1:B101")
+
+    def test_server_connects_schema_only_response_to_prepared_inputs(self) -> None:
+        context = _context(mode=AnalysisMode.ANALYSE)
+        proposal = PlanProposal(
+            intent="Describe the prepared dataset schema.",
+            steps=(
+                ComposeResponseStep(
+                    step_id="describe_schema",
+                    executor=PlanExecutor.NATIVE,
+                    output_alias="schema_response",
+                    input_aliases=(),
+                    response_format="structured",
+                ),
+            ),
+        )
+
+        draft = _service_draft(context, proposal)
+        step = draft.steps[0]
+
+        assert isinstance(step, ComposeResponseStep)
+        self.assertEqual(step.input_aliases, ("input_1",))
+
+    def test_server_canonicalizes_mechanical_dag_schema_and_estimates(self) -> None:
+        context = _context()
+        proposal = _proposal(with_write=False)
+        step = proposal.steps[0].model_copy(
+            update={
+                "depends_on": ("invented_step",),
+                "expected_schema": (
+                    PlanColumn(
+                        key="invented",
+                        label="Invented",
+                        data_type=PlanDataType.STRING,
+                    ),
+                ),
+                "estimate": PlanStepEstimate(rows_scanned=0),
+            }
+        )
+
+        draft = _service_draft(
+            context,
+            proposal.model_copy(update={"steps": (step,)}),
+        )
+        canonical = draft.steps[0]
+
+        self.assertEqual(canonical.depends_on, ())
+        self.assertEqual(canonical.expected_schema, context.input_datasets[0].columns)
+        self.assertEqual(canonical.estimate.rows_scanned, 100)
+
+    def test_confusion_matrix_is_a_supported_python_visualization(self) -> None:
+        context = _context(mode=AnalysisMode.ANALYSE)
+        proposal = PlanProposal(
+            intent="Create a confusion matrix for model evaluation.",
+            steps=(
+                VisualizationStep(
+                    step_id="plot_confusion_matrix",
+                    executor=PlanExecutor.PYTHON,
+                    output_alias="confusion_matrix_chart",
+                    input_alias="input_1",
+                    chart_type="confusion_matrix",
+                    title="KNN confusion matrix",
+                    python_reason="Render classification evaluation results.",
+                ),
+            ),
+        )
+
+        report = AnalysisPlanValidator().validate(
+            draft=_service_draft(context, proposal),
+            context=context,
+        )
+
+        self.assertNotIn(
+            "simple_chart_cannot_use_python",
+            {issue.code for issue in report.errors},
+        )
+
+    def test_period_filter_type_is_derived_from_the_source_schema(self) -> None:
+        base = _context(mode=AnalysisMode.ANALYSE)
+        period = PlanColumn(
+            key="__period",
+            label="Period",
+            data_type=PlanDataType.PERIOD,
+        )
+        dataset = base.input_datasets[0].model_copy(
+            update={"columns": (*base.input_datasets[0].columns, period)}
+        )
+        context = base.model_copy(
+            update={
+                "input_datasets": (dataset,),
+                "input_signature": compute_input_signature((dataset,)),
+            }
+        )
+        proposal = PlanProposal(
+            intent="Keep 2024 and 2023.",
+            steps=(
+                FilterRowsStep(
+                    step_id="filter_periods",
+                    executor=PlanExecutor.NATIVE,
+                    output_alias="selected_periods",
+                    input_alias="input_1",
+                    predicates=(
+                        SetPredicate(
+                            column_key="__period",
+                            operator="in",
+                            values=("2024", "2023"),
+                            value_type=PredicateValueType.STRING,
+                        ),
+                    ),
+                    expected_schema=dataset.columns,
+                ),
+            ),
+        )
+
+        draft = _service_draft(context, proposal)
+        predicate = draft.steps[0].predicates[0]
+        report = AnalysisPlanValidator().validate(draft=draft, context=context)
+
+        self.assertEqual(predicate.value_type, PredicateValueType.DATE)
+        codes = {issue.code for issue in report.errors}
+        self.assertNotIn("predicate_type_mismatch", codes)
+        self.assertNotIn("predicate_literal_type_mismatch", codes)
+
+    def test_column_labels_are_resolved_to_stable_source_keys(self) -> None:
+        context = _context(mode=AnalysisMode.ANALYSE)
+        proposal = _proposal(column_key="Revenue", with_write=False)
+
+        draft = _service_draft(context, proposal)
+
+        self.assertEqual(
+            draft.steps[0].predicates[0].column_key,
+            "revenue",
+        )
+
     def test_valid_native_filter_and_two_level_approval_policy(self) -> None:
         context = _context()
         draft = _draft(context, _proposal())
@@ -537,6 +782,49 @@ class Phase8PlanningServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(invocation.stage_usage)
         self.assertEqual(invocation.stage_usage.stage, "planning")
         self.assertEqual(invocation.stage_usage.usage.total_tokens, 125)
+
+    async def test_typed_planner_normalizes_harmless_provider_formatting(
+        self,
+    ) -> None:
+        payload = _proposal().model_dump(mode="json")
+        step = payload["steps"][0]
+        step["estimate"]["rows_scanned"] = "100.0"
+        step["estimate"]["output_rows"] = "unknown"
+        del step["predicates"][0]["kind"]
+        target = payload["write_intents"][0]["target"]
+        target["workbook_revision"] = str(target.pop("base_workbook_revision"))
+        planner = TypedAnalysisPlanner(
+            _Generator({"parsed": payload, "raw": None, "parsing_error": None}),
+            model="test-planner",
+        )
+
+        invocation = await planner.propose(_context())
+        proposal = invocation.proposal
+
+        self.assertEqual(proposal.steps[0].estimate.rows_scanned, 100)
+        self.assertIsNone(proposal.steps[0].estimate.output_rows)
+        self.assertEqual(proposal.steps[0].predicates[0].kind, "comparison")
+        self.assertEqual(
+            proposal.write_intents[0].target.base_workbook_revision,
+            12,
+        )
+
+    async def test_typed_planner_normalizes_generated_column_labels_to_keys(
+        self,
+    ) -> None:
+        payload = _proposal(with_write=False).model_dump(mode="json")
+        payload["steps"][0]["expected_schema"][0]["key"] = "Company Name"
+        planner = TypedAnalysisPlanner(
+            _Generator({"parsed": payload, "raw": None, "parsing_error": None}),
+            model="test-planner",
+        )
+
+        invocation = await planner.propose(_context())
+
+        self.assertEqual(
+            invocation.proposal.steps[0].expected_schema[0].key,
+            "company_name",
+        )
 
     async def test_typed_planner_never_exposes_raw_invalid_output(self) -> None:
         planner = TypedAnalysisPlanner(

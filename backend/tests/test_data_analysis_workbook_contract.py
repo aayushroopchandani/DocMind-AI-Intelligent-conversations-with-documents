@@ -61,6 +61,9 @@ def _context(
 
 
 class SpreadsheetContextContractTests(unittest.TestCase):
+    def test_single_cell_a1_anchor_is_a_bounded_one_cell_range(self) -> None:
+        self.assertEqual(a1_dimensions("Sheet1!G1"), (1, 1))
+
     def test_snapshot_preserves_exact_cell_strings_and_normalizes_ranges(
         self,
     ) -> None:

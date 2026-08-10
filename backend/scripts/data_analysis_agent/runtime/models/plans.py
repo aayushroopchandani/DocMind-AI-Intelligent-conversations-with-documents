@@ -20,13 +20,14 @@ from pydantic import (
 from .datasets import DatasetSourceType
 from .privacy import PrivacySummary
 from .runs import AnalysisMode, StageTokenUsage, TokenUsage
+from .workbook import a1_dimensions
 
 
 PLAN_VERSION = "1.0"
-PLANNER_PROMPT_VERSION = "1.0.0"
+PLANNER_PROMPT_VERSION = "1.0.4"
 PLAN_VALIDATOR_VERSION = "1.0.0"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SYMBOL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,119}$")
+_SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,119}$")
 
 
 def utc_now() -> datetime:
@@ -418,7 +419,8 @@ class DeriveColumnStep(PlanStepBase):
     input_alias: str = Field(min_length=1, max_length=120)
     output_column: PlanColumn
     expression: str = Field(min_length=1, max_length=2_000)
-    referenced_columns: tuple[str, ...] = Field(min_length=1, max_length=100)
+    # Constant/source-label columns legitimately read no input columns.
+    referenced_columns: tuple[str, ...] = Field(default=(), max_length=100)
     expression_language: Literal["native", "python", "spreadsheet_formula"]
 
 
@@ -495,6 +497,9 @@ class StatisticalTestStep(PlanStepBase):
 
 class TrainModelStep(PlanStepBase):
     kind: Literal["train_model"] = "train_model"
+    # Training produces a serialized model/evaluation artifact rather than a
+    # row set. Features and target remain strictly typed against the input.
+    expected_schema: tuple[PlanColumn, ...] = Field(default=(), max_length=500)
     input_alias: str = Field(min_length=1, max_length=120)
     model_type: Literal[
         "linear_regression",
@@ -511,6 +516,10 @@ class TrainModelStep(PlanStepBase):
 
 class VisualizationStep(PlanStepBase):
     kind: Literal["generate_visualization"] = "generate_visualization"
+    # A visualization produces a chart artifact, not a tabular dataset. Its
+    # source columns are declared by x/y/group fields and validated against the
+    # input alias, so an empty output schema is both precise and intentional.
+    expected_schema: tuple[PlanColumn, ...] = Field(default=(), max_length=500)
     input_alias: str = Field(min_length=1, max_length=120)
     chart_type: Literal[
         "bar",
@@ -520,6 +529,7 @@ class VisualizationStep(PlanStepBase):
         "histogram",
         "box",
         "heatmap",
+        "confusion_matrix",
         "knn_decision_boundary",
         "cluster_plot",
         "correlation_matrix",
@@ -533,7 +543,11 @@ class VisualizationStep(PlanStepBase):
 
 class ComposeResponseStep(PlanStepBase):
     kind: Literal["compose_response"] = "compose_response"
-    input_aliases: tuple[str, ...] = Field(min_length=1, max_length=32)
+    # A composed response is a text artifact and therefore has no column schema.
+    expected_schema: tuple[PlanColumn, ...] = Field(default=(), max_length=500)
+    # Empty is accepted at the untrusted boundary and deterministically expands
+    # to the current prepared inputs before validation.
+    input_aliases: tuple[str, ...] = Field(default=(), max_length=32)
     response_format: Literal["text", "markdown", "structured"] = "markdown"
     include_provenance: Literal[True] = True
 
@@ -599,6 +613,18 @@ class WorkbookWriteTarget(BaseModel):
         frozen=True,
         str_strip_whitespace=True,
     )
+
+    @field_validator("source_range_a1", "exact_target_range_a1", mode="before")
+    @classmethod
+    def validate_bounded_ranges(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        # Parse at the untrusted proposal boundary so malformed LLM output is
+        # handled by the existing single repair loop instead of crashing the
+        # deterministic overlap validator.
+        a1_dimensions(normalized)
+        return normalized
 
     @model_validator(mode="after")
     def validate_placement(self) -> Self:

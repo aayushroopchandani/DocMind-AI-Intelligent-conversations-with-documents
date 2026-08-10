@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -31,7 +33,27 @@ every workbook write must require final approval. Step provenance is determinist
 server metadata and may be omitted; never invent source identities because the backend
 replaces that field from immutable input lineage before validation.
 Estimates must be conservative upper bounds. A filter's output_rows must be null
-because its result size is not known before execution. Return one JSON
+because its result size is not known before execution, and rows_scanned must be at
+least the known input row count. Copy existing source column keys exactly. Every new
+column key, step ID, and alias must be a snake_case identifier containing only ASCII
+letters, digits, and underscores; keep human-readable text in labels and titles.
+Tabular steps must declare the exact non-empty output schema. Visualization and
+compose-response steps produce artifacts, so their expected_schema should be empty.
+Use the dedicated confusion_matrix chart type for classification evaluation; it is a
+Python visualization, not a generic heatmap.
+Use the fewest steps needed for the request. Do not add redundant filters, pivots,
+renames, or response steps when one typed operation already expresses the intent.
+Use generate_dataset only when the user explicitly requests synthetic, random, mock,
+or manually specified new rows; its row_count must be an exact positive integer.
+Never use generate_dataset to combine or summarize existing source datasets. For
+cross-source comparisons, transform the existing aliases and join on a verified key.
+
+For a workbook write, copy workbook_id, worksheet_id, revision, snapshot hash, and
+source A1 range exactly from the supplied workbook guard and dataset provenance.
+Never invent workbook identity fields. Use adjacent_right for requests that say next
+to the current table, unless the user explicitly gives an exact output range.
+
+Return one JSON
 object with exactly: intent, assumptions, steps, write_intents, expected_artifacts.
 Do not include plan IDs, user IDs, versions, approval decisions, diagnostics, hashes,
 or timestamps; the trusted backend supplies those fields."""
@@ -256,7 +278,9 @@ class TypedAnalysisPlanner:
             proposal = (
                 parsed
                 if isinstance(parsed, PlanProposal)
-                else PlanProposal.model_validate(parsed)
+                else PlanProposal.model_validate(
+                    _normalize_proposal_payload(parsed)
+                )
             )
         except ValidationError as exc:
             raise PlannerOutputError(
@@ -330,6 +354,244 @@ def _raw_json(raw: object) -> object:
     if not isinstance(content, str) or not content.strip():
         raise ValueError("planner response did not contain JSON text")
     return json.loads(content)
+
+
+def _normalize_proposal_payload(value: object) -> object:
+    """Normalize harmless provider formatting before strict Pydantic parsing."""
+
+    if not isinstance(value, dict):
+        return value
+    output = dict(value)
+    steps = output.get("steps")
+    if isinstance(steps, list):
+        output["steps"] = [
+            _normalize_step_payload(step) if isinstance(step, dict) else step
+            for step in steps
+        ]
+    intents = output.get("write_intents")
+    if isinstance(intents, list):
+        output["write_intents"] = [
+            _normalize_write_intent_payload(intent)
+            if isinstance(intent, dict)
+            else intent
+            for intent in intents
+        ]
+    return _normalize_column_identifiers(output)
+
+
+def _normalize_step_payload(step: dict[str, object]) -> dict[str, object]:
+    output = dict(step)
+    estimate = output.get("estimate")
+    if isinstance(estimate, dict):
+        normalized_estimate = dict(estimate)
+        for key in (
+            "rows_scanned",
+            "cells_written",
+            "memory_mb",
+            "chart_cardinality",
+        ):
+            normalized_estimate[key] = _coerce_number(
+                normalized_estimate.get(key),
+                integer=True,
+                default=0,
+            )
+        normalized_estimate["output_rows"] = _coerce_number(
+            normalized_estimate.get("output_rows"),
+            integer=True,
+            default=None,
+        )
+        for key in (
+            "duration_seconds",
+            "estimated_cost_usd",
+        ):
+            normalized_estimate[key] = _coerce_number(
+                normalized_estimate.get(key),
+                integer=False,
+                default=0.0,
+            )
+        output["estimate"] = normalized_estimate
+    if output.get("kind") == "generate_dataset":
+        output["row_count"] = _coerce_number(
+            output.get("row_count"),
+            integer=True,
+            default=None,
+        )
+    predicates = output.get("predicates")
+    if isinstance(predicates, list):
+        output["predicates"] = [
+            _normalize_predicate_payload(predicate)
+            if isinstance(predicate, dict)
+            else predicate
+            for predicate in predicates
+        ]
+    return output
+
+
+def _normalize_predicate_payload(
+    predicate: dict[str, object],
+) -> dict[str, object]:
+    output = dict(predicate)
+    if output.get("kind"):
+        return output
+    operator = str(output.get("operator") or "")
+    if "values" in output:
+        output["kind"] = "set_membership"
+    elif operator in {"is_null", "is_not_null"}:
+        output["kind"] = "null_check"
+    else:
+        output["kind"] = "comparison"
+    return output
+
+
+def _normalize_write_intent_payload(
+    intent: dict[str, object],
+) -> dict[str, object]:
+    output = dict(intent)
+    target = output.get("target")
+    if not isinstance(target, dict):
+        return output
+    normalized_target = dict(target)
+    aliases = {
+        "workbook_revision": "base_workbook_revision",
+        "snapshot_hash": "base_snapshot_hash",
+    }
+    for source, destination in aliases.items():
+        if destination not in normalized_target and source in normalized_target:
+            normalized_target[destination] = normalized_target.pop(source)
+    normalized_target["base_workbook_revision"] = _coerce_number(
+        normalized_target.get("base_workbook_revision"),
+        integer=True,
+        default=0,
+    )
+    output["target"] = normalized_target
+    return output
+
+
+def _coerce_number(
+    value: object,
+    *,
+    integer: bool,
+    default: int | float | None,
+) -> int | float | None:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number) or number < 0:
+        return default
+    return math.ceil(number) if integer else number
+
+
+_COLUMN_SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,119}$")
+_COLUMN_REFERENCE_FIELDS = frozenset(
+    {
+        "column_key",
+        "source_key",
+        "input_column_key",
+        "output_key",
+        "left_column_key",
+        "right_column_key",
+        "pivot_column",
+        "value_column",
+        "target_column",
+        "x_column",
+        "group_column",
+    }
+)
+_COLUMN_REFERENCE_LIST_FIELDS = frozenset(
+    {
+        "columns",
+        "column_keys",
+        "key_columns",
+        "referenced_columns",
+        "group_by",
+        "index_columns",
+        "value_columns",
+        "feature_columns",
+        "y_columns",
+    }
+)
+
+
+def _normalize_column_identifiers(value: object) -> object:
+    replacements: dict[str, str] = {}
+    used: set[str] = set()
+
+    def collect(node: object) -> None:
+        if isinstance(node, dict):
+            is_column = {"key", "label", "data_type"} <= set(node)
+            if is_column and isinstance(node.get("key"), str):
+                key = str(node["key"])
+                if _COLUMN_SYMBOL_RE.fullmatch(key):
+                    used.add(key)
+                else:
+                    replacements.setdefault(key, _unique_symbol(key, used))
+            if (
+                {"source_key", "output_key", "output_label"} <= set(node)
+                and isinstance(node.get("output_key"), str)
+            ):
+                key = str(node["output_key"])
+                if _COLUMN_SYMBOL_RE.fullmatch(key):
+                    used.add(key)
+                else:
+                    replacements.setdefault(key, _unique_symbol(key, used))
+            for item in node.values():
+                collect(item)
+        elif isinstance(node, list):
+            for item in node:
+                collect(item)
+
+    def replace(node: object, *, field: str | None = None) -> object:
+        if isinstance(node, dict):
+            output: dict[str, object] = {}
+            is_column = {"key", "label", "data_type"} <= set(node)
+            for key, item in node.items():
+                if (
+                    key == "key"
+                    and is_column
+                    and isinstance(item, str)
+                    and item in replacements
+                ):
+                    output[key] = replacements[item]
+                elif (
+                    key in _COLUMN_REFERENCE_FIELDS
+                    and isinstance(item, str)
+                    and item in replacements
+                ):
+                    output[key] = replacements[item]
+                else:
+                    output[key] = replace(item, field=key)
+            return output
+        if isinstance(node, list):
+            if field in _COLUMN_REFERENCE_LIST_FIELDS:
+                return [
+                    replacements.get(item, item) if isinstance(item, str) else item
+                    for item in node
+                ]
+            return [replace(item, field=field) for item in node]
+        return node
+
+    collect(value)
+    return replace(value)
+
+
+def _unique_symbol(value: str, used: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_").lower()
+    if not base:
+        base = "column"
+    if not (base[0].isalpha() or base[0] == "_"):
+        base = f"column_{base}"
+    base = base[:120]
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        suffix_text = f"_{suffix}"
+        candidate = f"{base[: 120 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
 
 
 def _safe_schema_issues(

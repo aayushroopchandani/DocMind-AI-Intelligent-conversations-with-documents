@@ -22,7 +22,7 @@ from pydantic import (
 _A1_RE = re.compile(
     r"^(?:(?:'(?P<quoted>(?:[^']|'')+)'|(?P<plain>[^'!]+))!)?"
     r"(?P<start_col>[A-Z]{1,3})(?P<start_row>[1-9][0-9]*)"
-    r":(?P<end_col>[A-Z]{1,3})(?P<end_row>[1-9][0-9]*)$",
+    r"(?::(?P<end_col>[A-Z]{1,3})(?P<end_row>[1-9][0-9]*))?$",
     re.IGNORECASE,
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -96,9 +96,9 @@ def _parse_a1_range(value: str) -> _A1Range:
     if match is None:
         raise ValueError("range must be a bounded A1 range")
     start_column = _column_number(match.group("start_col"))
-    end_column = _column_number(match.group("end_col"))
+    end_column = _column_number(match.group("end_col") or match.group("start_col"))
     start_row = int(match.group("start_row"))
-    end_row = int(match.group("end_row"))
+    end_row = int(match.group("end_row") or match.group("start_row"))
     if end_column < start_column or end_row < start_row:
         raise ValueError("A1 range end cannot precede its start")
     if end_column > MAX_WORKBOOK_COLUMNS or end_row > MAX_WORKBOOK_ROWS:

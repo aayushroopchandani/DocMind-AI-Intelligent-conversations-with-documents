@@ -19,13 +19,10 @@ from ..models.plans import (
     AnalysisPlanStatus,
     FinalPatchApprovalCommand,
     FinalPatchProposal,
-    GenerateDatasetStep,
     PlanApprovalCommand,
     PlanApprovalStatus,
     PlanDiagnostics,
     PlanProposal,
-    StepProvenance,
-    step_input_aliases,
 )
 from ..models.runs import (
     AnalysisRun,
@@ -42,6 +39,7 @@ from ..repositories.plans import (
     AnalysisPlanRepository,
 )
 from .context import PlanningContext, PlanningContextBuilder, PlanningContextError
+from .canonicalization import canonicalize_proposal
 from .contracts import (
     PlanValidationIssue,
     PlanValidationLayer,
@@ -502,39 +500,8 @@ def _draft(
     context: PlanningContext,
     proposal: PlanProposal,
 ) -> AnalysisPlanDraft:
-    lineages: dict[str, tuple[tuple[str, str], ...]] = {
-        dataset.alias: tuple(
-            (source.source_dataset_id, source.source_version)
-            for source in dataset.provenance
-        )
-        for dataset in context.input_datasets
-    }
-    canonical_steps = []
-    for step in proposal.steps:
-        if isinstance(step, GenerateDatasetStep):
-            lineage: tuple[tuple[str, str], ...] = ()
-            provenance = StepProvenance(
-                generated=True,
-                description="Generated data; no source dataset lineage.",
-            )
-        else:
-            lineage = tuple(
-                dict.fromkeys(
-                    pair
-                    for alias in step_input_aliases(step)
-                    for pair in lineages.get(alias, ())
-                )
-            )
-            provenance = StepProvenance(
-                source_dataset_ids=tuple(pair[0] for pair in lineage),
-                source_versions=tuple(pair[1] for pair in lineage),
-                generated=False,
-                description="Canonical immutable lineage derived by the server.",
-            )
-        canonical_steps.append(step.model_copy(update={"provenance": provenance}))
-        lineages[step.output_alias] = lineage
-    proposal_data = proposal.model_dump(mode="python")
-    proposal_data["steps"] = tuple(canonical_steps)
+    canonical = canonicalize_proposal(context, proposal)
+    proposal_data = canonical.model_dump(mode="python")
     return AnalysisPlanDraft(
         **proposal_data,
         run_id=context.run_id,
