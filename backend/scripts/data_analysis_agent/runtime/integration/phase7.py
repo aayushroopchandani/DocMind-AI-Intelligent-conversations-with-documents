@@ -14,6 +14,7 @@ from scripts.data_analysis_agent.analysis.models import (
     DatasetProfiles,
     EvidenceAssessment,
     EvidencePackage,
+    HydratedDatasetReference,
     NormalizationResult,
     ReadinessDecision,
     RetrievalResult,
@@ -29,6 +30,11 @@ from scripts.data_analysis_agent.runtime.models import (
     AnalysisRunOutcome,
     AnalysisRunPhase,
     DatasetHandle,
+    DatasetColumn,
+    DatasetColumnType,
+    DatasetSourceType,
+    MongoDatasetStorage,
+    PdfTableLocator,
     RunIssueSummary,
     TokenUsage,
 )
@@ -110,6 +116,80 @@ def _system_error(
         message=message,
         retryable=retryable,
     )
+
+
+def _pdf_dataset_handle(
+    *,
+    run: AnalysisRun,
+    reference: HydratedDatasetReference,
+) -> DatasetHandle:
+    if reference.source_type != DatasetSourceType.PDF_TABLE.value:
+        raise ValueError("only PDF evidence is dynamically catalogued")
+    return DatasetHandle(
+        dataset_id=reference.dataset_id,
+        user_id=run.user_id,
+        workspace_id=run.workspace_id,
+        source_type=DatasetSourceType.PDF_TABLE,
+        source_version=reference.source_version,
+        content_hash=reference.source_version,
+        title=reference.title,
+        columns=tuple(
+            DatasetColumn(
+                key=column.key,
+                label=column.label,
+                type=DatasetColumnType(column.type),
+                unit=column.unit,
+                source_index=index,
+            )
+            for index, column in enumerate(reference.columns)
+        ),
+        row_count=reference.row_count,
+        locator=PdfTableLocator(
+            document_id=reference.document_id,
+            table_id=reference.table_id,
+            page_start=reference.page_start,
+            page_end=reference.page_end,
+            extraction_method=reference.extraction_method,
+        ),
+        storage=MongoDatasetStorage(
+            collection="structured_tables",
+            record_id=reference.table_id,
+        ),
+    )
+
+
+def _planning_source_handles(
+    *,
+    run: AnalysisRun,
+    normalization: NormalizationResult,
+    evidence: EvidencePackage,
+    augmented: AugmentedEvidence | None,
+) -> tuple[DatasetHandle, ...]:
+    """Materialize row-free handles for PDF tables selected during Phase 7."""
+
+    selected_ids = {
+        source_id
+        for dataset in normalization.datasets
+        for source_id in dataset.source_dataset_ids
+    }
+    references = {item.dataset_id: item for item in evidence.datasets}
+    if augmented is not None:
+        references.update(
+            {
+                item.dataset.dataset_id: item.dataset
+                for item in augmented.added_datasets
+            }
+        )
+    handles: list[DatasetHandle] = []
+    for dataset_id in sorted(selected_ids):
+        reference = references.get(dataset_id)
+        if (
+            reference is None
+            or reference.source_type != DatasetSourceType.PDF_TABLE.value
+        ):
+            continue
+        handles.append(_pdf_dataset_handle(run=run, reference=reference))
+    return tuple(handles)
 
 
 class _MilestoneProjector:
@@ -441,7 +521,7 @@ class Phase7AnalysisAdapter:
                 )
 
         await self._raise_if_cancelled(selected_cancellation)
-        return self._map_result(final_state)
+        return self._map_result(final_state, run=run)
 
     @staticmethod
     def _validate_inputs(
@@ -492,6 +572,8 @@ class Phase7AnalysisAdapter:
     def _map_result(
         self,
         final_state: Mapping[str, Any] | None,
+        *,
+        run: AnalysisRun,
     ) -> Phase7ExecutionResult:
         if final_state is None:
             return self._failed_result(
@@ -525,6 +607,16 @@ class Phase7AnalysisAdapter:
                 profiles = _artifact(
                     DatasetProfiles,
                     final_state.get("dataset_profiles"),
+                )
+                evidence = _artifact(
+                    EvidencePackage,
+                    final_state.get("evidence_package"),
+                )
+                augmented_value = final_state.get("augmented_evidence")
+                augmented = (
+                    _artifact(AugmentedEvidence, augmented_value)
+                    if augmented_value is not None
+                    else None
                 )
             except ValidationError:
                 return self._failed_result(
@@ -570,6 +662,12 @@ class Phase7AnalysisAdapter:
                     requirements=requirements,
                     dataset_profiles=profiles,
                     normalization=artifact,
+                    source_dataset_handles=_planning_source_handles(
+                        run=run,
+                        normalization=artifact,
+                        evidence=evidence,
+                        augmented=augmented,
+                    ),
                 ),
             )
 
@@ -604,7 +702,6 @@ class Phase7AnalysisAdapter:
                     warnings=warnings,
                     errors=errors,
                 )
-
         return self._failed_result(
             final_state=final_state,
             code="phase7_incomplete_graph_result",

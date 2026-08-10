@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timezone
 from typing import Optional
 
 from config.settings import settings
@@ -35,7 +36,13 @@ async def init_mongodb() -> None:
         )
         return
 
-    _mongo_client = AsyncIOMotorClient(settings.mongodb_uri)
+    # Domain models use aware UTC datetimes.  Motor otherwise decodes BSON
+    # dates as naive UTC values, which makes lease comparisons fail at runtime.
+    _mongo_client = AsyncIOMotorClient(
+        settings.mongodb_uri,
+        tz_aware=True,
+        tzinfo=timezone.utc,
+    )
     _mongo_db = _mongo_client[settings.mongodb_db_name]
 
     await _mongo_db.command("ping")

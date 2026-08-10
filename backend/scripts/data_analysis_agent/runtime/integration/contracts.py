@@ -16,6 +16,7 @@ from scripts.data_analysis_agent.runtime.models import (
     AnalysisEventType,
     AnalysisRunOutcome,
     AnalysisRunPhase,
+    DatasetHandle,
     RunIssueSummary,
     StageTokenUsage,
     TokenUsage,
@@ -75,6 +76,10 @@ class Phase7PlanningArtifacts(BaseModel):
     requirements: AnalysisRequirements
     dataset_profiles: DatasetProfiles
     normalization: NormalizationResult
+    source_dataset_handles: tuple[DatasetHandle, ...] = Field(
+        default=(),
+        max_length=100,
+    )
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

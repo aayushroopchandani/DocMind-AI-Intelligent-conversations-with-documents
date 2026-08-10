@@ -49,6 +49,10 @@ from scripts.data_analysis_agent.runtime.models import (
     DatasetVersionReference,
     SpreadsheetRangeLocator,
 )
+from tests.test_data_analysis_requirements_assessment import (
+    _evidence_and_profiles,
+    _raw_table,
+)
 
 
 _HASH = "1" * 64
@@ -233,6 +237,66 @@ def _normalization() -> NormalizationResult:
 
 
 class Phase7RuntimeAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prepared_pdf_sources_are_exported_as_durable_handles(self) -> None:
+        item = _raw_table(
+            table_id="pdf-table-1",
+            document_id="2" * 64,
+            title="Income statement",
+            document_name="annual-report.pdf",
+            columns=[
+                {"key": "metric", "label": "Metric", "type": "string"},
+                {"key": "value", "label": "Value", "type": "number"},
+            ],
+            rows=[{"metric": "Revenue", "value": 100}],
+        )
+        evidence, profiles, _metadata = _evidence_and_profiles(item)
+        reference = item[0]
+        normalization = NormalizationResult.model_construct(
+            status="ready",
+            datasets=(
+                NormalizedDatasetReference.model_construct(
+                    normalized_dataset_id=_NORMALIZED_ID,
+                    source_dataset_ids=(reference.dataset_id,),
+                    source_versions=(reference.source_version,),
+                    materialization=MaterializationType.SOURCE_PASSTHROUGH,
+                    output_row_count=1,
+                    output_column_count=2,
+                    cache_hit=False,
+                ),
+            ),
+            selected_fact_ids=(),
+            selected_derived_dataset_ids=(),
+            non_tabular_requirement_ids=(),
+            prepared_dataset_count=1,
+            total_input_rows=1,
+            total_output_rows=1,
+            can_analyze=True,
+        )
+        graph = _FakeGraph(
+            (
+                {
+                    "phase": AnalysisPhase.PREPARED,
+                    "retrieval_result": _retrieval(),
+                    "analysis_requirements": _requirements(),
+                    "evidence_package": evidence,
+                    "dataset_profiles": profiles,
+                    "evidence_assessment": _assessment(ReadinessDecision.READY),
+                    "normalization_result": normalization,
+                    "warnings": [],
+                    "errors": [],
+                },
+            )
+        )
+
+        result = await Phase7AnalysisAdapter(graph).execute(_run())
+
+        handles = result.planning_artifacts.source_dataset_handles
+        self.assertEqual(len(handles), 1)
+        self.assertEqual(handles[0].dataset_id, reference.dataset_id)
+        self.assertEqual(handles[0].source_version, reference.source_version)
+        self.assertEqual(handles[0].storage.collection, "structured_tables")
+        self.assertEqual(handles[0].workspace_id, "workspace-1")
+
     async def test_prepared_run_streams_bounded_milestones(self) -> None:
         dataset = _dataset_handle()
         graph = _FakeGraph(

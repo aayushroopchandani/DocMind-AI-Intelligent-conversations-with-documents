@@ -104,7 +104,18 @@ async def _run_worker(
         [page_range.model_dump() for page_range in page_ranges],
         separators=(",", ":"),
     )
-    backend_root = Path(__file__).resolve().parents[2]
+    # The worker is imported as ``scripts.data_analysis_agent...``.  Its cwd
+    # therefore has to be the backend root (the parent of ``scripts``), not the
+    # scripts package itself.  Keep PYTHONPATH explicit as the Docling worker
+    # may run from a dedicated virtual environment.
+    backend_root = Path(__file__).resolve().parents[3]
+    worker_env = os.environ.copy()
+    existing_python_path = worker_env.get("PYTHONPATH", "").strip()
+    worker_env["PYTHONPATH"] = os.pathsep.join(
+        value
+        for value in (str(backend_root), existing_python_path)
+        if value
+    )
     with tempfile.TemporaryDirectory(prefix="docmind-docling-") as temp_dir:
         output_path = Path(temp_dir) / "tables.json"
         process = await asyncio.create_subprocess_exec(
@@ -118,6 +129,7 @@ async def _run_worker(
             "--output",
             str(output_path),
             cwd=str(backend_root),
+            env=worker_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

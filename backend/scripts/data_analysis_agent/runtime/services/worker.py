@@ -19,6 +19,7 @@ from ..models import (
     AnalysisRunOutcome,
     AnalysisRunPhase,
     AnalysisRunStatus,
+    DatasetCatalogEntry,
     DatasetHandle,
     RunIssueSummary,
     RunApprovalStatus,
@@ -821,6 +822,45 @@ class DurableAnalysisWorker:
             elapsed_ms=elapsed_ms,
         )
 
+    async def _register_planning_sources(
+        self,
+        *,
+        initial: tuple[DatasetHandle, ...],
+        discovered: tuple[DatasetHandle, ...],
+    ) -> tuple[DatasetHandle, ...]:
+        """Durably register Phase-7 PDF sources before plan construction."""
+
+        by_id = {item.dataset_id: item for item in initial}
+        pending: list[DatasetHandle] = []
+        for handle in discovered:
+            existing = by_id.get(handle.dataset_id)
+            if existing is not None:
+                if existing.source_version != handle.source_version:
+                    raise RuntimeError(
+                        "one dataset resolved to conflicting immutable versions"
+                    )
+                continue
+            by_id[handle.dataset_id] = handle
+            pending.append(handle)
+        if pending:
+            registered = await asyncio.gather(
+                *(
+                    self._dataset_catalog.register(
+                        DatasetCatalogEntry(
+                            handle=handle,
+                            discovery_summary=(
+                                "PDF table selected by the evidence-preparation "
+                                f"pipeline: {handle.title}"
+                            ),
+                        )
+                    )
+                    for handle in pending
+                )
+            )
+            for entry in registered:
+                by_id[entry.handle.dataset_id] = entry.handle
+        return tuple(by_id.values())
+
     async def _finish_planning(
         self,
         *,
@@ -845,11 +885,15 @@ class DurableAnalysisWorker:
                 elapsed_ms=phase7_elapsed_ms,
             )
             return
+        planning_handles = await self._register_planning_sources(
+            initial=dataset_handles,
+            discovered=artifacts.source_dataset_handles,
+        )
         planning_started = monotonic()
         assert self._planning_service is not None
         planning = await self._planning_service.create_plan(
             run=run,
-            dataset_handles=dataset_handles,
+            dataset_handles=planning_handles,
             requirements=artifacts.requirements,
             profiles=artifacts.dataset_profiles,
             normalization=artifacts.normalization,

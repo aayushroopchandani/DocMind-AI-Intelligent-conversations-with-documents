@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from datetime import datetime, timezone
+from typing import Any, Protocol, Sequence
 
 from pydantic import ValidationError
 
@@ -84,7 +85,7 @@ class MongoDatasetCatalogRepository:
                 "dataset catalog entry could not be registered"
             ) from exc
         parsed = _parse_entry(stored)
-        if parsed.handle != handle:
+        if not _same_immutable_handle(parsed.handle, handle):
             raise DatasetCatalogConflictError(
                 "dataset identity already exists with different metadata"
             )
@@ -150,17 +151,45 @@ def _parse_entry(document: object) -> DatasetCatalogEntry:
     if not isinstance(document, dict):
         raise DatasetCatalogError("dataset catalog returned an invalid record")
     # Projection-friendly denormalized fields are not part of the domain model.
-    payload = {
+    payload = _normalize_datetimes({
         key: value
         for key, value in document.items()
         if key in DatasetCatalogEntry.model_fields
-    }
+    })
     try:
         return DatasetCatalogEntry.model_validate(payload)
     except ValidationError as exc:
         raise DatasetCatalogError(
             "dataset catalog returned an invalid record"
         ) from exc
+
+
+def _normalize_datetimes(value: Any) -> Any:
+    """Normalize BSON dates for clients not configured with ``tz_aware``."""
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, dict):
+        return {key: _normalize_datetimes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_datetimes(item) for item in value]
+    return value
+
+
+def _same_immutable_handle(left: DatasetHandle, right: DatasetHandle) -> bool:
+    """Compare identity metadata while ignoring persistence timestamp precision.
+
+    BSON stores datetimes to milliseconds, whereas a newly built Pydantic model
+    may contain microseconds. ``created_at`` is audit metadata, not part of the
+    immutable dataset identity.
+    """
+
+    return left.model_dump(mode="json", exclude={"created_at"}) == right.model_dump(
+        mode="json",
+        exclude={"created_at"},
+    )
 
 
 __all__ = [

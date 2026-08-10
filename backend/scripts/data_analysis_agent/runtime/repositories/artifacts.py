@@ -954,7 +954,9 @@ class MongoArtifactRepository:
         try:
             fields = WorkspaceArtifact.model_fields
             return WorkspaceArtifact.model_validate(
-                {key: value for key, value in document.items() if key in fields}
+                _normalize_datetimes(
+                    {key: value for key, value in document.items() if key in fields}
+                )
             )
         except ValidationError as exc:
             raise ArtifactRepositoryError(
@@ -964,7 +966,7 @@ class MongoArtifactRepository:
     @staticmethod
     def _parse_version(document: Mapping[str, Any]) -> ArtifactVersion:
         try:
-            return ArtifactVersion.model_validate(document)
+            return ArtifactVersion.model_validate(_normalize_datetimes(document))
         except ValidationError as exc:
             raise ArtifactRepositoryError(
                 "stored artifact version is invalid"
@@ -1052,3 +1054,19 @@ def new_workspace_artifact(
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _normalize_datetimes(value: Any) -> Any:
+    """Normalize nested BSON dates before domain validation and comparison."""
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, Mapping):
+        return {key: _normalize_datetimes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_datetimes(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_normalize_datetimes(item) for item in value)
+    return value
