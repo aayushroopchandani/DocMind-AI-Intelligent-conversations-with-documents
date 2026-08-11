@@ -31,9 +31,9 @@ Upload reports, filings, and papers, then work across four tightly connected cap
 | Pillar | What it means in DocMind |
 | --- | --- |
 | **Research agent** | Multi-step investigation over narrative text — rewrite, expand, retrieve, compare, and compose citation-backed findings |
-| **Data analysis agent** | LangGraph workflows over extracted tables — discover datasets, profile, plan, execute, validate, and surface quantitative insights |
+| **Data analysis agent** | Durable LangGraph workflows over PDF and spreadsheet tables — resolve evidence, profile, normalize, generate typed plans, validate deterministically, and route selective human approval |
 | **Cross-document reasoning** | Ask across up to 4 PDFs at once; balance evidence per doc; detect agreement, gaps, and conflicts with page-level citations |
-| **Data analysis** | Structured table extraction → typed columns / units → semantic table index → stats, anomalies, time series, charts & dashboards |
+| **Data analysis** | Structured extraction → typed columns / units → semantic table index → versioned plans for transforms, statistics, ML, visualizations, and workbook edits |
 
 Supporting surfaces (outline-aware **summarization**, **quizzes**, PDF viewer) sit on the same ingestion + retrieval stack so learning and review stay grounded in the same evidence.
 
@@ -42,12 +42,17 @@ Supporting surfaces (outline-aware **summarization**, **quizzes**, PDF viewer) s
 
 ---
 
-### Data Analysis Agent — end-to-end architecture
+### Data Analysis Agent — Phase 8 end-to-end architecture
 
-The diagram follows the implemented pipeline from source ingestion through the
-durable runtime and LangGraph evidence-preparation graph. Solid arrows are the
-main execution path; dashed arrows are asynchronous, optional, or observability
-flows.
+Phase 8 is implemented at its intended safety boundary. A prompt from the
+spreadsheet/PDF workspace now becomes a durable, tenant-scoped run; Phase 1–7
+resolve and normalize evidence; an LLM proposes a strict typed plan; and trusted
+code canonicalizes, validates, versions, persists, streams, and—only when the
+risk policy requires it—asks a human to approve that plan. Raw LLM output never
+directly calls spreadsheet APIs.
+
+Solid arrows below represent the main data path. Dashed arrows represent
+asynchronous recovery, control, cache, or observability paths.
 
 ```mermaid
 flowchart TB
@@ -59,170 +64,284 @@ flowchart TB
     classDef terminal fill:#3f1d2e,stroke:#fb7185,color:#fff1f2
     classDef boundary fill:#1f2937,stroke:#f8fafc,color:#f8fafc,stroke-width:2px
 
-    ANALYST([Analyst or API client]):::client
+    USER([Analyst]):::client
 
-    subgraph INGEST["A · PDF ingestion and analytical source preparation"]
+    subgraph INGEST["A · PDF ingestion and analytical indexing"]
         direction TB
-        PDF[PDF upload]:::client --> ID[SHA-256 identity<br/>tenant ownership and pending-document claim]:::process
-        ID --> CLOUDPDF[(Cloudinary<br/>private PDF)]:::store
+        PDF[PDF upload]:::client --> CLAIM[SHA-256 document identity<br/>tenant ownership · idempotent claim]:::process
+        CLAIM --> CLOUDPDF[(Cloudinary<br/>private source PDF)]:::store
 
-        ID --> TEXTINGEST[PyMuPDF text ingest<br/>2400-token chunks · 300 overlap<br/>outline and node metadata]:::process
-        TEXTINGEST --> EMBED[OpenAI embeddings<br/>dense vectors plus sparse backfill]:::process
-        EMBED --> QTEXT[(Qdrant PDF indexes<br/>dense and sparse chunks)]:::store
-        TEXTINGEST --> MDOC[(MongoDB documents<br/>nodes · status · provenance)]:::store
+        CLAIM --> TEXT[PyMuPDF text and outline extraction<br/>token-aware chunks · pages · node metadata]:::process
+        TEXT --> TEXTEMBED[Dense embeddings plus sparse index payloads]:::process
+        TEXTEMBED --> QTEXT[(Qdrant<br/>dense and sparse PDF chunks)]:::store
+        TEXT --> MDOC[(MongoDB documents<br/>nodes · status · provenance)]:::store
 
-        ID --> PRIMARY[PyMuPDF table extraction<br/>cells · columns · pages · node links]:::process
-        PRIMARY --> TVAL[Schema and quality validation<br/>accepted · quarantined · rejected]:::process
-        TVAL --> TSUM[LLM discovery summary<br/>keywords · schema · units]:::process
-        TSUM --> MTABLE[(MongoDB structured_tables<br/>authoritative rows and metadata)]:::store
-        TSUM --> QTABLE[(Qdrant structured_tables<br/>dense and sparse summaries)]:::store
+        CLAIM --> PYTABLE[PyMuPDF table extraction<br/>cells · typed columns · page regions]:::process
+        PYTABLE --> TQUALITY[Deterministic table validation<br/>accept · quarantine · reject]:::process
+        TQUALITY --> TSUMMARY[LLM table discovery summary<br/>short summary · keywords · schema · units]:::process
+        TSUMMARY --> MTABLE[(MongoDB structured_tables<br/>authoritative rows and summaries)]:::store
+        TSUMMARY --> QTABLE[(Qdrant structured_tables<br/>dense and sparse summary vectors)]:::store
 
-        TVAL -. quarantined pages .-> COVER[Coverage detector<br/>flag suspicious page ranges]:::process
-        COVER --> MISSED{Possible missed or<br/>complex tables?}:::decision
-        MISSED -- no --> INGESTREADY[Table source ready]:::terminal
-        MISSED -. yes .-> DOCLING[Isolated Docling worker<br/>bounded page ranges]:::process
-        DOCLING --> DVALID[Validate recovered tables]:::process
-        DVALID --> MERGE[Content-aware merge and dedupe<br/>summarize additions · vector upsert<br/>replace authoritative table set]:::process
-        MERGE --> MTABLE
-        MERGE --> QTABLE
-        MERGE --> INGESTREADY
+        TQUALITY -. suspicious page ranges .-> COVERAGE[Coverage detector<br/>bounded missed-table ranges]:::process
+        COVERAGE --> NEEDDOC{Complex or missed<br/>tables likely?}:::decision
+        NEEDDOC -- no --> DOCREADY[Document analysis-ready]:::terminal
+        NEEDDOC -. yes .-> DOCLING[Isolated Docling subprocess<br/>dedicated interpreter · bounded pages]:::process
+        DOCLING --> DMERGE[Validate · content-dedupe · merge<br/>summarize additions · vector upsert]:::process
+        DMERGE --> MTABLE
+        DMERGE --> QTABLE
+        DMERGE --> DOCREADY
     end
 
-    subgraph CONTROL["B · Durable run control plane"]
+    subgraph FRONTEND["B · Authenticated workspace and request envelope"]
         direction TB
-        ANALYST -->|POST /analysis/runs<br/>Idempotency-Key| API[FastAPI analysis API<br/>auth · tenant scope · request limits]:::api
-        API --> RUNSVC[AnalysisRunService<br/>validate request · fingerprint inputs]:::process
+        USER --> COMPOSER[AI analyst composer<br/>ask · analyse · edit<br/>standard · schema_only · local_only]:::client
+        COMPOSER --> ACTIVE{Active artifact}:::decision
 
-        RUNSVC --> PDFCTX[PDF context<br/>selected immutable document IDs]:::process
-        MDOC --> PDFCTX
+        ACTIVE -- PDF --> PDFCONTEXT[Resolve/upload selected PDF<br/>immutable document ID · chat ID · current page]:::process
+        ACTIVE -- Spreadsheet --> SNAPSHOT[Univer snapshot adapter<br/>selected or bounded used range<br/>values · formulas · types · headers<br/>workbook revision · SHA-256 snapshot hash]:::process
+        SNAPSHOT --> SNAPSIZE{Within inline limits?}:::decision
+        SNAPSIZE -- yes --> INLINE[Inline bounded workbook context]:::process
+        SNAPSIZE -- no --> SNAPUPLOAD[Upload immutable workbook snapshot artifact]:::api
 
-        RUNSVC -->|spreadsheet context| WBCTX[WorkbookContextService<br/>validate snapshot or uploaded version<br/>split selected range into tables]:::process
-        WBCTX --> ARTIFACT[ArtifactVersionService<br/>validate · hash · immutable versions]:::process
-        ARTIFACT --> BLOBS[(Cloudinary artifact blobs<br/>JSON · CSV · XLSX · snapshots)]:::store
-        WBCTX --> CATALOG[(MongoDB dataset_catalog<br/>versioned dataset handles)]:::store
-
-        PDFCTX --> RUNSTATE[(MongoDB analysis_runs<br/>state · version · deadline · lease)]:::store
-        CATALOG -->|pinned dataset versions| RUNSTATE
-        RUNSVC --> RUNSTATE
-        RUNSTATE -->|inputs_ready| WORKER[DurableAnalysisWorker<br/>poll · claim · renew lease · fencing<br/>retry expired or abandoned work]:::process
-        WORKER --> ADAPTER[Phase7AnalysisAdapter<br/>cancellation checks · token accounting<br/>stream LangGraph state values]:::process
+        PDFCONTEXT --> BFF[Clerk-authenticated Next.js BFF<br/>server-derived user identity<br/>internal API secret never reaches browser]:::api
+        INLINE --> BFF
+        SNAPUPLOAD --> BFF
+        COMPOSER --> BFF
+        BFF -->|POST /analysis/runs<br/>Idempotency-Key| RUNAPI[FastAPI analysis API<br/>auth · tenant scope · body limits<br/>strict Pydantic request contract]:::api
     end
 
-    subgraph GRAPH["C · LangGraph evidence-preparation graph · isolated by run_id"]
+    subgraph CONTROL["C · Durable run and artifact control plane"]
         direction TB
-        START((START)):::boundary
+        RUNAPI --> RUNSVC[AnalysisRunService<br/>request fingerprint · idempotent replay<br/>input deadline · immutable source references]:::process
+        RUNSVC --> SOURCEKIND{Input adapter}:::decision
 
-        START --> RETRIEVE[Retrieve evidence]:::process
-        START --> REQ[Extract analysis requirements<br/>operation · metrics · entities · periods<br/>units · document scope · table need]:::process
+        SOURCEKIND -- PDF IDs --> PDFPIN[Pin selected documents<br/>verify owner and document readiness]:::process
+        MDOC --> PDFPIN
 
-        subgraph HYBRID["Hybrid retrieval child graph"]
-            direction TB
-            RETRIEVE --> QGEN[Query generation<br/>normal or broad scope<br/>shared · text · table queries<br/>relevance signals and table intent]:::process
-            QGEN --> RTEXT[PDF text search<br/>tenant plus document filters<br/>dense and sparse retrieval]:::process
-            QGEN --> RTABLE[Table-summary search<br/>tenant plus document filters<br/>dense and sparse retrieval]:::process
-            QTEXT --> RTEXT
-            QTABLE --> RTABLE
-            RTEXT --> FUSION[Reciprocal-rank fusion<br/>score · dedupe · diversify · trim]:::process
-            RTABLE --> FUSION
-        end
+        SOURCEKIND -- workbook snapshot --> WBCTX[WorkbookContextService<br/>validate revision/hash/range<br/>detect bounded tables and stable column keys]:::process
+        WBCTX --> ARTSVC[ArtifactVersionService<br/>content validation · hash · immutable version<br/>upload verification and reconciliation]:::process
+        ARTSVC --> BLOBS[(Cloudinary private artifacts<br/>JSON · CSV · XLSX · workbook snapshots)]:::store
+        WBCTX --> CATALOG[(MongoDB dataset_catalog<br/>tenant-scoped versioned handles)]:::store
 
-        FUSION --> HYDRATE[Hydrate authoritative evidence<br/>resolve table IDs and pinned handles<br/>verify source versions and provenance]:::process
+        PDFPIN --> STATE[AnalysisRunStateMachine<br/>optimistic run version<br/>status + phase + outcome]:::process
+        CATALOG --> STATE
+        RUNSVC --> STATE
+        STATE --> RUNS[(MongoDB analysis_runs<br/>prompt · mode · pinned inputs · lease<br/>versions · approvals · usage · timings)]:::store
+        STATE --> EVENTS[(MongoDB analysis_run_events<br/>append-only · monotonic sequence<br/>deduplication key · privacy-safe payload)]:::store
+
+        RUNS -->|inputs_ready| WORKER[DurableAnalysisWorker<br/>poll · claim · fencing token<br/>renew lease · recover abandoned work]:::process
+        WORKER --> ADAPTER[Phase7AnalysisAdapter<br/>safe-boundary cancellation/pause checks<br/>bounded milestones · token/timing projection]:::process
+    end
+
+    subgraph PHASE7["D · Shared Phase 1–7 evidence pipeline · one contract, multiple adapters"]
+        direction TB
+        ADAPTER --> GSTART((LangGraph START<br/>isolated by run_id)):::boundary
+        GSTART --> RETRIEVE[Evidence retrieval branch]:::process
+        GSTART --> REQUIREMENTS[Typed requirements branch<br/>operation · source fields · prediction target<br/>entities · periods · filters · units<br/>document coverage · workbook destination]:::process
+
+        PDFPIN --> RETRIEVE
+        CATALOG --> PINNED[Directly pinned spreadsheet evidence<br/>no vector rediscovery of active range]:::process
+
+        RETRIEVE --> QGEN[Query generation<br/>normal or broad scope<br/>shared · text · table queries<br/>table intent and relevance signals]:::process
+        QGEN --> RTEXT[PDF text retrieval<br/>user and document filters]:::process
+        QGEN --> RTABLE[Table-summary retrieval<br/>user and document filters]:::process
+        QTEXT --> RTEXT
+        QTABLE --> RTABLE
+        RTEXT --> FUSION[Reciprocal-rank fusion<br/>dedupe · balance · diversify · token bound]:::process
+        RTABLE --> FUSION
+
+        FUSION --> HYDRATE[Hydrate authoritative datasets<br/>verify tenant · table ID · source version<br/>artifact locator and provenance]:::process
+        PINNED --> HYDRATE
         MTABLE --> HYDRATE
-        CATALOG --> HYDRATE
         BLOBS --> HYDRATE
-        HYDRATE --> PROFILE[Deterministic dataset profiling<br/>shape · types · semantic roles · units<br/>quality · duplicates · headers · footnotes]:::process
+        CATALOG --> HYDRATE
 
-        REQ --> JOIN[Parallel-branch barrier]:::boundary
-        PROFILE --> JOIN
-        JOIN --> ASSESS[Evidence assessment<br/>deterministic requirement matching<br/>coverage · conflicts · ambiguity resolver]:::process
-        ASSESS --> READY{Readiness decision}:::decision
+        HYDRATE --> PROFILE[Deterministic profiling<br/>shape · data types · semantic roles · units<br/>nulls · cardinality · quality · headers · footnotes]:::process
+        REQUIREMENTS --> BARRIER[Parallel-branch barrier]:::boundary
+        PROFILE --> BARRIER
+        BARRIER --> ASSESS[Evidence assessment<br/>deterministic requirement matching<br/>coverage · conflict detection<br/>bounded ambiguity resolver only when needed]:::process
+        ASSESS --> READY{Evidence ready?}:::decision
 
-        READY -- ready --> PREPARE
-        READY -- clarification required<br/>or unanswerable --> STOP[Terminal evidence outcome<br/>clarification or unanswerable]:::terminal
-        READY -- rescue · text extraction<br/>or retrieval repair --> RESCUE[1 · Rescue unused table candidates<br/>hydrate · profile · reassess]:::process
+        READY -- yes --> SELECT[Minimum sufficient evidence selection<br/>retain workbook as context-only for PDF-to-sheet edits]:::process
+        READY -- no, recoverable --> RESCUE[Bounded completion cascade<br/>1 · rescue unused tables<br/>2 · extract validated text facts<br/>3 · targeted hybrid retrieval repair]:::process
+        RESCUE --> REASSESS[Hydrate · profile · reassess<br/>within configured attempt limits]:::process
+        REASSESS --> READY
+        READY -- ambiguous or absent --> EVIDENCEEND[Persist clarification_required<br/>or unanswerable outcome]:::terminal
 
-        subgraph COMPLETE["Bounded evidence-completion cascade"]
-            direction TB
-            RESCUE --> C1{Ready now?}:::decision
-            C1 -- no --> TEXTRACT[2 · Extract validated facts<br/>from already-retrieved text<br/>and build derived datasets]:::process
-            TEXTRACT --> C2{Ready now?}:::decision
-            C2 -- no --> REPAIR[3 · Targeted hybrid repair<br/>only for unmet requirements]:::process
-            REPAIR --> REASSESS[Hydrate new tables · profile<br/>extract new text facts · reassess]:::process
-            REASSESS --> MORE{Ready, terminal, or<br/>repair attempts remain?}:::decision
-            MORE -- retry within bound --> REPAIR
-        end
+        SELECT --> NORMALIZE[Versioned deterministic normalization<br/>deduplicate · remove repeated headers<br/>separate footnotes · parse values/periods<br/>reshape only when justified · preserve lineage]:::process
+        NORMALIZE --> NORM[(MongoDB normalized_datasets<br/>rows · exclusions · footnotes · row lineage<br/>source versions · recipe/cache hashes)]:::store
+        NORM --> PREPARED[DATASETS_PREPARED<br/>normalized datasets · validated facts<br/>derived datasets · source handles · issues]:::boundary
 
-        C1 -- yes --> PREPARE[Select final evidence<br/>build versioned cleaning recipes]:::process
-        C2 -- yes --> PREPARE
-        MORE -- ready --> PREPARE
-        MORE -- clarification<br/>or unanswerable --> STOP
-
-        PREPARE --> NORMALIZE[Deterministic normalization<br/>remove exact duplicates and repeated headers<br/>separate footnotes · parse numbers and periods<br/>reshape when justified · preserve row lineage]:::process
-        NORMALIZE --> NCACHE[(MongoDB normalized_datasets<br/>rows · lineage · exclusions · footnotes<br/>source versions and recipe cache keys)]:::store
-        NCACHE --> PREPARED[DATASETS_PREPARED<br/>normalized IDs · selected facts<br/>derived dataset IDs · issues]:::boundary
-
-        REQCACHE[(MongoDB phase caches<br/>queries · requirements · profiles<br/>assessment · completion · repair)]:::store
-        REQ <--> REQCACHE
-        PROFILE <--> REQCACHE
-        ASSESS <--> REQCACHE
-        RESCUE <--> REQCACHE
+        PHASECACHE[(MongoDB Phase 1–7 caches<br/>queries · requirements · profiles<br/>assessments · text extraction · repair)]:::store
+        REQUIREMENTS <--> PHASECACHE
+        PROFILE <--> PHASECACHE
+        ASSESS <--> PHASECACHE
+        RESCUE <--> PHASECACHE
     end
 
-    ADAPTER --> START
+    subgraph PLAN["E · Phase 8 typed planning and deterministic trust boundary"]
+        direction TB
+        PREPARED --> PCONTEXT[PlanningContextBuilder<br/>validated requirements + normalized schemas<br/>types/units/stats + stable dataset aliases<br/>executor capabilities + resource policy<br/>workbook version guards]:::process
+        CATALOG --> PCONTEXT
+        PCONTEXT --> PRIVACY[Central privacy gateway<br/>redact sensitive examples · never send formulas<br/>exclude hidden cells unless explicitly selected<br/>row-free or bounded model context]:::process
+        PRIVACY --> PLLM[LLM typed-plan proposal<br/>strict JSON · no executable code<br/>no direct spreadsheet/tool access]:::process
 
-    subgraph OBSERVE["D · Progress, recovery, and delivery"]
-        direction LR
-        PROJECT[Milestone projector<br/>small idempotent progress events]:::process
-        EVENTS[(MongoDB append-only events<br/>monotonic sequence · replay cursor)]:::store
-        SSE[GET /analysis/runs/:id/events<br/>replayable SSE · Last-Event-ID<br/>heartbeats and connection limits]:::api
-        RESULT[Run state machine<br/>succeeded · waiting · failed<br/>cancelled · expired]:::process
+        PLLM --> STEPS[Discriminated PlanStep contract<br/>generate · filter · sort · select · rename<br/>fill · deduplicate · derive · aggregate<br/>join · pivot · unpivot · statistical test<br/>train model · visualize · compose response]:::boundary
+        STEPS --> CANON[Trusted canonicalizer<br/>stable column keys · DAG dependencies<br/>output schemas · conservative estimates<br/>immutable provenance · workbook identity]:::process
+        CANON --> VALIDATE[Seven-layer deterministic validator<br/>1 structural · 2 referential · 3 type/unit<br/>4 execution policy · 5 resources<br/>6 concurrency · 7 provenance]:::process
+        VALIDATE --> VALID{Valid plan?}:::decision
+
+        VALID -- repairable, first failure --> PREPAIR[One bounded LLM repair<br/>original proposal + structured errors only]:::process
+        PREPAIR --> CANON
+        VALID -- invalid after repair<br/>or clarification needed --> PLANCLARIFY[Persist clarification_required<br/>no code or workbook mutation]:::terminal
+
+        VALID -- yes --> PLANHASH[Canonical plan JSON<br/>input signature · revision · plan hash<br/>model/prompt/schema/validator versions]:::process
+        PLANHASH --> PLANS[(MongoDB analysis_plans<br/>immutable revisions · diagnostics<br/>approval record · write reservations)]:::store
+        PLANS --> POLICY{Selective approval policy}:::decision
+
+        POLICY -- no plan-level approval --> PLANREADY[status succeeded<br/>outcome plan_ready]:::terminal
+        POLICY -- expensive Python · large generation<br/>meaningful cost · destructive/formula overwrite --> AWAIT[status waiting · phase approval<br/>plan_approval_required]:::terminal
+        AWAIT --> ACTION[Frontend proposed-action card<br/>steps · inputs · assumptions · estimates<br/>warnings · target · approval reasons]:::client
+        ACTION -->|approve with plan hash,<br/>revision, input signature and fresh guards| APPROVE[Atomically approve plan<br/>reject stale workbook or run versions]:::process
+        ACTION -->|reject with reason| REJECT[Persist rejected plan and run outcome]:::terminal
+        APPROVE --> APPROVED[Persist approved plan<br/>status succeeded · outcome plan_ready]:::terminal
     end
 
-    ADAPTER -. graph milestones .-> PROJECT
-    PROJECT --> EVENTS
-    PREPARED --> RESULT
-    STOP --> RESULT
-    WORKER -. lease recovery and cancellation .-> RESULT
-    RESULT --> RUNSTATE
-    RESULT --> EVENTS
-    EVENTS --> SSE --> ANALYST
+    subgraph DELIVERY["F · Streaming, controls, recovery, history, and operations"]
+        direction TB
+        EVENTS --> SSE[Replayable SSE endpoint<br/>event sequence as SSE id<br/>Last-Event-ID / after cursor<br/>heartbeat · batching · connection limits]:::api
+        SSE --> RUNPROVIDER[Frontend AnalysisRunProvider<br/>dedupe/order events · reconnect loop<br/>activity bar · plan card · run history]:::client
+        RUNPROVIDER --> USER
 
-    PREPARED -. current implementation boundary .-> LATER[Later phases<br/>typed plan · approval and apply<br/>workbook mutation · charts and narrative]:::terminal
+        USER -. close page or lose connection .-> RECONNECT[Backend continues<br/>reopen run and replay missed events]:::process
+        RECONNECT --> SSE
+
+        USER -. pause .-> PAUSE[Cooperative pause request<br/>checkpoint at a safe graph boundary<br/>release worker lease]:::process
+        PAUSE --> STATE
+        USER -. resume paused .-> SAME[Requeue the same run<br/>same run_id · increment resume_count]:::process
+        SAME --> STATE
+        USER -. cancel .-> CANCEL[Cooperative cancellation<br/>terminal run remains immutable]:::process
+        CANCEL --> STATE
+        USER -. resume failed/cancelled/expired .-> NEW[Create linked run<br/>new run_id · parent/root lineage<br/>reuse immutable inputs/checkpoint]:::process
+        NEW --> STATE
+        WORKER -. expired lease or crash .-> RECOVER[Lease recovery<br/>fenced re-claim from durable state]:::process
+        RECOVER --> STATE
+
+        RUNS -. metadata only .-> OPS[Structured privacy-safe logs<br/>stage token/cost/version accounting<br/>LangSmith traces · health/readiness<br/>protected local diagnostics]:::process
+        WORKER -. counts and timings .-> OPS
+        PLLM -. model/prompt trace .-> OPS
+    end
+
+    EVIDENCEEND --> STATE
+    PLANCLARIFY --> STATE
+    PLANREADY --> STATE
+    AWAIT --> STATE
+    APPROVED --> STATE
+    REJECT --> STATE
+    STATE --> EVENTS
+
+    PLANREADY -. Phase 9 boundary .-> NEXT[Not implemented in Phase 8<br/>execute native/Python/frontend steps<br/>validate exact results · propose patch<br/>final patch approval · apply workbook receipt]:::terminal
+    APPROVED -. Phase 9 boundary .-> NEXT
 ```
 
-> **Current boundary:** the durable runtime returns normalized dataset IDs,
-> validated facts / derived dataset references, warnings, errors, token usage,
-> and timings. Typed plans, workbook edits, calculations, charts, and narrative
-> composition are later phases and are not inferred from `DATASETS_PREPARED`.
+#### Implemented Phase 8 guarantees
 
-### Data Analysis Agent — execution flow
+| Concern | Implemented behavior |
+| --- | --- |
+| **Trust boundary** | Clerk authenticates the browser; the Next.js BFF derives the user identity and forwards it with `INTERNAL_API_SECRET`. Analysis endpoints do not accept a trusted `user_id` from the request body. |
+| **Run identity** | Every request receives a UUID `run_id`, semantic request fingerprint, idempotency key, optimistic version, immutable input versions, deadline, lease, timestamps, token usage, and component/model/prompt versions. |
+| **Unified evidence contract** | Active spreadsheet ranges are pinned directly; PDF evidence is discovered through tenant-filtered hybrid retrieval. Both become versioned dataset handles before profiling, assessment, normalization, and planning. |
+| **Workbook consistency** | Plans bind to workbook ID, worksheet ID, client revision, selected/used A1 range, snapshot hash, and artifact version. Approval rechecks fresh workbook guards and rejects stale decisions. |
+| **Typed planning** | The planner can emit only supported discriminated operations and executors. The backend supplies IDs, versions, provenance, dependency edges, canonical schemas, write-target identity, and plan hash. |
+| **Deterministic validation** | Seven validation layers enforce graph structure, references, types/units, mode/executor policy, resource ceilings, workbook concurrency, and exact source lineage. Raw LLM output is never executable authority. |
+| **Bounded repair** | One validator-guided LLM repair is allowed. A second invalid result becomes `clarification_required`; there is no unbounded autonomous loop. |
+| **Selective HITL** | Ordinary safe read-only plans finish as `plan_ready`. Approval is requested only for policy-triggering risk such as expensive Python, large generation, meaningful cost, long-running work, destructive writes, or formula overwrite. Every future workbook patch still requires final approval. |
+| **Durable streaming** | Events are append-only, tenant-scoped, monotonically sequenced, deduplicated, payload-limited, and replayed through SSE using `Last-Event-ID` or an explicit cursor. Disconnecting the browser does not stop the run. |
+| **Pause, cancel, and resume** | Pause checkpoints and resumes the same run; cancel is immutable and terminal; retrying a cancelled/failed/expired run creates a new run linked through `parent_run_id`, `root_run_id`, and the latest safe checkpoint. |
+| **Storage** | MongoDB stores lifecycle, events, plan revisions, artifact metadata, dataset handles, normalized datasets, and caches. Cloudinary stores private JSON/CSV/XLSX snapshots and file artifacts. Qdrant stores searchable text and table-summary vectors. |
+| **Privacy and operations** | `standard`, `schema_only`, and `local_only` modes control LLM exposure. Formulas never enter planner/event payloads; automatically captured hidden cells are excluded; and raw rows, secrets, signed URLs, and large payloads are rejected from durable events/logs. Structured logs, LangSmith, token accounting, health/readiness, and protected diagnostics remain available. |
+
+#### Phase 8 API surface
+
+All analysis routes are tenant-scoped behind the authenticated Next.js BFF.
+Mutating requests use idempotency keys, decision IDs, optimistic run versions,
+plan hashes, input signatures, or workbook guards as appropriate.
+
+| Endpoint | Responsibility |
+| --- | --- |
+| `POST /analysis/runs` | Create or idempotently replay a run from PDF context or a bounded/versioned workbook snapshot. |
+| `GET /analysis/runs` | Return cursor-paginated, workspace-scoped run history with optional status filtering. |
+| `GET /analysis/runs/{run_id}` | Read the latest durable lifecycle, input, approval, usage, warning, and result metadata. |
+| `GET /analysis/runs/{run_id}/events` | Replay ordered events and continue streaming over SSE from `Last-Event-ID` or `after`. |
+| `GET /analysis/runs/{run_id}/plan` | Read the current validated plan revision and its diagnostics, estimates, provenance, and approval policy. |
+| `POST /analysis/runs/{run_id}/approve` | Approve the exact plan revision/hash/input signature after revalidating workbook guards. |
+| `POST /analysis/runs/{run_id}/reject` | Reject the current plan with an auditable structured reason. |
+| `POST /analysis/runs/{run_id}/pause` | Request a cooperative pause and checkpoint at the next safe worker boundary. |
+| `POST /analysis/runs/{run_id}/resume` | Resume the same paused run from its durable checkpoint. |
+| `POST /analysis/runs/{run_id}/cancel` | Permanently cancel the current run without deleting its history or events. |
+| `POST /analysis/runs/{run_id}/resume-as-new` | Create an idempotent linked run from a failed, cancelled, or expired run. |
+| `POST /analysis/artifacts` | Validate and upload an immutable JSON/CSV/XLSX/dataset artifact version to Cloudinary. |
+| `GET /analysis/artifacts/versions/{version_id}/download-url` | Return a short-lived signed URL after tenant/workspace authorization. |
+| `GET /health`, `GET /ready` | Expose minimal liveness and dependency readiness without sensitive details. |
+| `GET /analysis/diagnostics` | Return protected local worker, queue, latency, token, and error aggregates. |
+
+> **Current implementation boundary:** Phase 8 ends with a durable, validated,
+> versioned plan/run record whose outcome is `plan_ready`, `rejected`, or
+> `clarification_required`; plans that required HITL also retain their exact
+> `approved` or `rejected` decision. It can describe filters, formulas, generated
+> data, joins, statistics, ML, visualizations, and workbook write intent, but it
+> does **not** execute those steps or mutate a workbook. Native/Python/frontend
+> execution, exact result validation, patch proposal, final patch approval, and
+> workbook application belong to Phase 9.
+
+### Data Analysis Agent — durable Phase 8 lifecycle
+
+`status`, `phase`, and `outcome` are intentionally separate. This keeps the
+frontend stable while the internal graph advances and makes pause/recovery
+semantics explicit.
 
 ```mermaid
-flowchart TD
-    S([START]) --> INTENT[Classify Analysis Intent]
-    INTENT --> SCOPE[Resolve Scope]
-    SCOPE --> DISCOVER[Discover Datasets]
-    DISCOVER --> PROFILE[Profile Datasets]
+stateDiagram-v2
+    [*] --> Created: POST /analysis/runs
+    Created --> Active: inputs_ready + worker claim
 
-    PROFILE --> CHECK{Enough valid data?}
-    CHECK -- No --> HITL[Request Clarification]
-    HITL --> DISCOVER
+    state Active {
+        [*] --> ContextResolution
+        ContextResolution --> EvidencePreparation
+        EvidencePreparation --> Requirements
+        Requirements --> Normalization
+        Normalization --> Planning
+        Planning --> PlanValidation
+    }
 
-    CHECK -- Yes --> PLAN[Create Structured Plan]
-    PLAN --> VALIDATE_PLAN[Validate Plan]
+    Active --> WaitingClarification: evidence/plan ambiguity
+    Active --> WaitingApproval: valid plan requires HITL
+    Active --> SucceededPlanReady: valid safe plan
+    WaitingApproval --> SucceededPlanReady: approve current revision/hash/guards
+    WaitingApproval --> SucceededRejected: reject with reason
 
-    VALIDATE_PLAN --> EXEC[Execute Analysis Subgraph]
-    EXEC --> RESULT_CHECK{Results valid?}
+    Active --> PauseRequested: pause
+    PauseRequested --> Paused: safe checkpoint + lease release
+    Paused --> Active: resume same run_id
 
-    RESULT_CHECK -- No --> REPAIR[Repair Plan]
-    REPAIR --> EXEC
+    Active --> Cancelled: cancellation observed
+    PauseRequested --> Cancelled: cancel has priority
+    Created --> Cancelled: cancel before claim
+    Active --> Failed: non-recoverable failure
+    Active --> Expired: deadline exceeded
 
-    RESULT_CHECK -- Yes --> VIS[Visualization Subgraph]
-    RESULT_CHECK -- Yes --> INSIGHT[Insight Subgraph]
+    Active --> Active: lease recovery after worker loss
+    Cancelled --> NewLinkedRun: resume-as-new
+    Failed --> NewLinkedRun: resume-as-new
+    Expired --> NewLinkedRun: resume-as-new
+    NewLinkedRun --> Created: new run_id + parent/root lineage
 
-    VIS --> COMPOSE[Compose Response]
-    INSIGHT --> COMPOSE
-    COMPOSE --> E([END])
+    WaitingClarification --> Cancelled: cancel waiting run
+    SucceededPlanReady --> [*]
+    SucceededRejected --> [*]
+    Cancelled --> [*]
+    Failed --> [*]
+    Expired --> [*]
 ```
 
 ---
@@ -249,9 +368,10 @@ flowchart TD
 | **Table validation** | Schema, quality, and consistency checks before indexing |
 | **Table semantic index** | LLM summaries + keywords embedded into Qdrant for dataset discovery |
 | **Hybrid retrieval subgraph** | LangGraph query generation over **text chunks + table summaries** (`normal` vs `broad` scope) |
-| **Analysis orchestration** | Plan → profile → clean/transform → statistics / anomaly / time-series → validate → repair |
-| **Charts & dashboards** | Visualization planner + dashboard builder turn findings into graphs and auto-composed views |
-| **Grounded insights** | Quantitative results stay tied to source pages / table fragments for citation |
+| **Durable analysis orchestration** | Frontend run creation → replayable SSE → Phase 1–7 evidence preparation → typed planning → deterministic validation → one bounded repair |
+| **Typed operation planning** | Strict plans cover native transforms, spreadsheet formulas, Python statistics/ML, visualization artifacts, workbook writes, and response composition |
+| **Selective HITL and recovery** | Risk-based plan approval, stale-workbook guards, pause/resume, immutable cancellation, linked retries, leases, and run history |
+| **Grounded provenance** | Every planned output carries immutable dataset versions and source table/page or workbook/range lineage |
 
 ### Cross-Document Reasoning
 
@@ -269,8 +389,9 @@ flowchart TD
 | --- | --- |
 | **Dataset catalogue** | Normalized tables in MongoDB + discovery summaries in Qdrant |
 | **Profiling & cleaning** | Schema / quality checks before compute |
-| **Statistics · anomalies · time series** | Analysis engines behind the agent execution subgraph |
-| **Insight + visualization** | Insight generator, chart planner, dashboard composer |
+| **Statistics · anomalies · ML** | Typed Python/native plan steps with executor policy, package, resource, schema, and provenance validation |
+| **Visualization intent** | Typed chart plans can target normal frontend charts or Python-only analytical visuals; rendering begins in Phase 9 |
+| **Workbook safety boundary** | Phase 8 proposes guarded write intent and approval policy; no spreadsheet cell is mutated before Phase 9 execution and patch approval |
 | **Sample ingestion** | Bundled annual-report PDFs + `run_ingestion` for end-to-end table pipelines |
 
 ### Intent routing & learning
@@ -306,8 +427,8 @@ flowchart TD
 | LLMs | OpenRouter → Gemini 2.5 Flash / Flash-Lite | Answers, utilities, intent, quizzes, summaries, table metadata |
 | Embeddings | OpenAI `text-embedding-3-small` | Chunk (1536-d), node (512-d), and table-summary vectors |
 | Vector DB | Qdrant (embedded path or remote) | Semantic retrieval, node search, table discovery, cross-doc filters |
-| Document DB | MongoDB (Motor async) | Users, chats, documents, quizzes, memory, structured tables |
-| Object storage | Cloudinary | Private PDF hosting |
+| Document DB | MongoDB (Motor async) | Users/chats plus structured tables, durable runs/events, plan revisions, dataset catalog, artifacts, caches, leases, and indexes |
+| Object storage | Cloudinary | Private PDFs and immutable JSON/CSV/XLSX/workbook artifact versions with signed access |
 | PDF parsing | PyMuPDF + Docling (fallback) | Text, outline tree, table extraction / recovery |
 | ML helpers | NumPy, scikit-learn | Clustering / MMR for summary representatives |
 
@@ -486,10 +607,11 @@ flowchart TB
 <details>
 <summary><strong>Data Analysis Agent</strong></summary>
 
-- **Purpose:** Quantitative workflows over extracted tables + hybrid narrative/table retrieval.
-- **Shipped today:** Table extraction, Docling fallback, validation, semantic table index, LangGraph retrieval subgraphs (`query_generation`, `hybrid_retrieval`).
-- **In progress:** Full plan → execute → repair → visualize orchestration (see system / execution diagrams above).
+- **Purpose:** Durable quantitative planning over PDF tables, narrative evidence, and active spreadsheet ranges.
+- **Implemented through Phase 8:** Table extraction and Docling recovery; hybrid text/table retrieval; typed requirements; evidence assessment/completion; deterministic profiling and normalization; immutable artifacts and dataset handles; durable runs/events; replayable SSE; typed plan generation; server canonicalization; seven-layer validation; one bounded repair; selective HITL; pause/resume/cancel; linked recovery runs; privacy modes; token/version accounting; and frontend plan/history surfaces.
+- **Safety boundary:** Phase 8 persists a validated `plan_ready` result and guarded workbook write intent. Native/Python/frontend execution, exact result validation, generated charts, patch proposals, final patch approval, and workbook application are Phase 9.
 - **Location:** `backend/scripts/data_analysis_agent/`.
+- **Phase 8 design:** [`backend/phase8plan.md`](backend/phase8plan.md).
 - **Deep dive:** [`docs/architecture/data-analysis-agent.md`](docs/architecture/data-analysis-agent.md).
 
 </details>
