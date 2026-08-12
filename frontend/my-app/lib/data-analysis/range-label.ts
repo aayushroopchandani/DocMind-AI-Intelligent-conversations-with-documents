@@ -1,7 +1,7 @@
 import type { IRange } from "@univerjs/core";
 
 /** Converts a zero-based column index to its A1 letter (0 → A, 26 → AA). */
-function columnLabel(index: number): string {
+export function columnLabel(index: number): string {
   let label = "";
   let current = index;
   while (current >= 0) {
