@@ -20,6 +20,15 @@ export interface UniverBridge {
   loadedUnitIds: Set<string>;
   /** Artifacts being deleted — skip the "save on unload" step for these. */
   pendingDeleteIds: Set<string>;
+  /**
+   * Workbooks that owe a new worksheet.
+   *
+   * "New blank spreadsheet" can be clicked while the workbook's unit is not
+   * loaded — its tab was closed, or Univer is still booting after a tab
+   * switch. The request is queued here and the host drains it once the unit
+   * is live, so the click is never silently dropped.
+   */
+  pendingSheetInserts: Set<string>;
   /** Per-artifact debounce timers for snapshot persistence. */
   saveTimers: Map<string, ReturnType<typeof setTimeout>>;
 }
@@ -29,6 +38,7 @@ const bridge: UniverBridge = {
   containerEl: null,
   loadedUnitIds: new Set(),
   pendingDeleteIds: new Set(),
+  pendingSheetInserts: new Set(),
   saveTimers: new Map(),
 };
 

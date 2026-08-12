@@ -22,7 +22,9 @@ import {
   notifyPdfBatchTruncated,
   notifyPdfRejected,
   notifyPdfStoreFailed,
+  notifySheetAdded,
   notifyStorageFull,
+  notifyWorkbookSaved,
 } from "@/lib/data-analysis/feedback";
 import {
   cleanupOrphanWorkbookSnapshots,
@@ -56,16 +58,15 @@ import type {
   WorkspaceState,
 } from "@/lib/data-analysis/types";
 import { isPdfArtifact } from "@/lib/data-analysis/types";
+import { addWorksheet } from "@/lib/data-analysis/sheet/structure-commands";
 import { getUniverBridge } from "@/lib/data-analysis/univer-bridge";
-import {
-  cloneWorkbookData,
-  createBlankWorkbookData,
-} from "@/lib/data-analysis/workbook-factory";
+import { createBlankWorkbookData } from "@/lib/data-analysis/workbook-factory";
 import {
   artifactNames,
   createInitialWorkspaceState,
   findArtifact,
   nextSpreadsheetName,
+  primarySpreadsheet,
   workspaceReducer,
   type WorkspaceAction,
 } from "@/lib/data-analysis/workspace-state";
@@ -77,7 +78,11 @@ function createId(): string {
   return `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-interface WorkspaceActions {
+export interface WorkspaceActions {
+  /**
+   * Adds a spreadsheet surface. The workspace holds a single workbook, so
+   * this creates it the first time and adds a worksheet to it thereafter.
+   */
   createSpreadsheet: () => void;
   /**
    * Validates, stores and registers PDFs picked from disk or dropped onto
@@ -90,18 +95,19 @@ interface WorkspaceActions {
   activateTab: (id: string) => void;
   closeTab: (id: string) => void;
   renameArtifact: (id: string, name: string) => void;
-  duplicateArtifact: (id: string) => void;
   deleteArtifact: (id: string) => void;
   setProjectName: (name: string) => void;
   setAnalysisChatId: (chatId: string) => void;
   setAnalystMode: (mode: AnalystMode) => void;
   setAnalysisPrivacyMode: (mode: AnalysisPrivacyMode) => void;
+  /** Flushes every loaded workbook's snapshot immediately. */
+  saveNow: () => void;
   undo: () => void;
   redo: () => void;
 }
 
 /** Transient UI state (overlays and dialogs) — never persisted. */
-interface WorkspaceUiState {
+export interface WorkspaceUiState {
   explorerSheetOpen: boolean;
   setExplorerSheetOpen: (open: boolean) => void;
   analystSheetOpen: boolean;
@@ -218,8 +224,35 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   /* ---------------- workspace actions ---------------- */
 
+  /**
+   * One workbook per workspace.
+   *
+   * The first call creates it. Every call after that adds a worksheet to
+   * the workbook that already exists and brings it to the front — a stack of
+   * near-identical "Untitled spreadsheet N" files was never what the "+"
+   * meant, and sheets inside one workbook can reference each other.
+   */
   const createSpreadsheet = useCallback(() => {
     const current = stateRef.current;
+    const existing = primarySpreadsheet(current);
+
+    if (existing) {
+      if (current.activeTabId !== existing.id) {
+        dispatch({ type: "OPEN_ARTIFACT", id: existing.id });
+      }
+
+      const bridge = getUniverBridge();
+      if (bridge.api && bridge.loadedUnitIds.has(existing.id)) {
+        const sheetName = addWorksheet(existing.id);
+        if (sheetName) notifySheetAdded(sheetName);
+        return;
+      }
+      // The unit is not live yet — it was just opened, or Univer is still
+      // booting. The host adds the sheet as soon as the unit loads.
+      bridge.pendingSheetInserts.add(existing.id);
+      return;
+    }
+
     const id = createId();
     const name = nextSpreadsheetName(current);
     const now = Date.now();
@@ -342,47 +375,31 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const duplicateArtifact = useCallback((id: string) => {
-    const current = stateRef.current;
-    const source = current.artifacts.find((artifact) => artifact.id === id);
-    // Duplication clones a workbook snapshot; copying PDF bytes has no user
-    // value here, so the explorer only offers it for spreadsheets.
-    if (!source || source.type !== "spreadsheet") return;
+  /**
+   * "File → Save" for a workspace that already autosaves: cancels the
+   * pending debounce and writes every loaded workbook right now, so the user
+   * can close the tab immediately after an edit and trust it landed.
+   */
+  const saveNow = useCallback(() => {
     const bridge = getUniverBridge();
-    const liveWorkbook =
-      bridge.api && bridge.loadedUnitIds.has(id)
-        ? bridge.api.getWorkbook(id)
-        : null;
-    const sourceSnapshot = liveWorkbook
-      ? liveWorkbook.save()
-      : loadWorkbookSnapshot(id);
-    if (!sourceSnapshot) return;
 
-    const newId = createId();
-    const newName = `${source.name} (copy)`;
-    if (
-      !saveWorkbookSnapshot(
-        newId,
-        cloneWorkbookData(sourceSnapshot, newId, newName),
-      )
-    ) {
-      notifyStorageFull();
-      return;
+    for (const unitId of [...bridge.loadedUnitIds]) {
+      const timer = bridge.saveTimers.get(unitId);
+      if (timer) {
+        clearTimeout(timer);
+        bridge.saveTimers.delete(unitId);
+      }
+      const workbook = bridge.api?.getWorkbook(unitId);
+      if (!workbook) continue;
+      if (!saveWorkbookSnapshot(unitId, workbook.save())) {
+        notifyStorageFull();
+        return;
+      }
+      dispatch({ type: "SET_DIRTY", id: unitId, isDirty: false });
     }
-    const now = Date.now();
-    dispatch({
-      type: "ADD_ARTIFACT",
-      artifact: {
-        id: newId,
-        name: newName,
-        type: source.type,
-        source: source.source,
-        createdAt: now,
-        updatedAt: now,
-        isDirty: false,
-      },
-      open: true,
-    });
+
+    dispatch({ type: "SET_SAVE_STATUS", status: "saved" });
+    notifyWorkbookSaved();
   }, []);
 
   const deleteArtifact = useCallback((id: string) => {
@@ -441,12 +458,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       activateTab,
       closeTab,
       renameArtifact,
-      duplicateArtifact,
       deleteArtifact,
       setProjectName,
       setAnalysisChatId,
       setAnalystMode,
       setAnalysisPrivacyMode,
+      saveNow,
       undo,
       redo,
     }),
@@ -458,12 +475,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       activateTab,
       closeTab,
       renameArtifact,
-      duplicateArtifact,
       deleteArtifact,
       setProjectName,
       setAnalysisChatId,
       setAnalystMode,
       setAnalysisPrivacyMode,
+      saveNow,
       undo,
       redo,
     ],

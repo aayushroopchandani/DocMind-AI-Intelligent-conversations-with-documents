@@ -25,18 +25,3 @@ export function createBlankWorkbookData(
     },
   };
 }
-
-/**
- * Clones a snapshot for "Duplicate": same content, new identity.
- * The copy keeps worksheet ids — only the workbook id must be unique.
- */
-export function cloneWorkbookData(
-  source: Partial<IWorkbookData>,
-  newArtifactId: string,
-  newName: string,
-): Partial<IWorkbookData> {
-  const clone = structuredClone(source);
-  clone.id = newArtifactId;
-  clone.name = newName;
-  return clone;
-}

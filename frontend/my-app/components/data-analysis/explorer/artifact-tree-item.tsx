@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Copy,
   FolderOpen,
   PanelTopClose,
   Pencil,
@@ -93,13 +92,8 @@ export function ArtifactTreeItem({ artifact }: { artifact: ArtifactMeta }) {
           <Pencil />
           Rename
         </ContextMenuItem>
-        {/* Duplicating clones a workbook snapshot — meaningless for PDFs. */}
-        {artifact.type === "spreadsheet" ? (
-          <ContextMenuItem onClick={() => actions.duplicateArtifact(artifact.id)}>
-            <Copy />
-            Duplicate
-          </ContextMenuItem>
-        ) : null}
+        {/* No "Duplicate": the workspace keeps a single workbook, so copying
+            a spreadsheet is "Insert → Duplicate sheet" inside it instead. */}
         {isOpen ? (
           <ContextMenuItem onClick={() => actions.closeTab(artifact.id)}>
             <PanelTopClose />

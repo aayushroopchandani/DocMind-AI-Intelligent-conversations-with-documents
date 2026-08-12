@@ -78,6 +78,22 @@ export function activeArtifact(
   return findArtifact(state, state.activeTabId);
 }
 
+/**
+ * The workspace's workbook.
+ *
+ * A workspace holds one spreadsheet — "new blank spreadsheet" adds a sheet
+ * inside it rather than a second file. Workspaces saved before that rule
+ * existed may still carry several, so this resolves deterministically: the
+ * one in front if a spreadsheet is active, otherwise the first created.
+ */
+export function primarySpreadsheet(
+  state: WorkspaceState,
+): ArtifactMeta | undefined {
+  const active = activeArtifact(state);
+  if (active?.type === "spreadsheet") return active;
+  return state.artifacts.find((artifact) => artifact.type === "spreadsheet");
+}
+
 /** Open tabs of one artifact type, in tab order. */
 export function openArtifactsOfType(
   state: WorkspaceState,

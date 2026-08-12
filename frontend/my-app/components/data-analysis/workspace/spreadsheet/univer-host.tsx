@@ -11,12 +11,16 @@ import { UniverSheetsCorePreset } from "@univerjs/preset-sheets-core";
 import sheetsCoreEnUS from "@univerjs/preset-sheets-core/locales/en-US";
 import { SNAPSHOT_SAVE_DEBOUNCE_MS } from "@/lib/data-analysis/constants";
 import { createUniver } from "@/lib/data-analysis/create-univer";
-import { notifyStorageFull } from "@/lib/data-analysis/feedback";
+import {
+  notifySheetAdded,
+  notifyStorageFull,
+} from "@/lib/data-analysis/feedback";
 import {
   loadWorkbookSnapshot,
   saveWorkbookSnapshot,
 } from "@/lib/data-analysis/local-storage";
 import { formatRangeA1 } from "@/lib/data-analysis/range-label";
+import { addWorksheet } from "@/lib/data-analysis/sheet/structure-commands";
 import { getUniverBridge } from "@/lib/data-analysis/univer-bridge";
 import { docmindUniverTheme } from "@/lib/data-analysis/univer-theme";
 import { createBlankWorkbookData } from "@/lib/data-analysis/workbook-factory";
@@ -163,6 +167,10 @@ export default function UniverHost() {
       bridge.containerEl = null;
       bridge.loadedUnitIds.clear();
       bridge.pendingDeleteIds.clear();
+      // `pendingSheetInserts` deliberately survives: the request that filled
+      // it is what mounts this host in the first place (clicking "+" from a
+      // PDF tab), and Strict Mode's mount → cleanup → mount cycle would
+      // otherwise drop the click on the floor in development.
       // Disposes the whole instance, including all workbook units. Safe for
       // React Strict Mode: the second effect run boots a fresh instance.
       univerAPI.dispose();
@@ -269,6 +277,16 @@ export default function UniverHost() {
           },
         });
       }
+    }
+
+    // Honour "add a sheet" requests queued while the unit was still cold.
+    // Runs after focusing so the new sheet lands in the workbook the user is
+    // now looking at.
+    for (const unitId of [...bridge.pendingSheetInserts]) {
+      if (!bridge.loadedUnitIds.has(unitId)) continue;
+      bridge.pendingSheetInserts.delete(unitId);
+      const sheetName = addWorksheet(unitId);
+      if (sheetName) notifySheetAdded(sheetName);
     }
   }, [
     dispatch,
