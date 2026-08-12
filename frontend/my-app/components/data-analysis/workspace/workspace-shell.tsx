@@ -4,7 +4,6 @@ import dynamic from "next/dynamic";
 import { activeArtifact } from "@/lib/data-analysis/workspace-state";
 import { ArtifactRenderer } from "@/components/data-analysis/workspace/artifact-renderer";
 import { EmptyWorkspace } from "@/components/data-analysis/workspace/empty-workspace";
-import { WorkspaceTabs } from "@/components/data-analysis/workspace/workspace-tabs";
 import { UniverLoadingState } from "@/components/data-analysis/workspace/spreadsheet/univer-loading-state";
 import { PdfLoadingState } from "@/components/data-analysis/workspace/pdf/pdf-loading-state";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
@@ -25,7 +24,11 @@ const PdfHost = dynamic(
 );
 
 /**
- * Centre column: artifact tab strip + the active artifact surface.
+ * Centre column: the active artifact surface, edge to edge.
+ *
+ * Document switching lives in the app bar rather than on a tab strip here,
+ * so the grid keeps that row of height and Univer's own chrome (ribbon,
+ * formula bar, sheet tabs) sits directly under the application chrome.
  *
  * Only the engine for the active artifact type is mounted. Switching between
  * spreadsheets keeps the single Univer host alive, and switching between PDFs
@@ -42,7 +45,6 @@ export function WorkspaceShell() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background">
-      <WorkspaceTabs />
       <div className="relative min-h-0 min-w-0 flex-1">
         {activeIsSpreadsheet ? (
           <div className="absolute inset-0">

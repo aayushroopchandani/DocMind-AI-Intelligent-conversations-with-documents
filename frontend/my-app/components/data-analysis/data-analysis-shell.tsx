@@ -7,7 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ActivityDetailsSheet } from "@/components/data-analysis/activity/activity-details-sheet";
 import { AgentActivityBar } from "@/components/data-analysis/activity/agent-activity-bar";
-import { DataAnalysisTopbar } from "@/components/data-analysis/data-analysis-topbar";
+import { DataAnalysisAppBar } from "@/components/data-analysis/app-bar/app-bar";
 import { DeleteArtifactDialog } from "@/components/data-analysis/dialogs/delete-artifact-dialog";
 import { RenameArtifactDialog } from "@/components/data-analysis/dialogs/rename-artifact-dialog";
 import { RunHistorySheet } from "@/components/data-analysis/history/run-history-sheet";
@@ -34,7 +34,7 @@ export function DataAnalysisShell() {
 
 function DataAnalysisLayout() {
   const { state } = useWorkspace();
-  useUndoRedoShortcuts();
+  useWorkspaceShortcuts();
 
   // Until localStorage hydrates, paint a stable skeleton with the exact
   // final frame dimensions — no layout shift, no SSR/client mismatch.
@@ -44,7 +44,7 @@ function DataAnalysisLayout() {
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-      <DataAnalysisTopbar />
+      <DataAnalysisAppBar />
       <WorkspacePanels />
       <AgentActivityBar />
 
@@ -57,20 +57,31 @@ function DataAnalysisLayout() {
 }
 
 /**
- * Global Cmd/Ctrl+Z / Shift+Z / Y for the active workbook — but only when
- * focus is outside text inputs and outside Univer itself (both own their
- * native undo behaviour).
+ * Workspace-level keyboard shortcuts.
+ *
+ * Cmd/Ctrl+S flushes the local draft from anywhere, including inside the
+ * grid — the browser's "save this page" dialog is never what someone means
+ * in a spreadsheet.
+ *
+ * Undo and redo are narrower: they only apply when focus is outside text
+ * inputs and outside Univer itself, since both own their native behaviour.
  */
-function useUndoRedoShortcuts() {
+function useWorkspaceShortcuts() {
   const { state, actions } = useWorkspace();
   const univerReady = state.univerReady;
 
   useEffect(() => {
-    if (!univerReady) return;
-
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
+
+      if (key === "s") {
+        event.preventDefault();
+        actions.saveNow();
+        return;
+      }
+
+      if (!univerReady) return;
       if (key !== "z" && key !== "y") return;
 
       const target = event.target as HTMLElement | null;
@@ -102,11 +113,11 @@ function WorkspaceSkeleton() {
       aria-label="Loading data analysis workspace"
       className="flex h-dvh flex-col overflow-hidden bg-background"
     >
-      <div className="flex h-13 shrink-0 items-center gap-3 border-b border-border px-3">
-        <Skeleton className="size-7 rounded-lg" />
-        <Skeleton className="h-4 w-40" />
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2">
+        <Skeleton className="size-6 rounded-md" />
+        <Skeleton className="h-4 w-64" />
         <div className="flex-1" />
-        <Skeleton className="h-6 w-44" />
+        <Skeleton className="h-6 w-40" />
       </div>
       <div className="flex min-h-0 flex-1">
         <div className="hidden w-[260px] shrink-0 border-r border-border p-3 lg:block">
@@ -115,7 +126,7 @@ function WorkspaceSkeleton() {
           <Skeleton className="mt-2 h-8 w-full" />
         </div>
         <div className="min-w-0 flex-1 p-3">
-          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-8 w-full" />
           <Skeleton className="mt-3 h-[calc(100%-2.75rem)] w-full" />
         </div>
         <div className="hidden w-[384px] shrink-0 border-l border-border p-3 lg:block">
