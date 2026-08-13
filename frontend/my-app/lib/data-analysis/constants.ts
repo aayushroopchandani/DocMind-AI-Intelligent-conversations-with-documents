@@ -83,4 +83,5 @@ export const DEFAULT_LAYOUT: LayoutState = {
   rightSize: RIGHT_PANEL_DEFAULT,
   leftCollapsed: false,
   rightCollapsed: false,
+  ribbonCollapsed: false,
 };

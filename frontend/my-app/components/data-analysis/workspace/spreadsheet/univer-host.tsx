@@ -24,6 +24,7 @@ import { addWorksheet } from "@/lib/data-analysis/sheet/structure-commands";
 import { getUniverBridge } from "@/lib/data-analysis/univer-bridge";
 import { docmindUniverTheme } from "@/lib/data-analysis/univer-theme";
 import { createBlankWorkbookData } from "@/lib/data-analysis/workbook-factory";
+import { useRibbonHeight } from "@/components/data-analysis/workspace/spreadsheet/use-ribbon-height";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 
 import "@univerjs/preset-sheets-core/lib/index.css";
@@ -42,8 +43,9 @@ import "@univerjs/preset-sheets-core/lib/index.css";
  * React Strict Mode's mount → cleanup → mount cycle stays leak-free.
  */
 export default function UniverHost() {
-  const { state, dispatch } = useWorkspace();
+  const { state, dispatch, layout } = useWorkspace();
   const containerRef = useRef<HTMLDivElement>(null);
+  useRibbonHeight(containerRef);
 
   /* ---------------- instance lifecycle (mount once) ---------------- */
 
@@ -300,7 +302,11 @@ export default function UniverHost() {
     <div
       ref={containerRef}
       aria-label="Spreadsheet editor"
-      className="h-full w-full"
+      // `dm-univer-host` and the data attribute drive the ribbon collapse
+      // animation in globals.css — Univer owns everything inside this node,
+      // so the fold is styled from the outside rather than rendered here.
+      data-ribbon-collapsed={layout.ribbonCollapsed}
+      className="dm-univer-host h-full w-full"
     />
   );
 }

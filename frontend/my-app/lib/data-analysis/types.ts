@@ -129,4 +129,6 @@ export interface LayoutState {
   rightSize: number;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
+  /** Univer's ribbon (tab strip + formatting toolbar) is folded away. */
+  ribbonCollapsed: boolean;
 }

@@ -103,6 +103,7 @@ export function loadLayoutState(): LayoutState | null {
     rightSize: data.rightSize,
     leftCollapsed: Boolean(data.leftCollapsed),
     rightCollapsed: Boolean(data.rightCollapsed),
+    ribbonCollapsed: Boolean(data.ribbonCollapsed),
   };
 }
 

@@ -757,3 +757,47 @@
     opacity: 1;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Data analysis: collapsible spreadsheet ribbon                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Univer renders its ribbon — the Start/Formulas/Data tab strip plus the
+ * formatting toolbar — as a single <header> inside its root, which already
+ * clips its own overflow. Folding it away is therefore a height animation on
+ * that one element; the grid below is flex-1 and reclaims the space on its
+ * own, and Univer's ResizeObserver re-renders the canvas as it moves.
+ *
+ * The natural height is measured by the host into `--dm-ribbon-height`, so
+ * the transition runs over the real distance rather than a guessed max-height
+ * (which would finish early and look abrupt).
+ */
+.dm-univer-host > div > header {
+  height: var(--dm-ribbon-height, auto);
+  opacity: 1;
+  transition:
+    height 260ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 160ms ease-out 60ms;
+}
+
+.dm-univer-host[data-ribbon-collapsed="true"] > div > header {
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    height 260ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 120ms ease-in;
+}
+
+/* Before the first measurement, let the ribbon size itself — otherwise it
+   would animate up from zero on every mount. */
+.dm-univer-host:not([data-ribbon-measured="true"]) > div > header {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dm-univer-host > div > header {
+    transition: none;
+  }
+}

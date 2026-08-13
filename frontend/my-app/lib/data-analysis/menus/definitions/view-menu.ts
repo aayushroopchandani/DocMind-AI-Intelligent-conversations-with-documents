@@ -83,13 +83,19 @@ export const viewMenu: MenuDefinition = {
         onSelect: toggleGridlines,
       },
       {
+        // Folds Univer's whole ribbon — tab strip and toolbar — through the
+        // workspace layout, so the menu, the app-bar chevron and the saved
+        // layout all describe the same thing.
         kind: "checkbox",
         id: "toolbar",
         label: "Formatting toolbar",
         icon: Wrench,
-        checked: context.sheetReady ? isUiPartVisible("toolbar") : true,
+        checked: !context.layout.ribbonCollapsed,
         disabled,
-        onSelect: () => toggleUiPart("toolbar"),
+        onSelect: () =>
+          context.updateLayout({
+            ribbonCollapsed: !context.layout.ribbonCollapsed,
+          }),
       },
       {
         kind: "checkbox",

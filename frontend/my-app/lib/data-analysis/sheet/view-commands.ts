@@ -107,9 +107,14 @@ export function unfreeze(): void {
 /* Univer chrome                                                       */
 /* ------------------------------------------------------------------ */
 
-/** UI parts the View menu can toggle, keyed by their facade enum member. */
+/**
+ * UI parts the View menu can toggle, keyed by their facade enum member.
+ *
+ * The ribbon is deliberately absent: hiding it through Univer switches it off
+ * instantly, so it folds through the workspace layout (and a CSS height
+ * transition) instead.
+ */
 export const UI_PARTS = {
-  toolbar: "TOOLBAR",
   footer: "FOOTER",
 } as const;
 
