@@ -91,18 +91,20 @@ export const fileMenu: MenuDefinition = {
     {
       kind: "item",
       id: "export-xlsx",
-      label: "Export as XLSX",
+      label: "Download workbook (.xlsx)",
       icon: FileSpreadsheet,
-      pending: true,
-      onSelect: () => notifyBackendPending("XLSX export"),
+      disabled: !context.hasWorkbook,
+      onSelect: () => {
+        void context.actions.exportSpreadsheet();
+      },
     },
     {
       kind: "item",
       id: "import",
       label: "Import spreadsheet…",
       icon: Import,
-      pending: true,
-      onSelect: () => notifyBackendPending("Spreadsheet import"),
+      shortcut: "XLSX · CSV",
+      onSelect: context.openSpreadsheetPicker,
     },
     {
       kind: "item",
@@ -129,7 +131,7 @@ export const fileMenu: MenuDefinition = {
     {
       kind: "note",
       id: "note",
-      text: "CSV download runs in this browser. XLSX transfer and sharing need the analysis backend.",
+      text: "CSV export runs in this browser; XLSX import and export convert on the server. Sharing needs the analysis backend.",
     },
   ],
 };

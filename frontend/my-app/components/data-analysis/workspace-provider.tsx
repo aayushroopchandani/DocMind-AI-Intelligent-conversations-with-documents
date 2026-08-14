@@ -18,11 +18,15 @@ import {
   PDF_MIME_TYPE,
 } from "@/lib/data-analysis/constants";
 import {
+  notifyImportWarnings,
   notifyPdfAdded,
   notifyPdfBatchTruncated,
   notifyPdfRejected,
   notifyPdfStoreFailed,
   notifySheetAdded,
+  notifySpreadsheetExported,
+  notifySpreadsheetImported,
+  notifySpreadsheetTransferFailed,
   notifyStorageFull,
   notifyWorkbookSaved,
 } from "@/lib/data-analysis/feedback";
@@ -58,7 +62,21 @@ import type {
   WorkspaceState,
 } from "@/lib/data-analysis/types";
 import { isPdfArtifact } from "@/lib/data-analysis/types";
+import {
+  documentToWorkbook,
+  mergeDocumentIntoWorkbook,
+} from "@/lib/data-analysis/sheet/document-to-univer";
+import { downloadBlob, safeFileName } from "@/lib/data-analysis/sheet/download";
 import { addWorksheet } from "@/lib/data-analysis/sheet/structure-commands";
+import { workbookToDocument } from "@/lib/data-analysis/sheet/univer-to-document";
+import {
+  readWorkbookSnapshot,
+  replaceLoadedWorkbook,
+} from "@/lib/data-analysis/sheet/workbook-reload";
+import {
+  exportSpreadsheetDocument,
+  importSpreadsheetFile,
+} from "@/lib/data-analysis/spreadsheet-api";
 import { getUniverBridge } from "@/lib/data-analysis/univer-bridge";
 import { createBlankWorkbookData } from "@/lib/data-analysis/workbook-factory";
 import {
@@ -84,6 +102,10 @@ export interface WorkspaceActions {
    * this creates it the first time and adds a worksheet to it thereafter.
    */
   createSpreadsheet: () => void;
+  /** Convert an `.xlsx`/`.csv` and merge its sheets into the workbook. */
+  importSpreadsheet: (file: File) => Promise<void>;
+  /** Download the open workbook as `.xlsx`. */
+  exportSpreadsheet: () => Promise<void>;
   /**
    * Validates, stores and registers PDFs picked from disk or dropped onto
    * the workspace. Resolves once every accepted file is in IndexedDB.
@@ -272,6 +294,116 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   }, []);
 
   /**
+   * Import an `.xlsx` or `.csv` into the workspace's single workbook.
+   *
+   * The file is converted by the backend, then merged into the workbook's
+   * snapshot and the unit is rebuilt in one step — importing adds sheets to
+   * the workbook you already have rather than opening a second document.
+   */
+  const importSpreadsheet = useCallback(async (file: File) => {
+    let result: Awaited<ReturnType<typeof importSpreadsheetFile>>;
+    try {
+      result = await importSpreadsheetFile(file);
+    } catch (error) {
+      notifySpreadsheetTransferFailed(
+        "import",
+        error instanceof Error ? error.message : "The upload failed.",
+      );
+      return;
+    }
+
+    const { document, filename } = result;
+    const current = stateRef.current;
+    const existing = primarySpreadsheet(current);
+    const importId = `import-${Date.now().toString(36)}`;
+
+    if (!existing) {
+      const id = createId();
+      const name = nextSpreadsheetName(current);
+      const now = Date.now();
+      const snapshot = documentToWorkbook(document, {
+        workbookId: id,
+        name,
+      });
+      if (!saveWorkbookSnapshot(id, snapshot)) {
+        notifyStorageFull();
+        return;
+      }
+      dispatch({
+        type: "ADD_ARTIFACT",
+        artifact: {
+          id,
+          name,
+          type: "spreadsheet",
+          source: "imported",
+          createdAt: now,
+          updatedAt: now,
+          isDirty: false,
+        },
+        open: true,
+      });
+    } else {
+      // Prefer the live snapshot: the stored one can be a debounce behind.
+      const base =
+        readWorkbookSnapshot(existing.id) ?? loadWorkbookSnapshot(existing.id);
+      if (!base) {
+        notifySpreadsheetTransferFailed(
+          "import",
+          "The open workbook could not be read.",
+        );
+        return;
+      }
+
+      const merged = mergeDocumentIntoWorkbook(base, document, { importId });
+      if (!saveWorkbookSnapshot(existing.id, merged)) {
+        notifyStorageFull();
+        return;
+      }
+      if (current.activeTabId !== existing.id) {
+        dispatch({ type: "OPEN_ARTIFACT", id: existing.id });
+      }
+      // When the unit is cold the host loads the merged snapshot itself.
+      replaceLoadedWorkbook(existing.id, merged);
+      dispatch({ type: "BUMP_WORKBOOK_REVISION", id: existing.id });
+    }
+
+    notifySpreadsheetImported(
+      filename,
+      result.sheet_count,
+      result.cell_count,
+    );
+    notifyImportWarnings(document.warnings);
+  }, []);
+
+  /** Render the open workbook as XLSX and hand it to the browser. */
+  const exportSpreadsheet = useCallback(async () => {
+    const current = stateRef.current;
+    const workbook = primarySpreadsheet(current);
+    const snapshot = workbook
+      ? (readWorkbookSnapshot(workbook.id) ?? loadWorkbookSnapshot(workbook.id))
+      : null;
+    if (!workbook || !snapshot) {
+      notifySpreadsheetTransferFailed(
+        "export",
+        "There is no workbook open to export.",
+      );
+      return;
+    }
+
+    const fileName = `${safeFileName(workbook.name)}.xlsx`;
+    try {
+      const document = workbookToDocument(snapshot, { name: workbook.name });
+      downloadBlob(fileName, await exportSpreadsheetDocument(document, fileName));
+      notifySpreadsheetExported(fileName);
+    } catch (error) {
+      notifySpreadsheetTransferFailed(
+        "export",
+        error instanceof Error ? error.message : "The download failed.",
+      );
+    }
+  }, []);
+
+  /**
    * PDF upload is entirely local: validate → write the blob to IndexedDB →
    * register serializable metadata. Nothing is sent anywhere, and the raw
    * File never lands in React state.
@@ -452,6 +584,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const actions = useMemo<WorkspaceActions>(
     () => ({
       createSpreadsheet,
+      importSpreadsheet,
+      exportSpreadsheet,
       addPdfFiles,
       patchPdfMeta,
       openArtifact,
@@ -469,6 +603,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }),
     [
       createSpreadsheet,
+      importSpreadsheet,
+      exportSpreadsheet,
       addPdfFiles,
       patchPdfMeta,
       openArtifact,

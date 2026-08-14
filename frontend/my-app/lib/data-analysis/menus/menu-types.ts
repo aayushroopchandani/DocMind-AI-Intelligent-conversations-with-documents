@@ -103,6 +103,8 @@ export interface MenuContext {
   ui: WorkspaceUiState;
   /** Opens the menu bar's hidden PDF file input. */
   openPdfPicker: () => void;
+  /** Opens the menu bar's hidden spreadsheet import input. */
+  openSpreadsheetPicker: () => void;
   /** Flushes the open workbook's snapshot to local storage right now. */
   saveNow: () => void;
   /** Moves focus to the project-name field in the app bar. */

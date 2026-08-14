@@ -15,8 +15,10 @@ import {
 import { MAX_PDF_UPLOAD_BATCH } from "@/lib/data-analysis/constants";
 import { notifyPendingFeature } from "@/lib/data-analysis/feedback";
 import { usePdfUpload } from "@/lib/data-analysis/use-pdf-upload";
+import { useSpreadsheetUpload } from "@/lib/data-analysis/use-spreadsheet-upload";
 import { primarySpreadsheet } from "@/lib/data-analysis/workspace-state";
 import { PdfUploadInput } from "@/components/data-analysis/explorer/pdf-upload-input";
+import { SpreadsheetUploadInput } from "@/components/data-analysis/explorer/spreadsheet-upload-input";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 
 /**
@@ -29,6 +31,7 @@ import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 export function NewArtifactMenu({ trigger }: { trigger: ReactElement }) {
   const { state, actions } = useWorkspace();
   const { inputRef, openFilePicker, handleInputChange } = usePdfUpload();
+  const spreadsheet = useSpreadsheetUpload();
 
   const hasWorkbook = Boolean(primarySpreadsheet(state));
 
@@ -54,13 +57,10 @@ export function NewArtifactMenu({ trigger }: { trigger: ReactElement }) {
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
-            <DropdownMenuItem
-              disabled
-              onClick={() => notifyPendingFeature("import")}
-            >
+            <DropdownMenuItem onClick={spreadsheet.openFilePicker}>
               <Import />
               Import spreadsheet
-              <DropdownMenuShortcut>Soon</DropdownMenuShortcut>
+              <DropdownMenuShortcut>XLSX · CSV</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem
               disabled
@@ -73,12 +73,16 @@ export function NewArtifactMenu({ trigger }: { trigger: ReactElement }) {
           </DropdownMenuGroup>
           <p className="px-2 pt-1 pb-1 text-[11px] leading-relaxed text-muted-foreground/70">
             {hasWorkbook
-              ? "This workspace keeps one workbook — new surfaces are sheets inside it."
-              : "XLSX, XLS and CSV import will be connected through the backend in a later milestone."}
+              ? "This workspace keeps one workbook — new surfaces and imported files become sheets inside it."
+              : "Imported XLSX and CSV files open as sheets in a new workbook."}
           </p>
         </DropdownMenuContent>
       </DropdownMenu>
       <PdfUploadInput inputRef={inputRef} onChange={handleInputChange} />
+      <SpreadsheetUploadInput
+        inputRef={spreadsheet.inputRef}
+        onChange={spreadsheet.handleInputChange}
+      />
     </>
   );
 }

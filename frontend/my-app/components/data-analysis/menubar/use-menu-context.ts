@@ -17,7 +17,10 @@ import { useWorkspace } from "@/components/data-analysis/workspace-provider";
  * object stays stable and the app bar does not re-render on every keystroke
  * in the grid.
  */
-export function useMenuContext(openPdfPicker: () => void): MenuContext {
+export function useMenuContext(
+  openPdfPicker: () => void,
+  openSpreadsheetPicker: () => void,
+): MenuContext {
   const { state, layout, updateLayout, actions, ui } = useWorkspace();
 
   const active = activeArtifact(state);
@@ -35,6 +38,7 @@ export function useMenuContext(openPdfPicker: () => void): MenuContext {
       actions,
       ui,
       openPdfPicker,
+      openSpreadsheetPicker,
       saveNow: actions.saveNow,
       focusProjectName,
     }),
@@ -48,6 +52,7 @@ export function useMenuContext(openPdfPicker: () => void): MenuContext {
       actions,
       ui,
       openPdfPicker,
+      openSpreadsheetPicker,
     ],
   );
 }

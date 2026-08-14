@@ -7,9 +7,6 @@ import type { RejectedPdfFile } from "@/lib/data-analysis/pdf/pdf-types";
  * but only gain behaviour once the data-analysis backend ships.
  */
 export const PENDING_FEATURE_MESSAGES = {
-  import:
-    "XLSX, XLS and CSV import will be connected through the backend in a later milestone.",
-  export: "Spreadsheet export will be connected to the backend in a later milestone.",
   share: "Sharing will be available once the backend integration lands.",
   dataSource: "Data sources will be connected to the backend in a later milestone.",
   analyst: "The data-analysis backend is still being connected.",
@@ -67,6 +64,59 @@ export function notifyClipboardBlocked(action: string): void {
     description:
       "Clipboard access needs a direct key press — use the shortcut inside the grid instead.",
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Spreadsheet import and export                                       */
+/* ------------------------------------------------------------------ */
+
+export function notifySpreadsheetImported(
+  fileName: string,
+  sheetCount: number,
+  cellCount: number,
+): void {
+  toast.success(`Imported “${fileName}”.`, {
+    description: `${sheetCount} sheet${sheetCount === 1 ? "" : "s"} · ${cellCount.toLocaleString()} cells added to this workbook.`,
+  });
+}
+
+/**
+ * Reports what the converter could not carry across. Silence would be worse:
+ * a chart or a validation rule that vanished without a word looks like data
+ * loss, and the user cannot tell it was expected.
+ */
+export function notifyImportWarnings(
+  warnings: readonly { message: string; sheet?: string | null }[],
+): void {
+  if (warnings.length === 0) return;
+  toast.warning(
+    warnings.length === 1
+      ? "One thing did not come across."
+      : `${warnings.length} things did not come across.`,
+    {
+      description: warnings
+        .slice(0, 4)
+        .map((item) => (item.sheet ? `${item.sheet}: ${item.message}` : item.message))
+        .join("\n"),
+      duration: 8000,
+    },
+  );
+}
+
+export function notifySpreadsheetExported(fileName: string): void {
+  toast.success("Workbook downloaded.", { description: fileName });
+}
+
+export function notifySpreadsheetTransferFailed(
+  action: "import" | "export",
+  reason: string,
+): void {
+  toast.error(
+    action === "import"
+      ? "That spreadsheet could not be imported."
+      : "The workbook could not be exported.",
+    { description: reason },
+  );
 }
 
 export function notifyLastSheet(): void {

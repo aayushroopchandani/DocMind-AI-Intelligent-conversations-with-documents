@@ -5,12 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { usePdfUpload } from "@/lib/data-analysis/use-pdf-upload";
+import { useSpreadsheetUpload } from "@/lib/data-analysis/use-spreadsheet-upload";
 import { AppBarActions } from "@/components/data-analysis/app-bar/app-bar-actions";
 import { AppBrand } from "@/components/data-analysis/app-bar/app-brand";
 import { DocumentSwitcher } from "@/components/data-analysis/app-bar/document-switcher";
 import { ProjectNameInput } from "@/components/data-analysis/app-bar/project-name-input";
 import { SaveStatusPill } from "@/components/data-analysis/app-bar/save-status-pill";
 import { PdfUploadInput } from "@/components/data-analysis/explorer/pdf-upload-input";
+import { SpreadsheetUploadInput } from "@/components/data-analysis/explorer/spreadsheet-upload-input";
 import {
   CompactMenuBar,
   MenuBar,
@@ -30,7 +32,8 @@ import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 export function DataAnalysisAppBar() {
   const { state, actions, ui } = useWorkspace();
   const { inputRef, openFilePicker, handleInputChange } = usePdfUpload();
-  const menuContext = useMenuContext(openFilePicker);
+  const spreadsheet = useSpreadsheetUpload();
+  const menuContext = useMenuContext(openFilePicker, spreadsheet.openFilePicker);
 
   const hasUnsavedEdits = state.artifacts.some((artifact) => artifact.isDirty);
 
@@ -81,6 +84,11 @@ export function DataAnalysisAppBar() {
 
       {/* Backs "File → Upload PDF…" and "Insert → PDF document…". */}
       <PdfUploadInput inputRef={inputRef} onChange={handleInputChange} />
+      {/* Backs "File → Import spreadsheet…". */}
+      <SpreadsheetUploadInput
+        inputRef={spreadsheet.inputRef}
+        onChange={spreadsheet.handleInputChange}
+      />
     </header>
   );
 }

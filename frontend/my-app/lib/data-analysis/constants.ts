@@ -26,6 +26,20 @@ export const PDF_RECORD_SCHEMA_VERSION = 1;
 
 /** Files accepted by the upload input. */
 export const PDF_ACCEPT_ATTRIBUTE = ".pdf,application/pdf";
+
+/* ------------------------------------------------------------------ */
+/* Spreadsheet import                                                  */
+/* ------------------------------------------------------------------ */
+
+/** Files accepted by the spreadsheet import input. */
+export const SPREADSHEET_ACCEPT_ATTRIBUTE =
+  ".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv";
+
+/**
+ * Mirrors `ANALYSIS_MAX_SPREADSHEET_BYTES` on the backend. Used for copy
+ * only — the backend is the authority and rejects anything larger.
+ */
+export const MAX_SPREADSHEET_IMPORT_MB = 10;
 export const PDF_MIME_TYPE = "application/pdf";
 
 /** Maximum PDFs accepted in a single upload operation. */

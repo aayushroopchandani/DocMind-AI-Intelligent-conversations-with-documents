@@ -1,12 +1,12 @@
 "use client";
 
 import { FileSpreadsheet, FileUp, Import, Plus } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MAX_PDF_UPLOAD_BATCH } from "@/lib/data-analysis/constants";
-import { notifyPendingFeature } from "@/lib/data-analysis/feedback";
 import { usePdfUpload } from "@/lib/data-analysis/use-pdf-upload";
+import { useSpreadsheetUpload } from "@/lib/data-analysis/use-spreadsheet-upload";
 import { PdfUploadInput } from "@/components/data-analysis/explorer/pdf-upload-input";
+import { SpreadsheetUploadInput } from "@/components/data-analysis/explorer/spreadsheet-upload-input";
 import { PdfDropZone } from "@/components/data-analysis/workspace/pdf/pdf-drop-zone";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 
@@ -15,6 +15,7 @@ export function EmptyWorkspace() {
   const { actions } = useWorkspace();
   const { inputRef, isAdding, openFilePicker, addFiles, handleInputChange } =
     usePdfUpload();
+  const spreadsheet = useSpreadsheetUpload();
 
   return (
     <PdfDropZone
@@ -29,9 +30,9 @@ export function EmptyWorkspace() {
           Start a new analysis workspace
         </h2>
         <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-          Create a blank spreadsheet or open PDF documents. Spreadsheet file
-          import and additional data sources will be connected in later
-          milestones.
+          Create a blank spreadsheet, import an Excel or CSV file, or open PDF
+          documents. Additional data sources will be connected in a later
+          milestone.
         </p>
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
           <Button size="sm" onClick={actions.createSpreadsheet}>
@@ -50,14 +51,11 @@ export function EmptyWorkspace() {
           <Button
             size="sm"
             variant="outline"
-            disabled
-            onClick={() => notifyPendingFeature("import")}
+            disabled={spreadsheet.isImporting}
+            onClick={spreadsheet.openFilePicker}
           >
             <Import data-icon="inline-start" />
             Import spreadsheet
-            <Badge variant="secondary" className="ml-1 text-[10px]">
-              Soon
-            </Badge>
           </Button>
         </div>
         <p className="mt-4 text-xs text-muted-foreground/70">
@@ -66,6 +64,10 @@ export function EmptyWorkspace() {
         </p>
       </div>
       <PdfUploadInput inputRef={inputRef} onChange={handleInputChange} />
+      <SpreadsheetUploadInput
+        inputRef={spreadsheet.inputRef}
+        onChange={spreadsheet.handleInputChange}
+      />
     </PdfDropZone>
   );
 }

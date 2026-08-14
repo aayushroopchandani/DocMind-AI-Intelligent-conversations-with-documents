@@ -1,3 +1,4 @@
+import { downloadBlob, safeFileName } from "@/lib/data-analysis/sheet/download";
 import { withSheet } from "@/lib/data-analysis/sheet/sheet-api";
 
 /**
@@ -17,29 +18,6 @@ function escapeCsvCell(value: string): string {
 
 function toCsv(rows: readonly (readonly string[])[]): string {
   return rows.map((row) => row.map(escapeCsvCell).join(",")).join("\r\n");
-}
-
-/** Strips characters that browsers or file systems reject in a download. */
-function safeFileName(name: string): string {
-  const cleaned = name.replace(/[^\w\s.-]+/g, " ").trim();
-  return (cleaned || "sheet").slice(0, 80);
-}
-
-function downloadTextFile(fileName: string, contents: string): void {
-  const blob = new Blob([`﻿${contents}`], {
-    type: "text/csv;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.rel = "noopener";
-  document.body.append(link);
-  link.click();
-  link.remove();
-  // Revoke on the next frame: Safari aborts the download if the object URL
-  // disappears in the same tick as the click.
-  requestAnimationFrame(() => URL.revokeObjectURL(url));
 }
 
 export interface CsvExportResult {
@@ -69,6 +47,12 @@ export function exportActiveSheetToCsv(
   if (isEmpty) return null;
 
   const fileName = `${safeFileName(workbookName)} — ${safeFileName(data.name)}.csv`;
-  downloadTextFile(fileName, toCsv(data.values));
+  // The BOM keeps Excel from mangling non-ASCII text on open.
+  downloadBlob(
+    fileName,
+    new Blob([`\ufeff${toCsv(data.values)}`], {
+      type: "text/csv;charset=utf-8",
+    }),
+  );
   return { fileName, rowCount: data.values.length };
 }
