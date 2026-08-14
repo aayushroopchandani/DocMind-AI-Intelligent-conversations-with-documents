@@ -9,6 +9,7 @@ from apis.quiz_attempts import router as quiz_attempts_router
 from apis.tables import router as tables_router
 from apis.analysis_runs import router as analysis_runs_router
 from apis.analysis_artifacts import router as analysis_artifacts_router
+from apis.analysis_spreadsheets import router as analysis_spreadsheets_router
 from apis.analysis_plans import router as analysis_plans_router
 from apis.analysis_diagnostics import router as analysis_diagnostics_router
 from config.settings import settings
@@ -59,6 +60,13 @@ app.add_middleware(
                 "Analysis artifact request exceeds the configured byte limit."
             ),
         ),
+        "/analysis/spreadsheets": RequestBodyLimit(
+            max_body_bytes=settings.analysis_max_spreadsheet_request_bytes,
+            error_code="analysis_spreadsheet_request_too_large",
+            message=(
+                "Spreadsheet request exceeds the configured byte limit."
+            ),
+        ),
     },
 )
 # CORS — lets the Next.js frontend (localhost:3000) call this API.
@@ -78,6 +86,7 @@ app.include_router(tables_router)
 app.include_router(analysis_runs_router)
 app.include_router(analysis_plans_router)
 app.include_router(analysis_artifacts_router)
+app.include_router(analysis_spreadsheets_router)
 app.include_router(analysis_diagnostics_router)
 app.state.analysis_runtime = None
 app.state.analysis_run_service = None

@@ -111,6 +111,25 @@ class Settings:
         os.getenv("ANALYSIS_MAX_XLSX_COMPRESSION_RATIO", "100")
     )
 
+    # Spreadsheet import/export converts inside the request, so its caps are
+    # tighter than durable artifact storage: the ceiling is what a browser
+    # grid can hold and a request can convert without blocking a worker.
+    analysis_max_spreadsheet_bytes: int = int(
+        os.getenv("ANALYSIS_MAX_SPREADSHEET_BYTES", str(10 * 1024 * 1024))
+    )
+    analysis_max_spreadsheet_request_bytes: int = int(
+        os.getenv(
+            "ANALYSIS_MAX_SPREADSHEET_REQUEST_BYTES",
+            str(12 * 1024 * 1024),
+        )
+    )
+    analysis_spreadsheet_max_cells: int = int(
+        os.getenv("ANALYSIS_SPREADSHEET_MAX_CELLS", "400000")
+    )
+    analysis_spreadsheet_max_sheets: int = int(
+        os.getenv("ANALYSIS_SPREADSHEET_MAX_SHEETS", "64")
+    )
+
     # SSE is backed by durable MongoDB events. Polling is deliberately modest
     # until the deployment is ready to use MongoDB change streams.
     analysis_sse_poll_seconds: float = float(
@@ -227,6 +246,18 @@ class Settings:
                 self.analysis_max_xlsx_uncompressed_bytes
             ),
             "ANALYSIS_MAX_XLSX_ENTRIES": self.analysis_max_xlsx_entries,
+            "ANALYSIS_MAX_SPREADSHEET_BYTES": (
+                self.analysis_max_spreadsheet_bytes
+            ),
+            "ANALYSIS_MAX_SPREADSHEET_REQUEST_BYTES": (
+                self.analysis_max_spreadsheet_request_bytes
+            ),
+            "ANALYSIS_SPREADSHEET_MAX_CELLS": (
+                self.analysis_spreadsheet_max_cells
+            ),
+            "ANALYSIS_SPREADSHEET_MAX_SHEETS": (
+                self.analysis_spreadsheet_max_sheets
+            ),
             "ANALYSIS_SSE_POLL_SECONDS": self.analysis_sse_poll_seconds,
             "ANALYSIS_SSE_HEARTBEAT_SECONDS": (
                 self.analysis_sse_heartbeat_seconds

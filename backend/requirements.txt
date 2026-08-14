@@ -11,6 +11,9 @@ cloudinary
 # Required by FastAPI to parse multipart/form-data (PDF uploads).
 python-multipart
 
+# Spreadsheet import/export (XLSX read/write for the analysis workspace)
+openpyxl>=3.1.5,<4
+
 # RAG pipeline
 langchain
 langchain-classic
