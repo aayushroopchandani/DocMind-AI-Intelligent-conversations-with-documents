@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Literal, Self
@@ -18,16 +19,26 @@ from pydantic import (
 )
 
 from .datasets import DatasetSourceType
+from .capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
+from .expressions import (
+    Expression,
+    expression_column_keys,
+    validate_expression_size,
+)
+from .generation import SyntheticDatasetSpec
 from .privacy import PrivacySummary
 from .runs import AnalysisMode, StageTokenUsage, TokenUsage
 from .workbook import a1_dimensions
 
 
-PLAN_VERSION = "1.0"
-PLANNER_PROMPT_VERSION = "1.0.4"
-PLAN_VALIDATOR_VERSION = "1.0.0"
+PLAN_VERSION = "2.0"
+LEGACY_PLAN_VERSION = "1.0"
+PLANNER_PROMPT_VERSION = "2.0.0"
+PLAN_VALIDATOR_VERSION = "2.0.0"
+PLAN_CANONICALIZER_VERSION = "2.0.0"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,119}$")
+_COLUMN_SUFFIX_RE = re.compile(r"^_[A-Za-z0-9_]{1,31}$")
 
 
 def utc_now() -> datetime:
@@ -330,18 +341,147 @@ RowPredicate = Annotated[
 ]
 
 
-class GenerateDatasetStep(PlanStepBase):
+class LegacyGenerateDatasetStep(PlanStepBase):
     kind: Literal["generate_dataset"] = "generate_dataset"
     row_count: int = Field(ge=1)
     generation_instructions: str = Field(min_length=1, max_length=2_000)
     random_seed: int | None = Field(default=None, ge=0)
 
 
-class FilterRowsStep(PlanStepBase):
+class LegacyFilterRowsStep(PlanStepBase):
     kind: Literal["filter_rows"] = "filter_rows"
     input_alias: str = Field(min_length=1, max_length=120)
     predicates: tuple[RowPredicate, ...] = Field(min_length=1, max_length=24)
     combine_with: Literal["and", "or"] = "and"
+
+
+class GenerateDatasetStep(PlanStepBase):
+    kind: Literal["generate_dataset"] = "generate_dataset"
+    generation: SyntheticDatasetSpec
+
+    @property
+    def row_count(self) -> int:
+        return self.generation.row_count
+
+    @property
+    def random_seed(self) -> int:
+        return self.generation.seed
+
+    @model_validator(mode="after")
+    def validate_generation_schema(self) -> Self:
+        generated_keys = tuple(column.column_key for column in self.generation.columns)
+        expected_keys = tuple(column.key for column in self.expected_schema)
+        if generated_keys != expected_keys:
+            raise ValueError(
+                "generation columns must exactly match expected_schema order"
+            )
+        return self
+
+
+class FilterRowsStep(PlanStepBase):
+    kind: Literal["filter_rows"] = "filter_rows"
+    input_alias: str = Field(min_length=1, max_length=120)
+    predicate: Expression
+    null_predicate_policy: Literal["exclude", "include", "error"] = "exclude"
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_flat_predicates(cls, value: object) -> object:
+        """Accept old in-process builders, but serialize only the v2 AST."""
+
+        if not isinstance(value, dict) or "predicate" in value:
+            return value
+        predicates = value.get("predicates")
+        if not isinstance(predicates, (list, tuple)) or not predicates:
+            return value
+        operands: list[dict[str, object]] = []
+        for item in predicates:
+            predicate = (
+                item.model_dump(mode="python")
+                if isinstance(item, BaseModel)
+                else dict(item)
+            )
+            kind = predicate.get("kind")
+            column = {"kind": "column_ref", "column_key": predicate["column_key"]}
+            if kind == "null_check":
+                operands.append(
+                    {
+                        "kind": "null_check",
+                        "operator": predicate["operator"],
+                        "expression": column,
+                    }
+                )
+                continue
+            raw_value_type = predicate["value_type"]
+            value_type = (
+                raw_value_type.value
+                if isinstance(raw_value_type, Enum)
+                else str(raw_value_type)
+            )
+            literal_type = {
+                "currency": "decimal",
+                "percentage": "decimal",
+            }.get(value_type, value_type)
+            if kind == "set_membership":
+                operands.append(
+                    {
+                        "kind": "set_membership",
+                        "operator": predicate["operator"],
+                        "expression": column,
+                        "values": [
+                            {
+                                "kind": "literal",
+                                "value": item_value,
+                                "data_type": literal_type,
+                                "unit": predicate.get("unit"),
+                            }
+                            for item_value in predicate["values"]
+                        ],
+                    }
+                )
+                continue
+            raw_operator = predicate["operator"]
+            operator_value = (
+                raw_operator.value
+                if isinstance(raw_operator, Enum)
+                else str(raw_operator)
+            )
+            operator = {
+                "eq": "equal",
+                "ne": "not_equal",
+                "gt": "greater_than",
+                "gte": "greater_than_or_equal",
+                "lt": "less_than",
+                "lte": "less_than_or_equal",
+                "contains": "contains",
+            }[operator_value]
+            operands.append(
+                {
+                    "kind": "compare",
+                    "operator": operator,
+                    "left": column,
+                    "right": {
+                        "kind": "literal",
+                        "value": predicate["value"],
+                        "data_type": literal_type,
+                        "unit": predicate.get("unit"),
+                    },
+                }
+            )
+        migrated = dict(value)
+        migrated.pop("predicates", None)
+        combine_with = migrated.pop("combine_with", "and")
+        migrated["predicate"] = (
+            operands[0]
+            if len(operands) == 1
+            else {"kind": "boolean", "operator": combine_with, "operands": operands}
+        )
+        return migrated
+
+    @model_validator(mode="after")
+    def validate_predicate_size(self) -> Self:
+        validate_expression_size(self.predicate)
+        return self
 
 
 class SortKey(BaseModel):
@@ -356,6 +496,7 @@ class SortRowsStep(PlanStepBase):
     kind: Literal["sort_rows"] = "sort_rows"
     input_alias: str = Field(min_length=1, max_length=120)
     keys: tuple[SortKey, ...] = Field(min_length=1, max_length=32)
+    stable: Literal[True] = True
 
 
 class SelectColumnsStep(PlanStepBase):
@@ -401,20 +542,47 @@ class FillRule(BaseModel):
         return self
 
 
+class LegacyFillMissingStep(PlanStepBase):
+    """Phase 8 fill contract retained only for persisted plan history."""
+
+    kind: Literal["fill_missing"] = "fill_missing"
+    input_alias: str = Field(min_length=1, max_length=120)
+    rules: tuple[FillRule, ...] = Field(min_length=1, max_length=100)
+
+
 class FillMissingStep(PlanStepBase):
     kind: Literal["fill_missing"] = "fill_missing"
     input_alias: str = Field(min_length=1, max_length=120)
     rules: tuple[FillRule, ...] = Field(min_length=1, max_length=100)
+    group_by: tuple[str, ...] = Field(default=(), max_length=100)
+    order_by: tuple[SortKey, ...] = Field(default=(), max_length=32)
+
+    @model_validator(mode="after")
+    def require_order_for_directional_fill(self) -> Self:
+        if any(
+            rule.strategy in {"forward_fill", "backward_fill"}
+            for rule in self.rules
+        ) and not self.order_by:
+            raise ValueError("directional fill requires deterministic order_by keys")
+        return self
 
 
 class DeduplicateStep(PlanStepBase):
     kind: Literal["deduplicate"] = "deduplicate"
     input_alias: str = Field(min_length=1, max_length=120)
     key_columns: tuple[str, ...] = Field(min_length=1, max_length=100)
-    keep: Literal["first", "last"] = "first"
+    keep: Literal["first", "last", "error"] = "first"
+    order_by: tuple[SortKey, ...] = Field(default=(), max_length=32)
+    order_policy: Literal["stable_input", "sort_keys"] = "stable_input"
+
+    @model_validator(mode="after")
+    def validate_order_policy(self) -> Self:
+        if (self.order_policy == "sort_keys") != bool(self.order_by):
+            raise ValueError("sort_keys deduplication requires order_by and vice versa")
+        return self
 
 
-class DeriveColumnStep(PlanStepBase):
+class LegacyDeriveColumnStep(PlanStepBase):
     kind: Literal["derive_column"] = "derive_column"
     input_alias: str = Field(min_length=1, max_length=120)
     output_column: PlanColumn
@@ -422,6 +590,32 @@ class DeriveColumnStep(PlanStepBase):
     # Constant/source-label columns legitimately read no input columns.
     referenced_columns: tuple[str, ...] = Field(default=(), max_length=100)
     expression_language: Literal["native", "python", "spreadsheet_formula"]
+
+
+class DeriveColumnStep(PlanStepBase):
+    kind: Literal["derive_column"] = "derive_column"
+    input_alias: str = Field(min_length=1, max_length=120)
+    output_column: PlanColumn
+    expression: Expression
+    rounding_scale: int | None = Field(default=None, ge=0, le=12)
+    rounding_mode: Literal["half_even", "half_up", "floor", "ceiling"] = "half_even"
+    overflow_policy: Literal["null", "error"] = "error"
+
+    @property
+    def referenced_columns(self) -> tuple[str, ...]:
+        return expression_column_keys(self.expression)
+
+    @model_validator(mode="after")
+    def validate_expression_contract(self) -> Self:
+        validate_expression_size(self.expression)
+        if self.rounding_scale is not None and self.output_column.data_type not in {
+            PlanDataType.NUMBER,
+            PlanDataType.DECIMAL,
+            PlanDataType.CURRENCY,
+            PlanDataType.PERCENTAGE,
+        }:
+            raise ValueError("rounding is only valid for numeric output columns")
+        return self
 
 
 class AggregateMetric(BaseModel):
@@ -437,6 +631,9 @@ class AggregateMetric(BaseModel):
         "standard_deviation",
     ]
     output_column: PlanColumn
+    null_policy: Literal["ignore", "include", "error"] = "ignore"
+    rounding_scale: int | None = Field(default=None, ge=0, le=12)
+    rounding_mode: Literal["half_even", "half_up", "floor", "ceiling"] = "half_even"
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -455,12 +652,91 @@ class JoinKeyPair(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class LegacyJoinStep(PlanStepBase):
+    """Phase 8 join contract retained only for persisted plan history."""
+
+    kind: Literal["join"] = "join"
+    left_alias: str = Field(min_length=1, max_length=120)
+    right_alias: str = Field(min_length=1, max_length=120)
+    join_type: Literal["inner", "left", "right", "full"]
+    keys: tuple[JoinKeyPair, ...] = Field(min_length=1, max_length=16)
+
+
 class JoinStep(PlanStepBase):
     kind: Literal["join"] = "join"
     left_alias: str = Field(min_length=1, max_length=120)
     right_alias: str = Field(min_length=1, max_length=120)
     join_type: Literal["inner", "left", "right", "full"]
     keys: tuple[JoinKeyPair, ...] = Field(min_length=1, max_length=16)
+    expected_cardinality: Literal[
+        "one_to_one",
+        "one_to_many",
+        "many_to_one",
+        "many_to_many",
+    ]
+    nulls_match: Literal[False] = False
+    left_suffix: str = Field(default="_left", min_length=1, max_length=32)
+    right_suffix: str = Field(default="_right", min_length=1, max_length=32)
+    maximum_expansion_ratio: float = Field(default=10, ge=1, le=1_000)
+
+    @model_validator(mode="after")
+    def validate_suffixes(self) -> Self:
+        if self.left_suffix == self.right_suffix:
+            raise ValueError("join suffixes must be different")
+        if not all(
+            _COLUMN_SUFFIX_RE.fullmatch(suffix)
+            for suffix in (self.left_suffix, self.right_suffix)
+        ):
+            raise ValueError("join suffixes must be identifier-safe")
+        left_keys = tuple(pair.left_column_key for pair in self.keys)
+        right_keys = tuple(pair.right_column_key for pair in self.keys)
+        if (
+            len(left_keys) != len(set(left_keys))
+            or len(right_keys) != len(set(right_keys))
+        ):
+            raise ValueError("join key columns cannot repeat")
+        return self
+
+
+class PivotCategoryPolicy(BaseModel):
+    mode: Literal["explicit", "discover"]
+    values: tuple[JsonValue, ...] = Field(default=(), max_length=500)
+    maximum_categories: int = Field(default=100, ge=1, le=500)
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_validator(mode="after")
+    def validate_policy(self) -> Self:
+        if self.mode == "explicit" and not self.values:
+            raise ValueError("explicit pivot categories require values")
+        if self.mode == "discover" and self.values:
+            raise ValueError("discovered pivot categories cannot include values")
+        if len(self.values) > self.maximum_categories:
+            raise ValueError("pivot categories exceed maximum_categories")
+        canonical_values = tuple(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            for value in self.values
+        )
+        if len(canonical_values) != len(set(canonical_values)):
+            raise ValueError("pivot categories must be unique")
+        return self
+
+
+class LegacyPivotStep(PlanStepBase):
+    """Phase 8 pivot contract retained only for persisted plan history."""
+
+    kind: Literal["pivot"] = "pivot"
+    input_alias: str = Field(min_length=1, max_length=120)
+    index_columns: tuple[str, ...] = Field(min_length=1, max_length=100)
+    pivot_column: str = Field(min_length=1, max_length=120)
+    value_column: str = Field(min_length=1, max_length=120)
+    aggregation: Literal["sum", "mean", "min", "max", "count"]
 
 
 class PivotStep(PlanStepBase):
@@ -470,6 +746,27 @@ class PivotStep(PlanStepBase):
     pivot_column: str = Field(min_length=1, max_length=120)
     value_column: str = Field(min_length=1, max_length=120)
     aggregation: Literal["sum", "mean", "min", "max", "count"]
+    category_policy: PivotCategoryPolicy
+    maximum_output_columns: int = Field(default=500, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def validate_pivot_width(self) -> Self:
+        if len(self.index_columns) != len(set(self.index_columns)):
+            raise ValueError("pivot index columns cannot repeat")
+        if (
+            self.pivot_column in self.index_columns
+            or self.value_column in self.index_columns
+            or self.pivot_column == self.value_column
+        ):
+            raise ValueError("pivot index, category, and value columns must differ")
+        category_width = (
+            len(self.category_policy.values)
+            if self.category_policy.mode == "explicit"
+            else self.category_policy.maximum_categories
+        )
+        if len(self.index_columns) + category_width > self.maximum_output_columns:
+            raise ValueError("pivot category policy exceeds maximum_output_columns")
+        return self
 
 
 class UnpivotStep(PlanStepBase):
@@ -551,6 +848,12 @@ class ComposeResponseStep(PlanStepBase):
     response_format: Literal["text", "markdown", "structured"] = "markdown"
     include_provenance: Literal[True] = True
 
+    @model_validator(mode="after")
+    def require_artifact_output(self) -> Self:
+        if self.expected_schema:
+            raise ValueError("compose_response must not declare a tabular schema")
+        return self
+
 
 PlanStep = Annotated[
     GenerateDatasetStep
@@ -572,6 +875,16 @@ PlanStep = Annotated[
     Field(discriminator="kind"),
 ]
 
+HistoricalPlanStep = (
+    LegacyGenerateDatasetStep
+    | LegacyFilterRowsStep
+    | LegacyFillMissingStep
+    | LegacyDeriveColumnStep
+    | LegacyJoinStep
+    | LegacyPivotStep
+    | PlanStep
+)
+
 
 def step_input_aliases(step: PlanStep) -> tuple[str, ...]:
     if isinstance(step, GenerateDatasetStep):
@@ -581,6 +894,42 @@ def step_input_aliases(step: PlanStep) -> tuple[str, ...]:
     if isinstance(step, ComposeResponseStep):
         return step.input_aliases
     return (step.input_alias,)
+
+
+def join_output_schema(
+    step: JoinStep,
+    left: tuple[PlanColumn, ...],
+    right: tuple[PlanColumn, ...],
+) -> tuple[PlanColumn, ...]:
+    """Derive the versioned join collision/coalescing schema deterministically."""
+
+    left_keys = {column.key for column in left}
+    right_keys = {column.key for column in right}
+    collisions = left_keys.intersection(right_keys)
+    coalesced_keys = {
+        pair.left_column_key
+        for pair in step.keys
+        if pair.left_column_key == pair.right_column_key
+    }
+    renamed_collisions = collisions.difference(coalesced_keys)
+    left_output = tuple(
+        column.model_copy(
+            update={"key": f"{column.key}{step.left_suffix}"}
+        )
+        if column.key in renamed_collisions
+        else column
+        for column in left
+    )
+    right_output = tuple(
+        column.model_copy(
+            update={"key": f"{column.key}{step.right_suffix}"}
+        )
+        if column.key in renamed_collisions
+        else column
+        for column in right
+        if column.key not in coalesced_keys
+    )
+    return (*left_output, *right_output)
 
 
 class WorkbookPlacementPolicy(str, Enum):
@@ -706,6 +1055,8 @@ class PlanProposal(BaseModel):
 
 class AnalysisPlanDraft(PlanProposal):
     plan_version: Literal[PLAN_VERSION] = PLAN_VERSION
+    capability_profile: Literal[CAPABILITY_PROFILE] = CAPABILITY_PROFILE
+    capability_version: Literal[CAPABILITY_PROFILE_VERSION] = CAPABILITY_PROFILE_VERSION
     run_id: str = Field(min_length=36, max_length=36)
     mode: AnalysisMode
     input_signature: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -867,6 +1218,12 @@ class PlanDiagnostics(BaseModel):
 class AnalysisPlan(AnalysisPlanDraft):
     """Validated immutable content plus mutable approval lifecycle metadata."""
 
+    # Persisted v1 records remain readable for audit/history. They are rejected
+    # by execution admission and can never be produced by PlanProposal.
+    plan_version: Literal[LEGACY_PLAN_VERSION, PLAN_VERSION] = PLAN_VERSION
+    capability_profile: str = CAPABILITY_PROFILE
+    capability_version: str = CAPABILITY_PROFILE_VERSION
+    steps: tuple[HistoricalPlanStep, ...] = Field(min_length=1, max_length=64)
     plan_id: str = Field(min_length=36, max_length=36)
     user_id: str = Field(min_length=1, max_length=200)
     workspace_id: str = Field(min_length=1, max_length=200)
@@ -882,6 +1239,11 @@ class AnalysisPlan(AnalysisPlanDraft):
         min_length=1,
         max_length=100,
     )
+    canonicalizer_version: str = Field(
+        default=PLAN_CANONICALIZER_VERSION,
+        min_length=1,
+        max_length=100,
+    )
     privacy: PrivacySummary = Field(default_factory=PrivacySummary)
     plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     write_target_keys: tuple[str, ...] = Field(default=(), max_length=24)
@@ -890,6 +1252,35 @@ class AnalysisPlan(AnalysisPlanDraft):
     token_usage_by_stage: dict[str, StageTokenUsage] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def preserve_legacy_step_contracts(cls, value: object) -> object:
+        if not isinstance(value, Mapping) or value.get("plan_version") != "1.0":
+            return value
+        output = dict(value)
+        restored_steps: list[object] = []
+        for step in output.get("steps", ()):
+            if not isinstance(step, Mapping):
+                restored_steps.append(step)
+                continue
+            kind = step.get("kind")
+            if kind == "generate_dataset" and "generation_instructions" in step:
+                restored_steps.append(LegacyGenerateDatasetStep.model_validate(step))
+            elif kind == "filter_rows" and "predicates" in step:
+                restored_steps.append(LegacyFilterRowsStep.model_validate(step))
+            elif kind == "derive_column" and "expression_language" in step:
+                restored_steps.append(LegacyDeriveColumnStep.model_validate(step))
+            elif kind == "fill_missing" and "order_by" not in step:
+                restored_steps.append(LegacyFillMissingStep.model_validate(step))
+            elif kind == "join" and "expected_cardinality" not in step:
+                restored_steps.append(LegacyJoinStep.model_validate(step))
+            elif kind == "pivot" and "category_policy" not in step:
+                restored_steps.append(LegacyPivotStep.model_validate(step))
+            else:
+                restored_steps.append(step)
+        output["steps"] = tuple(restored_steps)
+        return output
 
     @field_validator("plan_id", mode="before")
     @classmethod
@@ -921,7 +1312,10 @@ class AnalysisPlan(AnalysisPlanDraft):
             raise ValueError("plan status and approval status disagree")
         if self.updated_at < self.created_at:
             raise ValueError("plan updated_at cannot precede created_at")
-        if self.plan_hash != analysis_plan_hash(self):
+        if (
+            self.plan_version == PLAN_VERSION
+            and self.plan_hash != analysis_plan_hash(self)
+        ):
             raise ValueError("plan_hash does not match canonical plan content")
         return self
 
@@ -1065,7 +1459,7 @@ class FinalPatchApprovalCommand(BaseModel):
 
 def compute_input_signature(datasets: tuple[PlanInputDataset, ...]) -> str:
     payload = [
-        dataset.model_dump(mode="json")
+        _execution_semantics(dataset.model_dump(mode="json"))
         for dataset in sorted(datasets, key=lambda item: item.dataset_id)
     ]
     return _sha256_json(payload)
@@ -1095,6 +1489,7 @@ def analysis_plan_hash(plan: AnalysisPlan) -> str:
         model=plan.model,
         prompt_version=plan.prompt_version,
         validator_version=plan.validator_version,
+        canonicalizer_version=plan.canonicalizer_version,
         privacy=plan.privacy,
     )
 
@@ -1109,10 +1504,13 @@ def _canonical_plan_content_hash(
     model: str,
     prompt_version: str,
     validator_version: str,
+    canonicalizer_version: str,
     privacy: PrivacySummary,
 ) -> str:
     payload = {
         "plan_version": draft.plan_version,
+        "capability_profile": draft.capability_profile,
+        "capability_version": draft.capability_version,
         "run_id": draft.run_id,
         "user_id": user_id,
         "workspace_id": workspace_id,
@@ -1120,24 +1518,53 @@ def _canonical_plan_content_hash(
         "mode": draft.mode.value,
         "input_signature": draft.input_signature,
         "input_datasets": [
-            item.model_dump(mode="json") for item in draft.input_datasets
+            _execution_semantics(item.model_dump(mode="json"))
+            for item in draft.input_datasets
         ],
-        "intent": draft.intent,
-        "assumptions": list(draft.assumptions),
-        "steps": [item.model_dump(mode="json") for item in draft.steps],
+        "steps": [
+            _execution_semantics(item.model_dump(mode="json"))
+            for item in draft.steps
+        ],
         "write_intents": [
-            item.model_dump(mode="json") for item in draft.write_intents
+            _execution_semantics(item.model_dump(mode="json"))
+            for item in draft.write_intents
         ],
         "expected_artifacts": [
-            item.model_dump(mode="json") for item in draft.expected_artifacts
+            _execution_semantics(item.model_dump(mode="json"))
+            for item in draft.expected_artifacts
         ],
         "approval_policy": approval_policy.model_dump(mode="json"),
         "model": model,
         "prompt_version": prompt_version,
         "validator_version": validator_version,
+        "canonicalizer_version": canonicalizer_version,
         "privacy": privacy.model_dump(mode="json"),
     }
     return _sha256_json(payload)
+
+
+_DISPLAY_ONLY_PLAN_FIELDS = frozenset(
+    {
+        "description",
+        "label",
+        "output_label",
+        "title",
+    }
+)
+
+
+def _execution_semantics(value: object) -> object:
+    """Remove presentation-only fields from canonical execution content."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _execution_semantics(item)
+            for key, item in value.items()
+            if key not in _DISPLAY_ONLY_PLAN_FIELDS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_execution_semantics(item) for item in value]
+    return value
 
 
 def build_analysis_plan(
@@ -1151,6 +1578,7 @@ def build_analysis_plan(
     model: str,
     prompt_version: str = PLANNER_PROMPT_VERSION,
     validator_version: str = PLAN_VALIDATOR_VERSION,
+    canonicalizer_version: str = PLAN_CANONICALIZER_VERSION,
     privacy: PrivacySummary | None = None,
     token_usage: TokenUsage | None = None,
     token_usage_by_stage: dict[str, StageTokenUsage] | None = None,
@@ -1183,6 +1611,7 @@ def build_analysis_plan(
         "model": model,
         "prompt_version": prompt_version,
         "validator_version": validator_version,
+        "canonicalizer_version": canonicalizer_version,
         "privacy": privacy or PrivacySummary(),
         "plan_hash": "0" * 64,
         "write_target_keys": workbook_write_target_keys(draft.write_intents),
@@ -1201,6 +1630,7 @@ def build_analysis_plan(
         model=model,
         prompt_version=prompt_version,
         validator_version=validator_version,
+        canonicalizer_version=canonicalizer_version,
         privacy=privacy or PrivacySummary(),
     )
     provisional["plan_hash"] = plan_hash
@@ -1246,9 +1676,14 @@ __all__ = [
     "FinalPatchProposal",
     "GenerateDatasetStep",
     "JoinStep",
+    "LegacyFillMissingStep",
+    "LegacyJoinStep",
+    "LegacyPivotStep",
+    "LEGACY_PLAN_VERSION",
     "NullPredicate",
     "PatchImpactSummary",
     "PLAN_VERSION",
+    "PLAN_CANONICALIZER_VERSION",
     "PLAN_VALIDATOR_VERSION",
     "PLANNER_PROMPT_VERSION",
     "PlanApprovalCommand",
@@ -1266,6 +1701,7 @@ __all__ = [
     "PlanStep",
     "PlanStepEstimate",
     "PlanWriteIntent",
+    "PivotCategoryPolicy",
     "PredicateValueType",
     "RenameColumnsStep",
     "SelectColumnsStep",
@@ -1274,6 +1710,7 @@ __all__ = [
     "StatisticalTestStep",
     "StepProvenance",
     "step_input_aliases",
+    "join_output_schema",
     "TrainModelStep",
     "UnpivotStep",
     "VisualizationStep",

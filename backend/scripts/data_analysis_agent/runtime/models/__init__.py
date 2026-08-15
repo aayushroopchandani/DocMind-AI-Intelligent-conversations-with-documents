@@ -27,6 +27,13 @@ from .datasets import (
     tabular_source_version,
 )
 from .events import AnalysisEventType, AnalysisRunEvent, MAX_EVENT_PAYLOAD_BYTES
+from .capabilities import (
+    CAPABILITY_PROFILE,
+    CAPABILITY_PROFILE_VERSION,
+    ExecutorCapabilities,
+)
+from .expressions import Expression, ExpressionDataType
+from .generation import GENERATOR_VERSION, SyntheticDatasetSpec
 from .requests import (
     ActiveArtifactContext,
     AnalysisClientCapabilities,
@@ -99,6 +106,8 @@ __all__ = [
     "ArtifactVersion",
     "ArtifactVersionStatus",
     "ApprovalPolicy",
+    "CAPABILITY_PROFILE",
+    "CAPABILITY_PROFILE_VERSION",
     "BlobDatasetStorage",
     "BlobDeliveryType",
     "BlobProvider",
@@ -118,6 +127,10 @@ __all__ = [
     "DerivedDatasetLocator",
     "FinalPatchApprovalCommand",
     "FinalPatchProposal",
+    "Expression",
+    "ExpressionDataType",
+    "ExecutorCapabilities",
+    "GENERATOR_VERSION",
     "MAX_EVENT_PAYLOAD_BYTES",
     "MongoDatasetStorage",
     "PdfRunContext",
@@ -138,6 +151,7 @@ __all__ = [
     "RunApprovalStatus",
     "SpreadsheetContext",
     "SpreadsheetRangeLocator",
+    "SyntheticDatasetSpec",
     "StageTokenUsage",
     "TERMINAL_RUN_STATUSES",
     "TabularDataset",
