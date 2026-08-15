@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from ..models.capabilities import ExecutorCapabilities
 from ..models.plans import AnalysisPlan
 from ..models.events import AnalysisEventType
 from ..models.runs import (
@@ -102,23 +103,6 @@ class PlanResourcePolicy(BaseModel):
         if self.plan_approval_generated_rows > self.max_generated_rows:
             raise ValueError("generated-row approval threshold exceeds its limit")
         return self
-
-
-class ExecutorCapabilities(BaseModel):
-    native: bool = True
-    python: bool = True
-    frontend: bool = True
-    external_network: bool = False
-    supported_python_packages: tuple[str, ...] = (
-        "numpy",
-        "pandas",
-        "scikit-learn",
-        "scipy",
-        "matplotlib",
-        "seaborn",
-    )
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class PlanningOutcome(str, Enum):

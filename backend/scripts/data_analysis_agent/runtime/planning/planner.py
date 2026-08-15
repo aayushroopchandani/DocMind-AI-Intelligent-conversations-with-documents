@@ -24,8 +24,18 @@ strict, typed plan proposal, never executable code or prose. Use only the suppli
 dataset aliases and stable column keys. Do not invent row counts that are unknown
 until execution. Keep simple filters, sorting, selection, renaming, missing-value
 fills, deduplication, aggregation, joins, pivoting and unpivoting on the native
-executor. Use Python only for statistical tests, machine learning, or analytical
-visualizations that native/frontend engines cannot produce, and declare the reason.
+executor. This capability profile does not provide Python, charts, images, machine
+learning, statistical tests, or arbitrary formulas. Never propose those operations;
+explain their unavailability only when the requested work cannot be represented by
+the supplied output contract.
+
+Plan Schema 2.0 has no free-form executable expressions. Build filter predicates and
+derived columns only from the closed expression AST in the output contract. Use
+column_ref nodes with stable keys, typed literal nodes, and only declared operators.
+Never return Python, SQL, raw spreadsheet formula text, function names, or code in an
+expression. A filter AST must produce a boolean. A derived expression's inferred type
+and unit must match output_column. Use safe_divide with an explicit zero_division
+policy for division.
 
 Never request external network access. Ask mode cannot write. Analyse mode may create
 artifacts but cannot mutate workbooks. Edit mode may propose workbook writes, and
@@ -44,7 +54,10 @@ Python visualization, not a generic heatmap.
 Use the fewest steps needed for the request. Do not add redundant filters, pivots,
 renames, or response steps when one typed operation already expresses the intent.
 Use generate_dataset only when the user explicitly requests synthetic, random, mock,
-or manually specified new rows; its row_count must be an exact positive integer.
+or manually specified new rows. Supply a complete typed generation specification,
+an exact positive row_count, a non-negative seed, one bounded rule per expected
+column, and only declared constraints. Generate deterministic unique IDs instead of
+personal identifiers. Money ranges use integer minor units and an explicit scale.
 Never use generate_dataset to combine or summarize existing source datasets. For
 cross-source comparisons, transform the existing aliases and join on a verified key.
 
@@ -60,6 +73,8 @@ or timestamps; the trusted backend supplies those fields."""
 
 _SCHEMA_PROMPT_OMISSIONS = frozenset(
     {
+        "additionalProperties",
+        "discriminator",
         "title",
         "description",
         "default",
@@ -75,6 +90,26 @@ _SCHEMA_PROMPT_OMISSIONS = frozenset(
         "pattern",
         "format",
     }
+)
+_EXPRESSION_DEFINITIONS = (
+    "LiteralExpression",
+    "ColumnExpression",
+    "UnaryExpression",
+    "BinaryExpression",
+    "CompareExpression",
+    "SetExpression",
+    "BetweenExpression",
+    "BooleanExpression",
+    "CaseWhenExpression",
+    "CoalesceExpression",
+    "CastExpression",
+    "DatePartExpression",
+    "DateTruncExpression",
+    "StringTransformExpression",
+    "NullCheckExpression",
+)
+_UNAVAILABLE_STEP_DEFINITIONS = frozenset(
+    {"StatisticalTestStep", "TrainModelStep", "VisualizationStep"}
 )
 
 
@@ -315,10 +350,84 @@ def _model_context(context: PlanningContext) -> dict[str, object]:
 
 @lru_cache(maxsize=1)
 def _planner_output_contract() -> dict[str, object]:
-    contract = _prune_schema(PlanProposal.model_json_schema())
+    schema = _compact_planner_schema(PlanProposal.model_json_schema())
+    contract = _prune_schema(schema)
     if not isinstance(contract, dict):  # pragma: no cover - Pydantic contract
         raise RuntimeError("planner output contract must be a JSON object")
     return contract
+
+
+def _compact_planner_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Deduplicate recursive AST unions and hide unavailable step variants."""
+
+    expression_refs = frozenset(
+        f"#/$defs/{name}" for name in _EXPRESSION_DEFINITIONS
+    )
+
+    def compact(value: object) -> object:
+        if isinstance(value, dict):
+            variants = value.get("oneOf")
+            if isinstance(variants, list):
+                refs = frozenset(
+                    str(item.get("$ref"))
+                    for item in variants
+                    if isinstance(item, dict) and "$ref" in item
+                )
+                if refs == expression_refs and len(variants) == len(expression_refs):
+                    return {"$ref": "#/$defs/Expression"}
+            return {key: compact(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [compact(item) for item in value]
+        return value
+
+    compacted = compact(schema)
+    if not isinstance(compacted, dict):  # pragma: no cover - local invariant
+        raise RuntimeError("planner schema compaction failed")
+    definitions = compacted.get("$defs")
+    if not isinstance(definitions, dict):  # pragma: no cover - Pydantic contract
+        raise RuntimeError("planner schema definitions are missing")
+    definitions["Expression"] = {
+        "oneOf": [
+            {"$ref": f"#/$defs/{name}"} for name in _EXPRESSION_DEFINITIONS
+        ]
+    }
+    for name in _UNAVAILABLE_STEP_DEFINITIONS:
+        definitions.pop(name, None)
+
+    properties = compacted.get("properties")
+    if isinstance(properties, dict):
+        steps = properties.get("steps")
+        if isinstance(steps, dict):
+            items = steps.get("items")
+            if isinstance(items, dict) and isinstance(items.get("oneOf"), list):
+                unavailable_refs = {
+                    f"#/$defs/{name}" for name in _UNAVAILABLE_STEP_DEFINITIONS
+                }
+                items["oneOf"] = [
+                    item
+                    for item in items["oneOf"]
+                    if not (
+                        isinstance(item, dict)
+                        and item.get("$ref") in unavailable_refs
+                    )
+                ]
+
+    for definition_name, property_name in (
+        ("ArtifactWriteIntent", "artifact_kind"),
+        ("ExpectedArtifact", "kind"),
+    ):
+        definition = definitions.get(definition_name)
+        if not isinstance(definition, dict):
+            continue
+        definition_properties = definition.get("properties")
+        if not isinstance(definition_properties, dict):
+            continue
+        kind = definition_properties.get(property_name)
+        if isinstance(kind, dict) and isinstance(kind.get("enum"), list):
+            kind["enum"] = [
+                value for value in kind["enum"] if value not in {"chart", "model"}
+            ]
+    return compacted
 
 
 def _prune_schema(value: object) -> object:
@@ -411,11 +520,20 @@ def _normalize_step_payload(step: dict[str, object]) -> dict[str, object]:
             )
         output["estimate"] = normalized_estimate
     if output.get("kind") == "generate_dataset":
-        output["row_count"] = _coerce_number(
-            output.get("row_count"),
-            integer=True,
-            default=None,
-        )
+        generation = output.get("generation")
+        if isinstance(generation, dict):
+            normalized_generation = dict(generation)
+            normalized_generation["row_count"] = _coerce_number(
+                normalized_generation.get("row_count"),
+                integer=True,
+                default=None,
+            )
+            normalized_generation["seed"] = _coerce_number(
+                normalized_generation.get("seed"),
+                integer=True,
+                default=None,
+            )
+            output["generation"] = normalized_generation
     predicates = output.get("predicates")
     if isinstance(predicates, list):
         output["predicates"] = [

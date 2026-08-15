@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from ..models.plans import (
     AggregateStep,
-    ComparisonPredicate,
     ComposeResponseStep,
     DeduplicateStep,
     DeriveColumnStep,
@@ -11,15 +10,12 @@ from ..models.plans import (
     GenerateDatasetStep,
     JoinStep,
     PlanColumn,
-    PlanDataType,
     PlanProposal,
     PlanStep,
     PlanWriteIntent,
-    PredicateValueType,
     PivotStep,
     RenameColumnsStep,
     SelectColumnsStep,
-    SetPredicate,
     SortRowsStep,
     StepProvenance,
     StatisticalTestStep,
@@ -27,8 +23,10 @@ from ..models.plans import (
     UnpivotStep,
     WorkbookWriteIntent,
     VisualizationStep,
+    join_output_schema,
     step_input_aliases,
 )
+from ..models.expressions import map_expression_columns
 from .context import PlanningContext
 
 
@@ -76,8 +74,6 @@ def canonicalize_proposal(
                 }
             )
         step = _canonical_column_references(step, schemas)
-        if isinstance(step, FilterRowsStep):
-            step = _canonical_filter_predicates(step, schemas)
         input_aliases = step_input_aliases(step)
         dependencies = tuple(
             dict.fromkeys(
@@ -147,42 +143,6 @@ def canonicalize_proposal(
     )
 
 
-def _canonical_filter_predicates(
-    step: FilterRowsStep,
-    schemas: dict[str, tuple[PlanColumn, ...]],
-) -> FilterRowsStep:
-    source = {column.key: column for column in schemas.get(step.input_alias, ())}
-    predicates = []
-    for predicate in step.predicates:
-        column = source.get(predicate.column_key)
-        if column is None or not isinstance(
-            predicate,
-            (ComparisonPredicate, SetPredicate),
-        ):
-            predicates.append(predicate)
-            continue
-        value_type = {
-            PlanDataType.STRING: PredicateValueType.STRING,
-            PlanDataType.INTEGER: PredicateValueType.NUMBER,
-            PlanDataType.NUMBER: PredicateValueType.NUMBER,
-            PlanDataType.DECIMAL: PredicateValueType.NUMBER,
-            PlanDataType.CURRENCY: PredicateValueType.CURRENCY,
-            PlanDataType.PERCENTAGE: PredicateValueType.PERCENTAGE,
-            PlanDataType.BOOLEAN: PredicateValueType.BOOLEAN,
-            PlanDataType.DATE: PredicateValueType.DATE,
-            PlanDataType.PERIOD: PredicateValueType.DATE,
-        }.get(column.data_type, predicate.value_type)
-        predicates.append(
-            predicate.model_copy(
-                update={
-                    "value_type": value_type,
-                    "unit": column.unit,
-                }
-            )
-        )
-    return step.model_copy(update={"predicates": tuple(predicates)})
-
-
 def _canonical_column_references(
     step: PlanStep,
     schemas: dict[str, tuple[PlanColumn, ...]],
@@ -191,16 +151,9 @@ def _canonical_column_references(
         schema = schemas.get(step.input_alias, ())
         return step.model_copy(
             update={
-                "predicates": tuple(
-                    predicate.model_copy(
-                        update={
-                            "column_key": _resolve_column_key(
-                                predicate.column_key,
-                                schema,
-                            )
-                        }
-                    )
-                    for predicate in step.predicates
+                "predicate": map_expression_columns(
+                    step.predicate,
+                    lambda key: _resolve_column_key(key, schema),
                 )
             }
         )
@@ -261,7 +214,21 @@ def _canonical_column_references(
                         }
                     )
                     for rule in step.rules
-                )
+                ),
+                "group_by": tuple(
+                    _resolve_column_key(key, schema) for key in step.group_by
+                ),
+                "order_by": tuple(
+                    key.model_copy(
+                        update={
+                            "column_key": _resolve_column_key(
+                                key.column_key,
+                                schema,
+                            )
+                        }
+                    )
+                    for key in step.order_by
+                ),
             }
         )
     if isinstance(step, DeduplicateStep):
@@ -270,16 +237,27 @@ def _canonical_column_references(
             update={
                 "key_columns": tuple(
                     _resolve_column_key(key, schema) for key in step.key_columns
-                )
+                ),
+                "order_by": tuple(
+                    key.model_copy(
+                        update={
+                            "column_key": _resolve_column_key(
+                                key.column_key,
+                                schema,
+                            )
+                        }
+                    )
+                    for key in step.order_by
+                ),
             }
         )
     if isinstance(step, DeriveColumnStep):
         schema = schemas.get(step.input_alias, ())
         return step.model_copy(
             update={
-                "referenced_columns": tuple(
-                    _resolve_column_key(key, schema)
-                    for key in step.referenced_columns
+                "expression": map_expression_columns(
+                    step.expression,
+                    lambda key: _resolve_column_key(key, schema),
                 )
             }
         )
@@ -457,6 +435,15 @@ def _expected_schema(
                 *(source[key] for key in step.group_by),
                 *(metric.output_column for metric in step.metrics),
             )
+    if isinstance(step, JoinStep):
+        left = schemas.get(step.left_alias, ())
+        right = schemas.get(step.right_alias, ())
+        expected = join_output_schema(step, left, right)
+        if (
+            len({column.key for column in expected}) == len(expected)
+            and all(len(column.key) <= 120 for column in expected)
+        ):
+            return expected
     if isinstance(step, UnpivotStep):
         source = {column.key: column for column in schemas.get(step.input_alias, ())}
         if all(key in source for key in step.id_columns):

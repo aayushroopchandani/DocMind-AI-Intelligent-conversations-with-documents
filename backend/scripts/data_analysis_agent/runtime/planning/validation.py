@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
-from datetime import date
 
 from ..models.plans import (
     AggregateStep,
     AnalysisPlanDraft,
     ApprovalPolicy,
     ApprovalReason,
-    ComparisonOperator,
+    ArtifactWriteIntent,
     ComposeResponseStep,
     DeduplicateStep,
     DeriveColumnStep,
@@ -17,17 +15,14 @@ from ..models.plans import (
     FilterRowsStep,
     GenerateDatasetStep,
     JoinStep,
-    NullPredicate,
     PLAN_VALIDATOR_VERSION,
     PlanColumn,
     PlanDataType,
     PlanExecutor,
     PlanStep,
-    PredicateValueType,
     PivotStep,
     RenameColumnsStep,
     SelectColumnsStep,
-    SetPredicate,
     SortRowsStep,
     StatisticalTestStep,
     TrainModelStep,
@@ -35,11 +30,27 @@ from ..models.plans import (
     VisualizationStep,
     WorkbookWriteIntent,
     compute_input_signature,
+    join_output_schema,
     step_input_aliases,
 )
+from ..models.generation import (
+    BooleanRule,
+    CategoricalRule,
+    ConstantRule,
+    DateRangeRule,
+    DecimalRangeRule,
+    DependentFractionRule,
+    GenerationComparisonConstraint,
+    GenerationNotNullConstraint,
+    IntegerRangeRule,
+    SequenceRule,
+    UniqueIdRule,
+)
+from ..models.expressions import expression_column_keys
 from ..models.runs import AnalysisMode
 from ..models.workbook import a1_ranges_overlap
 from .context import PlanningContext
+from .expression_validation import expression_output_matches, validate_expression
 from .contracts import (
     PlanValidationIssue,
     PlanValidationLayer,
@@ -57,14 +68,6 @@ _NUMERIC_TYPES = frozenset(
         PlanDataType.PERCENTAGE,
     }
 )
-_ORDERABLE_TYPES = _NUMERIC_TYPES | {
-    PlanDataType.DATE,
-    PlanDataType.PERIOD,
-}
-_PERIOD_LITERAL_RE = re.compile(
-    r"^(?:(?:FY\s*)?\d{4}|Q[1-4]\s*\d{4}|\d{4}\s*Q[1-4]|\d{4}-\d{2})$",
-    re.IGNORECASE,
-)
 _SUPERVISED_MODELS = frozenset(
     {
         "linear_regression",
@@ -75,6 +78,7 @@ _SUPERVISED_MODELS = frozenset(
     }
 )
 _NATIVE_ONLY_STEPS = (
+    GenerateDatasetStep,
     FilterRowsStep,
     SortRowsStep,
     SelectColumnsStep,
@@ -85,6 +89,7 @@ _NATIVE_ONLY_STEPS = (
     JoinStep,
     PivotStep,
     UnpivotStep,
+    DeriveColumnStep,
 )
 _SPECIAL_PYTHON_CHARTS = frozenset(
     {
@@ -146,6 +151,29 @@ class AnalysisPlanValidator:
                     repairable=False,
                 )
             )
+        if not context.capabilities.supports_plan_version(draft.plan_version):
+            issues.append(
+                _error(
+                    "plan_schema_not_supported",
+                    PlanValidationLayer.STRUCTURAL,
+                    f"Plan Schema '{draft.plan_version}' is not supported.",
+                    path="plan_version",
+                    repairable=False,
+                )
+            )
+        if (
+            draft.capability_profile != context.capabilities.capability_profile
+            or draft.capability_version != context.capabilities.profile_version
+        ):
+            issues.append(
+                _error(
+                    "capability_profile_mismatch",
+                    PlanValidationLayer.STRUCTURAL,
+                    "Plan capability identity does not match the active runtime.",
+                    path="capability_profile",
+                    repairable=False,
+                )
+            )
         step_ids = {step.step_id for step in draft.steps}
         for index, step in enumerate(draft.steps):
             for dependency in step.depends_on:
@@ -191,6 +219,16 @@ class AnalysisPlanValidator:
                         PlanValidationLayer.STRUCTURAL,
                         f"Executor '{step.executor.value}' is unavailable.",
                         path=f"steps.{index}.executor",
+                    )
+                )
+            if not capabilities.supports_operation(step.kind):
+                issues.append(
+                    _error(
+                        "capability_not_available",
+                        PlanValidationLayer.STRUCTURAL,
+                        f"Operation '{step.kind}' is not available in this phase.",
+                        path=f"steps.{index}.kind",
+                        repairable=False,
                     )
                 )
             if step.network_access:
@@ -352,13 +390,22 @@ class AnalysisPlanValidator:
         for index, step in enumerate(draft.steps):
             if isinstance(step, FilterRowsStep):
                 schema = _schema_map(schemas.get(step.input_alias, ()))
-                for predicate in step.predicates:
-                    if isinstance(predicate, NullPredicate):
-                        continue
-                    column = schema.get(predicate.column_key)
-                    if column is None:
-                        continue
-                    _validate_predicate(column, predicate, index, issues)
+                result, problems = validate_expression(
+                    step.predicate,
+                    schema=schema,
+                    path=f"steps.{index}.predicate",
+                )
+                _append_expression_problems(problems, issues)
+                if result.data_type != PlanDataType.BOOLEAN:
+                    issues.append(
+                        _type_error(
+                            "filter_predicate_not_boolean",
+                            "A filter predicate must produce a boolean value.",
+                            index,
+                        )
+                    )
+            elif isinstance(step, GenerateDatasetStep):
+                _validate_generation_step(step, index, issues)
             elif isinstance(step, FillMissingStep):
                 schema = _schema_map(schemas.get(step.input_alias, ()))
                 for rule in step.rules:
@@ -438,23 +485,43 @@ class AnalysisPlanValidator:
                             )
                         )
             elif isinstance(step, DeriveColumnStep):
-                if (
-                    step.expression_language == "python"
-                    and step.executor != PlanExecutor.PYTHON
-                ) or (
-                    step.expression_language != "python"
-                    and step.executor == PlanExecutor.PYTHON
-                ):
+                schema = _schema_map(schemas.get(step.input_alias, ()))
+                result, problems = validate_expression(
+                    step.expression,
+                    schema=schema,
+                    path=f"steps.{index}.expression",
+                )
+                _append_expression_problems(problems, issues)
+                if not expression_output_matches(result, step.output_column):
                     issues.append(
                         _type_error(
-                            "derive_executor_mismatch",
-                            "Derived-column language does not match its executor.",
+                            "derive_output_type_mismatch",
+                            "Derived expression type or unit does not match its output column.",
                             index,
                         )
                     )
             elif isinstance(step, PivotStep):
                 schema = _schema_map(schemas.get(step.input_alias, ()))
+                pivot_column = schema.get(step.pivot_column)
                 value_column = schema.get(step.value_column)
+                if (
+                    pivot_column is not None
+                    and step.category_policy.mode == "explicit"
+                    and any(
+                        not _literal_matches_type(
+                            category,
+                            pivot_column.data_type,
+                        )
+                        for category in step.category_policy.values
+                    )
+                ):
+                    issues.append(
+                        _type_error(
+                            "pivot_category_type_mismatch",
+                            "Explicit pivot categories must match the pivot column type.",
+                            index,
+                        )
+                    )
                 if (
                     step.aggregation != "count"
                     and value_column is not None
@@ -544,7 +611,6 @@ class AnalysisPlanValidator:
         context: PlanningContext,
         issues: list[PlanValidationIssue],
     ) -> None:
-        available_packages = set(context.capabilities.supported_python_packages)
         for index, step in enumerate(draft.steps):
             if isinstance(step, _NATIVE_ONLY_STEPS) and (
                 step.executor != PlanExecutor.NATIVE
@@ -588,36 +654,6 @@ class AnalysisPlanValidator:
                             path=f"steps.{index}.executor",
                         )
                     )
-            required_packages: set[str] = set()
-            if step.executor == PlanExecutor.PYTHON:
-                if isinstance(step, TrainModelStep):
-                    required_packages.add("scikit-learn")
-                elif isinstance(step, StatisticalTestStep):
-                    required_packages.add("scipy")
-                elif isinstance(step, VisualizationStep):
-                    required_packages.add("matplotlib")
-                    if step.chart_type in {
-                        "knn_decision_boundary",
-                        "cluster_plot",
-                        "confusion_matrix",
-                    }:
-                        required_packages.add("scikit-learn")
-                elif isinstance(step, DeriveColumnStep):
-                    required_packages.add("pandas")
-                elif isinstance(step, GenerateDatasetStep):
-                    required_packages.add("numpy")
-            missing_packages = required_packages.difference(available_packages)
-            if missing_packages:
-                issues.append(
-                    _error(
-                        "python_feature_unavailable",
-                        PlanValidationLayer.EXECUTION_POLICY,
-                        "Python executor is missing required approved packages: "
-                        + ", ".join(sorted(missing_packages)),
-                        path=f"steps.{index}.executor",
-                        repairable=False,
-                    )
-                )
         workbook_writes = tuple(
             intent
             for intent in draft.write_intents
@@ -708,6 +744,31 @@ class AnalysisPlanValidator:
                         PlanValidationLayer.EXECUTION_POLICY,
                         "A target overlapping source cells must be declared destructive.",
                         path=f"write_intents.{index}.destructive",
+                    )
+                )
+        for index, intent in enumerate(draft.write_intents):
+            if (
+                isinstance(intent, ArtifactWriteIntent)
+                and intent.artifact_kind in {"chart", "model"}
+            ):
+                issues.append(
+                    _error(
+                        "artifact_capability_not_available",
+                        PlanValidationLayer.EXECUTION_POLICY,
+                        f"Artifact type '{intent.artifact_kind}' is not available in this phase.",
+                        path=f"write_intents.{index}.artifact_kind",
+                        repairable=False,
+                    )
+                )
+        for index, artifact in enumerate(draft.expected_artifacts):
+            if artifact.kind in {"chart", "model"}:
+                issues.append(
+                    _error(
+                        "artifact_capability_not_available",
+                        PlanValidationLayer.EXECUTION_POLICY,
+                        f"Expected artifact type '{artifact.kind}' is not available in this phase.",
+                        path=f"expected_artifacts.{index}.kind",
+                        repairable=False,
                     )
                 )
 
@@ -1013,11 +1074,7 @@ def derive_approval_policy(
 
 def _step_column_references(step: PlanStep) -> dict[str, tuple[str, ...]]:
     if isinstance(step, FilterRowsStep):
-        return {
-            step.input_alias: tuple(
-                predicate.column_key for predicate in step.predicates
-            )
-        }
+        return {step.input_alias: expression_column_keys(step.predicate)}
     if isinstance(step, SortRowsStep):
         return {step.input_alias: tuple(key.column_key for key in step.keys)}
     if isinstance(step, SelectColumnsStep):
@@ -1027,9 +1084,24 @@ def _step_column_references(step: PlanStep) -> dict[str, tuple[str, ...]]:
             step.input_alias: tuple(item.source_key for item in step.renames)
         }
     if isinstance(step, FillMissingStep):
-        return {step.input_alias: tuple(rule.column_key for rule in step.rules)}
+        return {
+            step.input_alias: tuple(
+                dict.fromkeys(
+                    (
+                        *(rule.column_key for rule in step.rules),
+                        *step.group_by,
+                        *(key.column_key for key in step.order_by),
+                    )
+                )
+            )
+        }
     if isinstance(step, DeduplicateStep):
-        return {step.input_alias: step.key_columns}
+        return {
+            step.input_alias: (
+                *step.key_columns,
+                *(key.column_key for key in step.order_by),
+            )
+        }
     if isinstance(step, DeriveColumnStep):
         return {step.input_alias: step.referenced_columns}
     if isinstance(step, AggregateStep):
@@ -1177,6 +1249,99 @@ def _validate_expected_schema(
                     path=f"steps.{index}.expected_schema",
                 )
             )
+    elif isinstance(step, JoinStep):
+        left = schemas.get(step.left_alias, ())
+        right = schemas.get(step.right_alias, ())
+        expected = join_output_schema(step, left, right)
+        expected_keys = tuple(column.key for column in expected)
+        if any(len(key) > 120 for key in expected_keys):
+            issues.append(
+                _error(
+                    "join_output_column_too_long",
+                    PlanValidationLayer.REFERENTIAL,
+                    "Join suffixes produce an output column longer than 120 characters.",
+                    path=f"steps.{index}.expected_schema",
+                )
+            )
+        elif len(expected_keys) != len(set(expected_keys)):
+            issues.append(
+                _error(
+                    "join_output_column_collision",
+                    PlanValidationLayer.REFERENTIAL,
+                    "Join suffixes still collide with an existing output column.",
+                    path=f"steps.{index}.expected_schema",
+                )
+            )
+        elif step.expected_schema != expected:
+            issues.append(
+                _error(
+                    "join_schema_mismatch",
+                    PlanValidationLayer.REFERENTIAL,
+                    "Join output does not match its deterministic suffix policy.",
+                    path=f"steps.{index}.expected_schema",
+                )
+            )
+    elif isinstance(step, PivotStep):
+        source = _schema_map(schemas.get(step.input_alias, ()))
+        index_schema = tuple(
+            source[key] for key in step.index_columns if key in source
+        )
+        value_column = source.get(step.value_column)
+        result_columns = step.expected_schema[len(index_schema) :]
+        maximum_width = len(index_schema) + (
+            len(step.category_policy.values)
+            if step.category_policy.mode == "explicit"
+            else step.category_policy.maximum_categories
+        )
+        if step.expected_schema[: len(index_schema)] != index_schema:
+            issues.append(
+                _error(
+                    "pivot_index_schema_mismatch",
+                    PlanValidationLayer.REFERENTIAL,
+                    "Pivot output must begin with its declared index columns.",
+                    path=f"steps.{index}.expected_schema",
+                )
+            )
+        if not result_columns or len(step.expected_schema) > maximum_width:
+            issues.append(
+                _error(
+                    "pivot_output_width_mismatch",
+                    PlanValidationLayer.REFERENTIAL,
+                    "Pivot output width does not match its bounded category policy.",
+                    path=f"steps.{index}.expected_schema",
+                )
+            )
+        if (
+            step.category_policy.mode == "explicit"
+            and len(result_columns) != len(step.category_policy.values)
+        ):
+            issues.append(
+                _error(
+                    "pivot_explicit_category_schema_mismatch",
+                    PlanValidationLayer.REFERENTIAL,
+                    "Explicit pivot categories require one declared result column each.",
+                    path=f"steps.{index}.expected_schema",
+                )
+            )
+        if value_column is not None:
+            expected_type = (
+                PlanDataType.INTEGER
+                if step.aggregation == "count"
+                else value_column.data_type
+            )
+            expected_unit = None if step.aggregation == "count" else value_column.unit
+            if any(
+                column.data_type != expected_type or column.unit != expected_unit
+                for column in result_columns
+            ):
+                issues.append(
+                    _error(
+                        "pivot_result_type_mismatch",
+                        PlanValidationLayer.TYPE_AND_UNIT,
+                        "Pivot result columns have incompatible types or units.",
+                        path=f"steps.{index}.expected_schema",
+                    )
+                )
     elif isinstance(step, UnpivotStep):
         source = _schema_map(schemas.get(step.input_alias, ()))
         expected = (
@@ -1248,90 +1413,106 @@ def _maximum_output_rows(
     return known[0]
 
 
-def _validate_predicate(
-    column: PlanColumn,
-    predicate: object,
+def _append_expression_problems(
+    problems: Iterable[object],
+    issues: list[PlanValidationIssue],
+) -> None:
+    for problem in problems:
+        issues.append(
+            _error(
+                problem.code,
+                PlanValidationLayer.TYPE_AND_UNIT,
+                problem.message,
+                path=problem.path,
+            )
+        )
+
+
+def _validate_generation_step(
+    step: GenerateDatasetStep,
     index: int,
     issues: list[PlanValidationIssue],
 ) -> None:
-    expected_type = {
-        PredicateValueType.STRING: {PlanDataType.STRING},
-        PredicateValueType.NUMBER: _NUMERIC_TYPES,
-        PredicateValueType.BOOLEAN: {PlanDataType.BOOLEAN},
-        PredicateValueType.DATE: {PlanDataType.DATE, PlanDataType.PERIOD},
-        PredicateValueType.CURRENCY: {PlanDataType.CURRENCY},
-        PredicateValueType.PERCENTAGE: {PlanDataType.PERCENTAGE},
-    }[predicate.value_type]
-    if column.data_type not in expected_type:
-        issues.append(
-            _type_error(
-                "predicate_type_mismatch",
-                f"Predicate value type does not match column '{column.key}'.",
-                index,
+    schema = _schema_map(step.expected_schema)
+    generated_columns = {
+        column.column_key: column for column in step.generation.columns
+    }
+    for key, generated in generated_columns.items():
+        rule = generated.rule
+        column = schema[key]
+        if isinstance(rule, SequenceRule):
+            valid = column.data_type == PlanDataType.INTEGER
+        elif isinstance(rule, UniqueIdRule):
+            valid = column.data_type == PlanDataType.STRING
+        elif isinstance(rule, IntegerRangeRule):
+            valid = column.data_type == PlanDataType.INTEGER
+        elif isinstance(rule, DecimalRangeRule):
+            valid = column.data_type in _NUMERIC_TYPES
+        elif isinstance(rule, DateRangeRule):
+            valid = column.data_type in {PlanDataType.DATE, PlanDataType.PERIOD}
+        elif isinstance(rule, BooleanRule):
+            valid = column.data_type == PlanDataType.BOOLEAN
+        elif isinstance(rule, ConstantRule):
+            valid = _literal_matches_type(rule.value, column.data_type)
+        elif isinstance(rule, CategoricalRule):
+            valid = all(
+                _literal_matches_type(value, column.data_type)
+                for value in rule.values
             )
-        )
-    values = (
-        predicate.values
-        if isinstance(predicate, SetPredicate)
-        else (predicate.value,)
-    )
-    if any(
-        not _predicate_literal_matches(value, predicate.value_type)
-        for value in values
-    ):
-        issues.append(
-            _type_error(
-                "predicate_literal_type_mismatch",
-                "Predicate literal does not match its declared value type.",
-                index,
+        elif isinstance(rule, DependentFractionRule):
+            source = schema.get(rule.source_column_key)
+            valid = (
+                column.data_type in _NUMERIC_TYPES
+                and source is not None
+                and source.data_type in _NUMERIC_TYPES
+                and _compatible_types(column, source)
             )
-        )
-    if isinstance(predicate, SetPredicate):
-        pass
-    elif (
-        predicate.operator
-        in {
-            ComparisonOperator.GT,
-            ComparisonOperator.GTE,
-            ComparisonOperator.LT,
-            ComparisonOperator.LTE,
-        }
-        and column.data_type not in _ORDERABLE_TYPES
-    ):
-        issues.append(
-            _type_error(
-                "ordered_comparison_type_mismatch",
-                "Ordered comparisons require numeric, date, or period columns.",
-                index,
+        else:
+            valid = False
+        if not valid:
+            issues.append(
+                _type_error(
+                    "generation_rule_type_mismatch",
+                    f"Generation rule for '{key}' does not match its column type.",
+                    index,
+                )
             )
-        )
-    elif (
-        predicate.operator == ComparisonOperator.CONTAINS
-        and column.data_type != PlanDataType.STRING
-    ):
-        issues.append(
-            _type_error(
-                "contains_requires_string",
-                "Contains comparisons require a string column.",
-                index,
+        if generated.null_probability > 0 and not column.nullable:
+            issues.append(
+                _type_error(
+                    "generation_nullability_mismatch",
+                    f"Generation for non-nullable column '{key}' may emit nulls.",
+                    index,
+                )
             )
-        )
-    if column.unit and predicate.unit != column.unit:
-        issues.append(
-            _type_error(
-                "predicate_unit_mismatch",
-                f"Predicate unit must explicitly match '{column.unit}'.",
-                index,
-            )
-        )
-    if not column.unit and predicate.unit:
-        issues.append(
-            _type_error(
-                "unexpected_predicate_unit",
-                "Predicate supplies a unit for a unitless column.",
-                index,
-            )
-        )
+    for constraint in step.generation.constraints:
+        if isinstance(constraint, GenerationComparisonConstraint):
+            left = schema[constraint.left_column_key]
+            right = schema[constraint.right_column_key]
+            if not _compatible_types(left, right) or left.data_type not in {
+                *_NUMERIC_TYPES,
+                PlanDataType.DATE,
+                PlanDataType.PERIOD,
+            }:
+                issues.append(
+                    _type_error(
+                        "generation_constraint_type_mismatch",
+                        "Generation comparison columns have incompatible types or units.",
+                        index,
+                    )
+                )
+        elif isinstance(constraint, GenerationNotNullConstraint):
+            if any(
+                generated_columns[key].null_probability > 0
+                for key in constraint.column_keys
+            ):
+                issues.append(
+                    _type_error(
+                        "generation_not_null_conflict",
+                        "A not-null generation constraint conflicts with null_probability.",
+                        index,
+                    )
+                )
 
 
 def _compatible_types(left: PlanColumn, right: PlanColumn) -> bool:
@@ -1345,29 +1526,6 @@ def _compatible_types(left: PlanColumn, right: PlanColumn) -> bool:
             and right.data_type in _NUMERIC_TYPES
         )
     return type_compatible and left.unit == right.unit
-
-
-def _predicate_literal_matches(
-    value: object,
-    value_type: PredicateValueType,
-) -> bool:
-    if value_type in {
-        PredicateValueType.NUMBER,
-        PredicateValueType.CURRENCY,
-        PredicateValueType.PERCENTAGE,
-    }:
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if value_type == PredicateValueType.BOOLEAN:
-        return isinstance(value, bool)
-    if value_type == PredicateValueType.DATE:
-        if not isinstance(value, str):
-            return False
-        try:
-            date.fromisoformat(value[:10])
-        except ValueError:
-            return bool(_PERIOD_LITERAL_RE.fullmatch(value.strip()))
-        return True
-    return isinstance(value, str)
 
 
 def _literal_matches_type(value: object, data_type: PlanDataType) -> bool:
