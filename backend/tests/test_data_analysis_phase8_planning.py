@@ -15,7 +15,14 @@ from scripts.data_analysis_agent.analysis.models.requirements import (
 )
 from scripts.data_analysis_agent.runtime.models.datasets import DatasetSourceType
 from scripts.data_analysis_agent.runtime.models.events import AnalysisEventType
+from scripts.data_analysis_agent.runtime.models.expressions import (
+    ColumnExpression,
+    CompareExpression,
+    LiteralExpression,
+    SetExpression,
+)
 from scripts.data_analysis_agent.runtime.models.plans import (
+    AnalysisPlan,
     AnalysisPlanDraft,
     ApprovalPolicy,
     ApprovalReason,
@@ -501,9 +508,10 @@ class Phase8TypedPlanTests(unittest.TestCase):
             output_alias="labeled_rows",
             input_alias="input_1",
             output_column=output_column,
-            expression='"Amazon report"',
-            referenced_columns=(),
-            expression_language="native",
+            expression=LiteralExpression(
+                value="Amazon report",
+                data_type="string",
+            ),
             expected_schema=(*source.columns, output_column),
         )
 
@@ -642,13 +650,13 @@ class Phase8TypedPlanTests(unittest.TestCase):
                     executor=PlanExecutor.NATIVE,
                     output_alias="selected_periods",
                     input_alias="input_1",
-                    predicates=(
-                        SetPredicate(
-                            column_key="__period",
+                    predicate=SetExpression(
+                            expression=ColumnExpression(column_key="__period"),
                             operator="in",
-                            values=("2024", "2023"),
-                            value_type=PredicateValueType.STRING,
-                        ),
+                            values=(
+                                LiteralExpression(value="2024", data_type="period"),
+                                LiteralExpression(value="2023", data_type="period"),
+                            ),
                     ),
                     expected_schema=dataset.columns,
                 ),
@@ -656,10 +664,11 @@ class Phase8TypedPlanTests(unittest.TestCase):
         )
 
         draft = _service_draft(context, proposal)
-        predicate = draft.steps[0].predicates[0]
+        predicate = draft.steps[0].predicate
         report = AnalysisPlanValidator().validate(draft=draft, context=context)
 
-        self.assertEqual(predicate.value_type, PredicateValueType.DATE)
+        self.assertIsInstance(predicate, SetExpression)
+        self.assertEqual(predicate.values[0].data_type.value, "period")
         codes = {issue.code for issue in report.errors}
         self.assertNotIn("predicate_type_mismatch", codes)
         self.assertNotIn("predicate_literal_type_mismatch", codes)
@@ -671,7 +680,7 @@ class Phase8TypedPlanTests(unittest.TestCase):
         draft = _service_draft(context, proposal)
 
         self.assertEqual(
-            draft.steps[0].predicates[0].column_key,
+            draft.steps[0].predicate.left.column_key,
             "revenue",
         )
 
@@ -790,7 +799,6 @@ class Phase8PlanningServiceTests(unittest.IsolatedAsyncioTestCase):
         step = payload["steps"][0]
         step["estimate"]["rows_scanned"] = "100.0"
         step["estimate"]["output_rows"] = "unknown"
-        del step["predicates"][0]["kind"]
         target = payload["write_intents"][0]["target"]
         target["workbook_revision"] = str(target.pop("base_workbook_revision"))
         planner = TypedAnalysisPlanner(
@@ -803,7 +811,7 @@ class Phase8PlanningServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(proposal.steps[0].estimate.rows_scanned, 100)
         self.assertIsNone(proposal.steps[0].estimate.output_rows)
-        self.assertEqual(proposal.steps[0].predicates[0].kind, "comparison")
+        self.assertEqual(proposal.steps[0].predicate.kind, "compare")
         self.assertEqual(
             proposal.write_intents[0].target.base_workbook_revision,
             12,
@@ -1094,8 +1102,10 @@ class Phase8HumanApprovalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(approved.approval.status, PlanApprovalStatus.APPROVED)
         self.assertEqual(replay.approval.decision_id, command.decision_id)
-        self.assertEqual(run.status, AnalysisRunStatus.SUCCEEDED)
-        self.assertEqual(run.outcome, AnalysisRunOutcome.PLAN_READY)
+        self.assertEqual(run.status, AnalysisRunStatus.WAITING)
+        self.assertEqual(run.phase, AnalysisRunPhase.EXECUTION)
+        self.assertEqual(run.outcome, AnalysisRunOutcome.QUEUED_FOR_EXECUTION)
+        self.assertIsNone(run.completed_at)
         self.assertEqual(run.plan_approval_status, RunApprovalStatus.APPROVED)
         self.assertEqual(
             sum(
@@ -1240,6 +1250,166 @@ class Phase8HumanApprovalTests(unittest.IsolatedAsyncioTestCase):
 
 
 class Phase8WorkerIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_validated_plan_is_queued_without_completing_the_run(self) -> None:
+        database = _Database()
+        clock = _Clock()
+        store = MongoAnalysisRunStore(database)
+        state_machine = AnalysisRunStateMachine(
+            store,
+            clock=clock,
+            maximum_lease_seconds=300,
+        )
+        dataset = _dataset_handle()
+        run = (
+            await state_machine.create_run(run=_dataset_run(clock, dataset))
+        ).run
+        context = _context(run_id=run.run_id, mode=run.mode)
+        plan = build_analysis_plan(
+            draft=_service_draft(context, _proposal(with_write=False)),
+            user_id=run.user_id,
+            workspace_id=run.workspace_id,
+            revision=1,
+            approval_policy=ApprovalPolicy(
+                plan_approval_required=False,
+                final_patch_approval_required=False,
+                auto_execute_read_only=True,
+            ),
+            diagnostics=PlanDiagnostics(generation_attempt=1, repair_count=0),
+            model="test-planner",
+        )
+        planning_service = _WorkerPlanningService(
+            PlanningExecutionResult(
+                outcome=PlanningOutcome.PLAN_READY,
+                plan=plan,
+                reports=(PlanValidationReport(),),
+            )
+        )
+        phase7_result = _prepared_result().model_copy(
+            update={
+                "planning_artifacts": Phase7PlanningArtifacts.model_construct(
+                    requirements=_requirements(),
+                    dataset_profiles=object(),
+                    normalization=object(),
+                )
+            }
+        )
+        worker = DurableAnalysisWorker(
+            state_machine=state_machine,
+            dataset_catalog=_DatasetCatalog((dataset,)),
+            adapter=_ResultAdapter(phase7_result),
+            planning_service=planning_service,
+            config=AnalysisWorkerConfig(
+                concurrency=1,
+                poll_seconds=0.01,
+                lease_seconds=30,
+                renew_seconds=10,
+                recovery_batch_size=10,
+            ),
+            worker_id="worker-phase9-queue",
+        )
+
+        await worker._process_candidate(run)
+
+        current = await state_machine.require_run(
+            user_id=run.user_id,
+            run_id=run.run_id,
+        )
+        events = await store.list_events(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            limit=100,
+        )
+        self.assertEqual(current.status, AnalysisRunStatus.WAITING)
+        self.assertEqual(current.phase, AnalysisRunPhase.EXECUTION)
+        self.assertEqual(
+            current.outcome,
+            AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
+        )
+        self.assertIsNone(current.completed_at)
+        self.assertIsNone(current.worker_id)
+        self.assertEqual(events[-1].event_type, AnalysisEventType.EXECUTION_QUEUED)
+
+    async def test_worker_rejects_an_injected_legacy_plan_before_queueing(self) -> None:
+        database = _Database()
+        clock = _Clock()
+        store = MongoAnalysisRunStore(database)
+        state_machine = AnalysisRunStateMachine(
+            store,
+            clock=clock,
+            maximum_lease_seconds=300,
+        )
+        dataset = _dataset_handle()
+        run = (
+            await state_machine.create_run(run=_dataset_run(clock, dataset))
+        ).run
+        context = _context(run_id=run.run_id, mode=run.mode)
+        current = build_analysis_plan(
+            draft=_service_draft(context, _proposal(with_write=False)),
+            user_id=run.user_id,
+            workspace_id=run.workspace_id,
+            revision=1,
+            approval_policy=ApprovalPolicy(
+                plan_approval_required=False,
+                final_patch_approval_required=False,
+                auto_execute_read_only=True,
+            ),
+            diagnostics=PlanDiagnostics(generation_attempt=1, repair_count=0),
+            model="test-planner",
+        )
+        legacy_data = current.model_dump(mode="python")
+        legacy_data["plan_version"] = "1.0"
+        legacy_data["plan_hash"] = _HASH_A
+        legacy = AnalysisPlan.model_validate(legacy_data)
+        planning_service = _WorkerPlanningService(
+            PlanningExecutionResult(
+                outcome=PlanningOutcome.PLAN_READY,
+                plan=legacy,
+                reports=(PlanValidationReport(),),
+            )
+        )
+        phase7_result = _prepared_result().model_copy(
+            update={
+                "planning_artifacts": Phase7PlanningArtifacts.model_construct(
+                    requirements=_requirements(),
+                    dataset_profiles=object(),
+                    normalization=object(),
+                )
+            }
+        )
+        worker = DurableAnalysisWorker(
+            state_machine=state_machine,
+            dataset_catalog=_DatasetCatalog((dataset,)),
+            adapter=_ResultAdapter(phase7_result),
+            planning_service=planning_service,
+            config=AnalysisWorkerConfig(
+                concurrency=1,
+                poll_seconds=0.01,
+                lease_seconds=30,
+                renew_seconds=10,
+                recovery_batch_size=10,
+            ),
+            worker_id="worker-legacy-admission",
+        )
+
+        await worker._process_candidate(run)
+
+        persisted = await state_machine.require_run(
+            user_id=run.user_id,
+            run_id=run.run_id,
+        )
+        events = await store.list_events(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            limit=100,
+        )
+        self.assertEqual(persisted.status, AnalysisRunStatus.FAILED)
+        self.assertEqual(persisted.outcome, AnalysisRunOutcome.FAILED)
+        self.assertEqual(events[-1].event_type, AnalysisEventType.RUN_FAILED)
+        self.assertEqual(
+            events[-1].payload["code"],
+            "plan_execution_admission_rejected",
+        )
+
     async def test_phase7_preparation_flows_into_durable_approval_wait(self) -> None:
         database = _Database()
         clock = _Clock()
