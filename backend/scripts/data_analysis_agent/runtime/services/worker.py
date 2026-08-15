@@ -26,6 +26,8 @@ from ..models import (
     TokenUsage,
     TERMINAL_RUN_STATUSES,
 )
+from ..models.capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
+from ..models.plans import PLAN_VERSION
 from ..planning.contracts import (
     PlanningExecutionResult,
     PlanningOutcome,
@@ -1014,6 +1016,56 @@ class DurableAnalysisWorker:
             return
         plan = planning.plan
         assert plan is not None
+        if (
+            plan.plan_version != PLAN_VERSION
+            or plan.capability_profile != CAPABILITY_PROFILE
+            or plan.capability_version != CAPABILITY_PROFILE_VERSION
+        ):
+            error = RunIssueSummary(
+                code="plan_execution_admission_rejected",
+                message=(
+                    "The validated plan does not match the active execution "
+                    "schema and capability profile. Re-planning is required."
+                ),
+                retryable=False,
+            )
+            await self._state_machine.transition(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                target_status=AnalysisRunStatus.FAILED,
+                target_phase=AnalysisRunPhase.COMPLETED,
+                outcome=AnalysisRunOutcome.FAILED,
+                event_type=AnalysisEventType.RUN_FAILED,
+                payload={
+                    "code": error.code,
+                    "message": error.message,
+                    "retryable": error.retryable,
+                },
+                deduplication_key=(
+                    f"attempt-{lease_attempt}:plan-execution-admission-rejected"
+                ),
+                worker_id=self._worker_id,
+                lease_attempt=lease_attempt,
+                summary_updates={
+                    **base_summary,
+                    "errors_summary": (*base_summary["errors_summary"], error),
+                },
+            )
+            analysis_metrics.record_error(error.code)
+            analysis_metrics.record_run_outcome("failed")
+            log_analysis_event(
+                logger,
+                "run_failed",
+                level=logging.ERROR,
+                run_id=run.run_id,
+                workspace_id=run.workspace_id,
+                phase=AnalysisRunPhase.PLAN_VALIDATION.value,
+                operation="execution_admission",
+                duration_ms=planning_elapsed_ms,
+                error_code=error.code,
+                outcome="failed",
+            )
+            return
         approval_status = (
             RunApprovalStatus.PENDING
             if planning.outcome == PlanningOutcome.APPROVAL_REQUIRED
@@ -1030,6 +1082,9 @@ class DurableAnalysisWorker:
             "plan_id": plan.plan_id,
             "revision": plan.revision,
             "plan_hash": plan.plan_hash,
+            "plan_version": plan.plan_version,
+            "capability_profile": plan.capability_profile,
+            "capability_version": plan.capability_version,
             "step_count": len(plan.steps),
             "approval_required": plan.approval_policy.plan_approval_required,
             "approval_reasons": [
@@ -1071,28 +1126,27 @@ class DurableAnalysisWorker:
         await self._state_machine.transition(
             user_id=run.user_id,
             run_id=run.run_id,
-            target_status=AnalysisRunStatus.SUCCEEDED,
-            target_phase=AnalysisRunPhase.COMPLETED,
-            outcome=AnalysisRunOutcome.PLAN_READY,
-            event_type=AnalysisEventType.PLAN_READY,
+            target_status=AnalysisRunStatus.WAITING,
+            target_phase=AnalysisRunPhase.EXECUTION,
+            outcome=AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
+            event_type=AnalysisEventType.EXECUTION_QUEUED,
             payload=payload,
-            deduplication_key=f"attempt-{lease_attempt}:plan-ready",
+            deduplication_key=f"attempt-{lease_attempt}:execution-queued",
             worker_id=self._worker_id,
             lease_attempt=lease_attempt,
             summary_updates=plan_summary,
         )
-        analysis_metrics.record_run_outcome("plan_ready")
         log_analysis_event(
             logger,
-            "run_completed",
+            "execution_queued",
             run_id=run.run_id,
             workspace_id=run.workspace_id,
-            phase=AnalysisRunPhase.COMPLETED.value,
+            phase=AnalysisRunPhase.EXECUTION.value,
             operation="planning",
             plan_step_count=len(plan.steps),
             duration_ms=planning_elapsed_ms,
-            outcome="plan_ready",
-            status=AnalysisRunStatus.SUCCEEDED.value,
+            outcome=AnalysisRunOutcome.QUEUED_FOR_EXECUTION.value,
+            status=AnalysisRunStatus.WAITING.value,
         )
 
     async def _finish_failed(

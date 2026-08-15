@@ -11,6 +11,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 from db.mongodb import get_db
 
 from ..models.events import AnalysisEventType, AnalysisRunEvent
+from ..models.capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
 from ..models.plans import (
     AnalysisPlan,
     AnalysisPlanStatus,
@@ -18,6 +19,7 @@ from ..models.plans import (
     PlanApprovalRecord,
     PlanApprovalStatus,
     PlanRejectionReason,
+    PLAN_VERSION,
 )
 from ..models.runs import (
     AnalysisRun,
@@ -391,9 +393,19 @@ class MongoAnalysisPlanRepository:
         )
         target_run_approval = RunApprovalStatus(status.value)
         target_outcome = (
-            AnalysisRunOutcome.PLAN_READY
+            AnalysisRunOutcome.QUEUED_FOR_EXECUTION
             if status == PlanApprovalStatus.APPROVED
             else AnalysisRunOutcome.REJECTED
+        )
+        target_run_status = (
+            AnalysisRunStatus.WAITING
+            if status == PlanApprovalStatus.APPROVED
+            else AnalysisRunStatus.SUCCEEDED
+        )
+        target_run_phase = (
+            AnalysisRunPhase.EXECUTION
+            if status == PlanApprovalStatus.APPROVED
+            else AnalysisRunPhase.COMPLETED
         )
         event_type = (
             AnalysisEventType.PLAN_APPROVED
@@ -406,6 +418,7 @@ class MongoAnalysisPlanRepository:
             "revision": expected_revision,
             "plan_hash": expected_plan_hash,
             "decision_id": decision_id,
+            "queued_for_execution": status == PlanApprovalStatus.APPROVED,
             "rejection_reason": (
                 rejection_reason.value if rejection_reason is not None else None
             ),
@@ -479,6 +492,17 @@ class MongoAnalysisPlanRepository:
             plan = _plan(plan_document)
             run = _run(run_document)
             if (
+                status == PlanApprovalStatus.APPROVED
+                and (
+                    plan.plan_version != PLAN_VERSION
+                    or plan.capability_profile != CAPABILITY_PROFILE
+                    or plan.capability_version != CAPABILITY_PROFILE_VERSION
+                )
+            ):
+                raise AnalysisPlanConflictError(
+                    "plans outside the active execution contract cannot be approved"
+                )
+            if (
                 plan.revision != expected_revision
                 or plan.plan_hash != expected_plan_hash
                 or plan.input_signature != expected_input_signature
@@ -543,12 +567,16 @@ class MongoAnalysisPlanRepository:
             decided_run = AnalysisRun.model_validate(
                 run.model_copy(
                     update={
-                        "status": AnalysisRunStatus.SUCCEEDED,
-                        "phase": AnalysisRunPhase.COMPLETED,
+                        "status": target_run_status,
+                        "phase": target_run_phase,
                         "outcome": target_outcome,
                         "plan_approval_status": target_run_approval,
                         "updated_at": operation_time,
-                        "completed_at": operation_time,
+                        "completed_at": (
+                            None
+                            if status == PlanApprovalStatus.APPROVED
+                            else operation_time
+                        ),
                         "version": run.version + 1,
                         "last_event_sequence": run.last_event_sequence + 1,
                     }
@@ -823,7 +851,18 @@ def _is_same_plan_decision(
         and plan.input_signature == input_signature
         and plan.approval.status == status
         and plan.approval.decision_id == decision_id
-        and run.status == AnalysisRunStatus.SUCCEEDED
+        and run.status
+        == (
+            AnalysisRunStatus.WAITING
+            if status == PlanApprovalStatus.APPROVED
+            else AnalysisRunStatus.SUCCEEDED
+        )
+        and run.phase
+        == (
+            AnalysisRunPhase.EXECUTION
+            if status == PlanApprovalStatus.APPROVED
+            else AnalysisRunPhase.COMPLETED
+        )
         and run.outcome == outcome
         and run.current_plan_id == plan.plan_id
         and run.current_plan_hash == plan_hash
@@ -852,7 +891,11 @@ def _reservation_is_live(
     }:
         return False
     return (
-        run_document.get("outcome") == AnalysisRunOutcome.PLAN_READY.value
+        run_document.get("outcome")
+        in {
+            AnalysisRunOutcome.PLAN_READY.value,
+            AnalysisRunOutcome.QUEUED_FOR_EXECUTION.value,
+        }
         and run_document.get("current_plan_id") == plan_document.get("plan_id")
         and run_document.get("current_plan_hash")
         == plan_document.get("plan_hash")

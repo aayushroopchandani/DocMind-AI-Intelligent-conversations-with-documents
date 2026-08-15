@@ -112,8 +112,6 @@ _TERMINAL_EVENT_TYPES = frozenset(
         AnalysisEventType.RUN_FAILED,
         AnalysisEventType.RUN_CANCELLED,
         AnalysisEventType.RUN_EXPIRED,
-        AnalysisEventType.PLAN_READY,
-        AnalysisEventType.PLAN_APPROVED,
         AnalysisEventType.PLAN_REJECTED,
     }
 )
@@ -662,15 +660,23 @@ class AnalysisRunStateMachine:
                     AnalysisEventType.PLAN_APPROVAL_REQUIRED
                 ),
             }.get(outcome)
+            execution_events = {
+                AnalysisEventType.EXECUTION_QUEUED,
+                AnalysisEventType.PLAN_APPROVED,
+            }
+            if (
+                outcome == AnalysisRunOutcome.QUEUED_FOR_EXECUTION
+                and event_type in execution_events
+            ):
+                expected_wait_event = event_type
             if expected_wait_event is None or event_type != expected_wait_event:
                 raise InvalidAnalysisRunTransition(
-                    "waiting runs must request clarification or plan approval"
+                    "waiting runs must request clarification, approval, or execution"
                 )
         elif target_status == AnalysisRunStatus.SUCCEEDED:
             if outcome not in {
                 AnalysisRunOutcome.DATASETS_PREPARED,
                 AnalysisRunOutcome.UNANSWERABLE,
-                AnalysisRunOutcome.PLAN_READY,
                 AnalysisRunOutcome.REJECTED,
                 AnalysisRunOutcome.COMPLETED,
             }:
@@ -683,10 +689,6 @@ class AnalysisRunStateMachine:
                 },
                 AnalysisRunOutcome.UNANSWERABLE: {
                     AnalysisEventType.RUN_COMPLETED,
-                },
-                AnalysisRunOutcome.PLAN_READY: {
-                    AnalysisEventType.PLAN_READY,
-                    AnalysisEventType.PLAN_APPROVED,
                 },
                 AnalysisRunOutcome.REJECTED: {
                     AnalysisEventType.PLAN_REJECTED,

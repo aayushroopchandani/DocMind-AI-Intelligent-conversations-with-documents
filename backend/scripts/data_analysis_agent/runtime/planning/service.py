@@ -13,6 +13,7 @@ from scripts.data_analysis_agent.analysis.models.requirements import (
 
 from ..models.datasets import DatasetHandle
 from ..models.events import AnalysisEventType
+from ..models.capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
 from ..models.plans import (
     AnalysisPlan,
     AnalysisPlanDraft,
@@ -23,6 +24,7 @@ from ..models.plans import (
     PlanApprovalStatus,
     PlanDiagnostics,
     PlanProposal,
+    PLAN_VERSION,
 )
 from ..models.runs import (
     AnalysisRun,
@@ -119,6 +121,12 @@ class AnalysisPlanningService:
         )
         if (
             existing is not None
+            and existing.plan_version == PLAN_VERSION
+            and context.capabilities.supports_plan_version(existing.plan_version)
+            and existing.capability_profile
+            == context.capabilities.capability_profile
+            and existing.capability_version
+            == context.capabilities.profile_version
             and existing.input_signature == context.input_signature
             and existing.status
             in {
@@ -434,6 +442,10 @@ class AnalysisPlanningService:
         )
         if plan is None:
             raise AnalysisPlanNotFoundError("analysis plan not found")
+        if plan.plan_version != PLAN_VERSION:
+            raise AnalysisPlanConflictError(
+                "legacy plans cannot produce executable patch proposals"
+            )
         if (
             plan.workspace_id != proposal.workspace_id
             or plan.plan_hash != proposal.plan_hash
@@ -575,6 +587,14 @@ def _clarification(
     token_usage_by_stage: dict[str, StageTokenUsage],
 ) -> PlanningExecutionResult:
     report = reports[-1]
+    capability_issue = next(
+        (
+            issue
+            for issue in report.errors
+            if issue.code in {"capability_not_available", "executor_unavailable"}
+        ),
+        None,
+    )
     user_issue = next(
         (
             issue
@@ -589,6 +609,12 @@ def _clarification(
         report.errors[0] if report.errors else None,
     )
     question = (
+        f"I could not produce an executable plan: {capability_issue.message} "
+        "Python, charts, and machine learning are not enabled in the current "
+        "native spreadsheet phase. Please request a supported table operation "
+        "or continue after the later sandboxed execution phase is implemented."
+        if capability_issue is not None
+        else
         f"I could not produce a safe plan: {user_issue.message} "
         "Please clarify the intended columns, output, or workbook target."
         if user_issue is not None
@@ -685,6 +711,18 @@ def _validate_plan_decision(
     plan: AnalysisPlan,
     command: PlanApprovalCommand,
 ) -> None:
+    if command.decision == "approve":
+        if plan.plan_version != PLAN_VERSION:
+            raise AnalysisPlanConflictError(
+                "legacy plans are history-only and must be replanned before execution"
+            )
+        if (
+            plan.capability_profile != CAPABILITY_PROFILE
+            or plan.capability_version != CAPABILITY_PROFILE_VERSION
+        ):
+            raise AnalysisPlanConflictError(
+                "the plan capability profile is no longer active; re-planning is required"
+            )
     if (
         plan.revision != command.expected_revision
         or plan.plan_hash != command.expected_plan_hash

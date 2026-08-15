@@ -70,6 +70,7 @@ class AnalysisEventType(str, Enum):
     PLAN_APPROVAL_REQUIRED = "plan_approval_required"
     PLAN_APPROVED = "plan_approved"
     PLAN_REJECTED = "plan_rejected"
+    EXECUTION_QUEUED = "execution_queued"
     PATCH_APPROVAL_REQUIRED = "patch_approval_required"
     PATCH_APPROVED = "patch_approved"
     PATCH_REJECTED = "patch_rejected"

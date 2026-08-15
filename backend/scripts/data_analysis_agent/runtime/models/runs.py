@@ -56,6 +56,7 @@ class AnalysisRunOutcome(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
     UNANSWERABLE = "unanswerable"
     PLAN_READY = "plan_ready"
+    QUEUED_FOR_EXECUTION = "queued_for_execution"
     REJECTED = "rejected"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -416,8 +417,11 @@ class AnalysisRun(BaseModel):
             if self.outcome not in {
                 AnalysisRunOutcome.CLARIFICATION_REQUIRED,
                 AnalysisRunOutcome.PLAN_READY,
+                AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
             }:
-                raise ValueError("waiting runs need clarification or approval")
+                raise ValueError(
+                    "waiting runs need clarification, approval, or execution admission"
+                )
             if (
                 self.outcome == AnalysisRunOutcome.PLAN_READY
                 and (
@@ -426,6 +430,18 @@ class AnalysisRun(BaseModel):
                 )
             ):
                 raise ValueError("approval waits require a pending plan")
+            if (
+                self.outcome == AnalysisRunOutcome.QUEUED_FOR_EXECUTION
+                and (
+                    self.phase != AnalysisRunPhase.EXECUTION
+                    or self.plan_approval_status
+                    not in {
+                        RunApprovalStatus.NOT_REQUIRED,
+                        RunApprovalStatus.APPROVED,
+                    }
+                )
+            ):
+                raise ValueError("queued execution requires a usable plan")
         elif (
             not terminal
             and self.status != AnalysisRunStatus.PAUSED
@@ -446,7 +462,10 @@ class AnalysisRun(BaseModel):
             value is not None for value in plan_values
         ):
             raise ValueError("current plan identity and approval must be complete")
-        if self.outcome == AnalysisRunOutcome.PLAN_READY:
+        if self.outcome in {
+            AnalysisRunOutcome.PLAN_READY,
+            AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
+        }:
             if self.plan_approval_status not in {
                 RunApprovalStatus.NOT_REQUIRED,
                 RunApprovalStatus.PENDING,
