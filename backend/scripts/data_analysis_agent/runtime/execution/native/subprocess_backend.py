@@ -1,0 +1,152 @@
+"""Bounded child-process backend (Phase 9.4.4).
+
+Why a process and not a thread: a thread cannot be killed. A wall-clock timeout,
+a runaway join or a cancelled run all need the work to actually stop, and only a
+separate process gives that. It also makes credential isolation structural — the
+child starts from a scrubbed environment, so there is no connection string or
+API key in scope for it to reach.
+
+Polars is trusted application code, so this is isolation, not a sandbox for
+untrusted input. Arbitrary Python remains out of scope for Phase 9.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+from ..contracts import (
+    ExecutionFailureCode,
+    NativeExecutionResult,
+    NativeRecipe,
+)
+from . import semantics
+from .engine import engine_version
+
+
+_WORKER_MODULE = "scripts.data_analysis_agent.runtime.execution.native.worker_main"
+
+# Everything the interpreter genuinely needs to start. Anything carrying a
+# secret — MONGODB_URI, CLOUDINARY_*, OPENAI_API_KEY, QDRANT_* — is absent by
+# construction because this is an allowlist, not a denylist.
+_ENV_ALLOWLIST = (
+    "PATH",
+    "PYTHONPATH",
+    "PYTHONHASHSEED",
+    "PYTHONIOENCODING",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "SYSTEMROOT",
+)
+
+
+def scrubbed_environment(*, project_root: Path) -> dict[str, str]:
+    """Return the minimal environment handed to the child process."""
+
+    environment = {
+        name: os.environ[name] for name in _ENV_ALLOWLIST if name in os.environ
+    }
+    existing = environment.get("PYTHONPATH", "")
+    root = str(project_root)
+    environment["PYTHONPATH"] = (
+        root if not existing else os.pathsep.join((root, existing))
+    )
+    # Deterministic hashing keeps any incidental set/dict ordering stable
+    # between the parent and a replay.
+    environment["PYTHONHASHSEED"] = "0"
+    return environment
+
+
+class SubprocessNativeBackend:
+    """Runs the engine in a killable child process with a scrubbed environment."""
+
+    isolation = "bounded_subprocess"
+
+    def __init__(
+        self,
+        *,
+        project_root: Path | None = None,
+        python_executable: str | None = None,
+    ) -> None:
+        # backend.py -> native -> execution -> runtime -> data_analysis_agent
+        # -> scripts -> backend
+        self._project_root = project_root or Path(__file__).resolve().parents[5]
+        self._python = python_executable or sys.executable
+
+    async def execute(
+        self,
+        recipe: NativeRecipe,
+        *,
+        output_path: Path,
+    ) -> NativeExecutionResult:
+        staging = output_path.parent
+        job_path = staging / "job.json"
+        manifest_path = staging / "result.json"
+        job_path.write_text(recipe.model_dump_json(), encoding="utf-8")
+
+        process = await asyncio.create_subprocess_exec(
+            self._python,
+            "-m",
+            _WORKER_MODULE,
+            str(job_path),
+            str(manifest_path),
+            cwd=str(self._project_root),
+            env=scrubbed_environment(project_root=self._project_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=recipe.limits.wall_clock_seconds,
+            )
+        except asyncio.TimeoutError:
+            await self._terminate(process)
+            return self._failure(
+                ExecutionFailureCode.TIMEOUT,
+                "native execution exceeded "
+                f"{recipe.limits.wall_clock_seconds:.1f}s and was terminated",
+            )
+        except asyncio.CancelledError:
+            await self._terminate(process)
+            raise
+
+        if not manifest_path.exists():
+            detail = stderr.decode("utf-8", "replace").strip().splitlines()
+            return self._failure(
+                ExecutionFailureCode.ENGINE_CRASHED,
+                "native worker exited without a manifest "
+                f"(code {process.returncode}): {detail[-1] if detail else 'no output'}",
+            )
+        return NativeExecutionResult.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
+
+    @staticmethod
+    async def _terminate(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        process.kill()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except asyncio.TimeoutError:  # pragma: no cover - OS refused the kill
+            pass
+
+    @staticmethod
+    def _failure(
+        code: ExecutionFailureCode,
+        message: str,
+    ) -> NativeExecutionResult:
+        return NativeExecutionResult(
+            succeeded=False,
+            engine_version=engine_version(),
+            semantics_version=semantics.NATIVE_SEMANTICS_VERSION,
+            failure_code=code,
+            failure_message=message[:1_000],
+        )
+
+
+__all__ = ["SubprocessNativeBackend", "scrubbed_environment"]
