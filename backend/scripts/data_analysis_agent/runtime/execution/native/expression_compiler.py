@@ -242,7 +242,7 @@ def _safe_divide(
     if policy == "error":
         # There is no way to raise from inside a Polars expression, so the
         # divisor is checked as a stage precondition instead. See
-        # `operation_compiler.zero_division_guards`.
+        # `operations.columns` and the engine's guard batch.
         return quotient
     raise ExpressionCompilationError(
         "safe_divide requires an explicit zero_division policy"

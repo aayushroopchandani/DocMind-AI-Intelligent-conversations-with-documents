@@ -6,23 +6,26 @@ manifest. It imports nothing from repositories, storage or the web layer, which
 is what makes the "the child cannot access application credentials" guarantee
 structural rather than a matter of discipline.
 
-Stage fusion (9.4.3): a linear chain of steps stays inside one `LazyFrame`, so
-Polars performs its own projection and predicate pushdown and only one
-materialization happens per branch point. Per-step row metrics are still
-reported, because the user sees logical steps even when several ran as one
-query.
+Stage fusion (9.4.3): steps stay lazy and are evaluated in batches. Every
+derived quantity in a batch — per-step row counts, semantic guard counters and
+the frame that ends it — is collected through one `collect_all`, so Polars
+applies common-subplan elimination across all of them instead of re-running the
+shared prefix once per step.
+
+A batch ends at a barrier operation (pivot, whose engine API is eager) or at the
+final result. Everything between barriers fuses.
 """
 
 from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import polars as pl
 
-from ...models.plans import PlanColumn, PlanStep, step_input_aliases
+from ...models.plans import JoinStep, PlanColumn, PlanStep, step_input_aliases
 from ..contracts import (
     ExecutionFailureCode,
     NativeExecutionResult,
@@ -31,13 +34,11 @@ from ..contracts import (
 )
 from . import semantics
 from .expression_compiler import ExpressionCompilationError
-from .operation_compiler import (
+from .operations import (
     NativeExecutionSemanticError,
     UnsupportedOperationError,
-    aggregate_null_guards,
-    compile_step,
-    null_predicate_guard,
-    zero_division_guards,
+    check_expansion,
+    lookup,
 )
 from .schema import NativeSchemaError, assert_frame_matches
 
@@ -61,8 +62,7 @@ def execute_recipe(recipe: NativeRecipe, *, output_path: Path) -> NativeExecutio
 
     started = time.perf_counter()
     try:
-        frames, metrics = _run_stages(recipe)
-        result = frames[recipe.result_alias]
+        result, metrics = _run_stages(recipe)
         columns = _result_columns(recipe)
         assert_frame_matches(result, columns)
         _enforce_limits(recipe, result)
@@ -88,16 +88,23 @@ def execute_recipe(recipe: NativeRecipe, *, output_path: Path) -> NativeExecutio
         )
     except _Failure as failure:
         return _failed(failure.code, failure.message, started)
-    except (UnsupportedOperationError,) as error:
+    except UnsupportedOperationError as error:
         return _failed(ExecutionFailureCode.UNSUPPORTED_OPERATION, str(error), started)
-    except (ExpressionCompilationError,) as error:
+    except ExpressionCompilationError as error:
         return _failed(ExecutionFailureCode.COMPILATION_FAILED, str(error), started)
-    except (NativeSchemaError,) as error:
+    except NativeSchemaError as error:
         return _failed(ExecutionFailureCode.SCHEMA_MISMATCH, str(error), started)
-    except (NativeExecutionSemanticError,) as error:
+    except NativeExecutionSemanticError as error:
         return _failed(ExecutionFailureCode.SEMANTIC_VIOLATION, str(error), started)
     except pl.exceptions.PolarsError as error:
-        return _failed(ExecutionFailureCode.ENGINE_CRASHED, str(error), started)
+        # A cardinality violation surfaces from `join(validate=...)` as a
+        # ComputeError; it is a semantic failure, not an engine crash.
+        code = (
+            ExecutionFailureCode.SEMANTIC_VIOLATION
+            if "validation" in str(error).casefold()
+            else ExecutionFailureCode.ENGINE_CRASHED
+        )
+        return _failed(code, str(error), started)
 
 
 def _failed(
@@ -116,125 +123,142 @@ def _failed(
     )
 
 
-def _run_stages(
-    recipe: NativeRecipe,
-) -> tuple[dict[str, pl.DataFrame], list[StepMetrics]]:
-    """Build the whole lazy graph, then evaluate it in one optimized pass.
+@dataclass(slots=True)
+class _Batch:
+    """Lazy plans awaiting one shared evaluation."""
 
-    Every derived quantity — per-step row counts, semantic guard counters and
-    the final table — is collected together through `collect_all`, so Polars
-    applies common-subplan elimination once across all of them. Collecting them
-    separately would re-run the shared prefix for each step and turn a fused
-    chain into quadratic work.
-    """
+    plans: list[pl.LazyFrame] = field(default_factory=list)
+    guards: list[tuple[str, int]] = field(default_factory=list)
+    counts: list[tuple[PlanStep, str, int, int]] = field(default_factory=list)
 
+    def add_guard(self, step_id: str, plan: pl.LazyFrame) -> None:
+        self.guards.append((step_id, len(self.plans)))
+        self.plans.append(plan)
+
+    def add_count(
+        self,
+        step: PlanStep,
+        source_alias: str,
+        width: int,
+        plan: pl.LazyFrame,
+    ) -> None:
+        self.counts.append((step, source_alias, width, len(self.plans)))
+        self.plans.append(plan)
+
+
+def _run_stages(recipe: NativeRecipe) -> tuple[pl.DataFrame, list[StepMetrics]]:
     lazy: dict[str, pl.LazyFrame] = {}
-    input_rows: dict[str, int] = {}
+    row_counts: dict[str, int] = {}
     for table in recipe.inputs:
         frame = pl.read_ipc(table.ipc_path)
         assert_frame_matches(frame, table.columns)
         lazy[table.alias] = frame.lazy()
-        input_rows[table.alias] = frame.height
+        row_counts[table.alias] = frame.height
 
-    plans: list[pl.LazyFrame] = []
-    guards: list[_Guard] = []
-    stages: list[_Stage] = []
+    metrics: list[StepMetrics] = []
+    batch = _Batch()
+
+    def flush(tail: pl.LazyFrame | None) -> pl.DataFrame | None:
+        """Evaluate the pending batch, plus one frame the caller needs now."""
+
+        plans = list(batch.plans)
+        if tail is not None:
+            plans.append(tail)
+        evaluated = pl.collect_all(plans) if plans else []
+        for step_id, index in batch.guards:
+            _raise_for_guard(step_id, evaluated[index])
+        for step, source_alias, width, index in batch.counts:
+            counted = evaluated[index]
+            rows = int(counted.item()) if counted.height else 0
+            _check_row_limit(recipe, rows)
+            inputs = row_counts.get(source_alias, 0)
+            if isinstance(step, JoinStep):
+                check_expansion(step, inputs, rows)
+            metrics.append(
+                StepMetrics(
+                    step_id=step.step_id,
+                    kind=step.kind,
+                    input_rows=inputs,
+                    output_rows=rows,
+                    output_columns=width,
+                )
+            )
+            row_counts[step.output_alias] = rows
+        batch.plans.clear()
+        batch.guards.clear()
+        batch.counts.clear()
+        return evaluated[-1] if tail is not None else None
 
     for step in recipe.steps:
-        inputs = step_input_aliases(step)
-        if len(inputs) != 1:
-            raise _Failure(
-                ExecutionFailureCode.UNSUPPORTED_OPERATION,
-                f"step '{step.step_id}' needs {len(inputs)} inputs; the capped "
-                "native engine executes single-input operations only",
-            )
-        alias = inputs[0]
-        if alias not in lazy:
+        operation = lookup(step.kind)
+        aliases = step_input_aliases(step)
+        missing = [alias for alias in aliases if alias not in lazy]
+        if missing:
             raise _Failure(
                 ExecutionFailureCode.INPUT_UNAVAILABLE,
-                f"step '{step.step_id}' reads unknown alias '{alias}'",
+                f"step '{step.step_id}' reads unknown alias '{missing[0]}'",
             )
-        source = lazy[alias]
-        available = frozenset(source.collect_schema().names())
-        for expression in _guard_expressions(step, available):
-            guards.append(_Guard(step.step_id, len(plans)))
-            plans.append(source.select(expression))
-        produced = compile_step(step, source, available_columns=available)
+        primary = aliases[0]
+
+        if operation.guards is not None:
+            available = frozenset(lazy[primary].collect_schema().names())
+            for expression in operation.guards(step, available):
+                batch.add_guard(step.step_id, lazy[primary].select(expression))
+
+        if operation.barrier:
+            # The operation needs real data, so the batch ends here.
+            source = flush(lazy[primary])
+            assert source is not None
+            produced = operation.apply(step, {primary: source})
+            lazy[step.output_alias] = produced.lazy()
+            _check_row_limit(recipe, produced.height)
+            metrics.append(
+                StepMetrics(
+                    step_id=step.step_id,
+                    kind=step.kind,
+                    input_rows=row_counts.get(primary, 0),
+                    output_rows=produced.height,
+                    output_columns=produced.width,
+                )
+            )
+            row_counts[step.output_alias] = produced.height
+            continue
+
+        produced = operation.apply(step, {alias: lazy[alias] for alias in aliases})
         lazy[step.output_alias] = produced
-        stages.append(
-            _Stage(
-                step=step,
-                source_alias=alias,
-                length_index=len(plans),
-                output_columns=len(produced.collect_schema().names()),
-            )
+        # A join's ratio is measured against its larger input, which is the one
+        # a bad key distribution multiplies.
+        source_alias = (
+            max(aliases, key=lambda alias: row_counts.get(alias, 0))
+            if isinstance(step, JoinStep)
+            else primary
         )
-        plans.append(produced.select(pl.len().alias("rows")))
-
-    result_index = len(plans)
-    plans.append(lazy[recipe.result_alias])
-    evaluated = pl.collect_all(plans)
-
-    for guard in guards:
-        _raise_for_guard(guard, evaluated[guard.index])
-
-    row_counts = dict(input_rows)
-    metrics: list[StepMetrics] = []
-    for stage in stages:
-        counted = evaluated[stage.length_index]
-        rows = int(counted.item()) if counted.height else 0
-        if rows > recipe.limits.max_output_rows:
-            raise _Failure(
-                ExecutionFailureCode.ROW_LIMIT_EXCEEDED,
-                f"a stage produced {rows} rows, above the configured limit",
-            )
-        metrics.append(
-            StepMetrics(
-                step_id=stage.step.step_id,
-                kind=stage.step.kind,
-                input_rows=row_counts.get(stage.source_alias, 0),
-                output_rows=rows,
-                output_columns=stage.output_columns,
-            )
+        batch.add_count(
+            step,
+            source_alias,
+            len(produced.collect_schema().names()),
+            produced.select(pl.len().alias("rows")),
         )
-        row_counts[stage.step.output_alias] = rows
 
-    return {recipe.result_alias: evaluated[result_index]}, metrics
-
-
-@dataclass(frozen=True, slots=True)
-class _Stage:
-    step: PlanStep
-    source_alias: str
-    length_index: int
-    output_columns: int
+    result = flush(lazy[recipe.result_alias])
+    assert result is not None
+    metrics.sort(key=lambda item: _step_order(recipe, item.step_id))
+    return result, metrics
 
 
-@dataclass(frozen=True, slots=True)
-class _Guard:
-    step_id: str
-    index: int
+def _step_order(recipe: NativeRecipe, step_id: str) -> int:
+    for index, step in enumerate(recipe.steps):
+        if step.step_id == step_id:
+            return index
+    return len(recipe.steps)  # pragma: no cover - metrics always match a step
 
 
-def _guard_expressions(
-    step: PlanStep,
-    available: frozenset[str],
-) -> tuple[pl.Expr, ...]:
-    """Return counters for policies an expression cannot raise from itself.
-
-    A Polars expression has no way to abort, so every "…='error'" policy in the
-    plan becomes a counter evaluated alongside the stage. A non-zero counter
-    fails the run before anything is published.
-    """
-
-    if step.kind == "filter_rows":
-        guard = null_predicate_guard(step, available)
-        return (guard,) if guard is not None else ()
-    if step.kind == "derive_column":
-        return zero_division_guards(step, available)
-    if step.kind == "aggregate":
-        return aggregate_null_guards(step)
-    return ()
+def _check_row_limit(recipe: NativeRecipe, rows: int) -> None:
+    if rows > recipe.limits.max_output_rows:
+        raise _Failure(
+            ExecutionFailureCode.ROW_LIMIT_EXCEEDED,
+            f"a stage produced {rows} rows, above the configured limit",
+        )
 
 
 _GUARD_MESSAGES = (
@@ -250,10 +274,14 @@ _GUARD_MESSAGES = (
         "aggregate_null_",
         "declared null_policy='error' and {count} aggregated values are null",
     ),
+    (
+        "duplicate_rows",
+        "declared keep='error' and {count} rows share a duplicate key",
+    ),
 )
 
 
-def _raise_for_guard(guard: _Guard, counted: pl.DataFrame) -> None:
+def _raise_for_guard(step_id: str, counted: pl.DataFrame) -> None:
     counts = counted.row(0, named=True) if counted.height else {}
     for name, count in counts.items():
         if not count:
@@ -262,12 +290,11 @@ def _raise_for_guard(guard: _Guard, counted: pl.DataFrame) -> None:
             if name.startswith(prefix):
                 raise _Failure(
                     ExecutionFailureCode.SEMANTIC_VIOLATION,
-                    f"step '{guard.step_id}' "
-                    + template.format(count=count),
+                    f"step '{step_id}' " + template.format(count=count),
                 )
         raise _Failure(  # pragma: no cover - a guard without a message is a bug
             ExecutionFailureCode.SEMANTIC_VIOLATION,
-            f"step '{guard.step_id}' violated declared policy '{name}'",
+            f"step '{step_id}' violated declared policy '{name}'",
         )
 
 

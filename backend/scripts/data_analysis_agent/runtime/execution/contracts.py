@@ -20,14 +20,29 @@ NATIVE_RECIPE_VERSION = "1.0"
 
 # The operations the Phase 9.4 engine can execute. Declared here, in a module
 # that does not import the engine, so admission and persistence can ask "is this
-# executable?" without pulling Polars into the request path.
+# executable?" without pulling Polars into the request path. A test asserts this
+# stays identical to the registry in `native/operations`.
+#
+# Two declared operations are absent on purpose:
+#   * `generate_dataset` produces rows from a seeded spec rather than
+#     transforming a table; it belongs with the Phase 9.6 generator.
+#   * `compose_response` produces prose, not a table. The result contract here
+#     is tabular — columns, row count, content hash — so composing a response
+#     belongs with Phase 9.9's result and preview artifacts.
+# Admission reports both honestly as `operation_not_executable`.
 NATIVE_SUPPORTED_OPERATIONS: frozenset[str] = frozenset(
     {
         "filter_rows",
-        "select_columns",
         "sort_rows",
-        "aggregate",
+        "deduplicate",
+        "select_columns",
+        "rename_columns",
         "derive_column",
+        "fill_missing",
+        "aggregate",
+        "pivot",
+        "unpivot",
+        "join",
     }
 )
 
@@ -58,6 +73,10 @@ class ExecutionLimits(BaseModel):
     max_output_cells: int = Field(default=10_000_000, ge=1)
     max_output_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
     wall_clock_seconds: float = Field(default=120.0, gt=0, le=3600)
+    # Applied to the child process as an address-space rlimit where the host
+    # supports it. A thread cannot be bounded this way, which is one of the
+    # reasons execution runs in a separate process.
+    max_memory_mb: int = Field(default=2048, ge=128, le=65536)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
