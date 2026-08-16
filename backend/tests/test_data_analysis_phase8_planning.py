@@ -26,8 +26,6 @@ from scripts.data_analysis_agent.runtime.models.plans import (
     AnalysisPlanDraft,
     ApprovalPolicy,
     ApprovalReason,
-    ComparisonOperator,
-    ComparisonPredicate,
     ComposeResponseStep,
     DeriveColumnStep,
     FilterRowsStep,
@@ -45,8 +43,6 @@ from scripts.data_analysis_agent.runtime.models.plans import (
     PlanInputDataset,
     PlanProposal,
     PlanStepEstimate,
-    PredicateValueType,
-    SetPredicate,
     StepProvenance,
     TrainModelStep,
     VisualizationStep,
@@ -73,6 +69,9 @@ from scripts.data_analysis_agent.runtime.planning.context import (
     PlanningColumnSummary,
     PlanningContext,
     PlanningDatasetSummary,
+)
+from scripts.data_analysis_agent.runtime.execution.admission import (
+    ExecutionAdmission,
 )
 from scripts.data_analysis_agent.runtime.planning.contracts import (
     ExecutorCapabilities,
@@ -184,10 +183,16 @@ def _requirements() -> AnalysisRequirements:
     )
 
 
+# A deployment where Phase 9.4's native engine is installed. Approval and
+# planning queue work here instead of completing the run at plan_ready.
+NATIVE_ENGINE_READY = ExecutorCapabilities(native_execution_ready=True)
+
+
 def _context(
     *,
     run_id: str | None = None,
     mode: AnalysisMode = AnalysisMode.EDIT,
+    capabilities: ExecutorCapabilities | None = None,
 ) -> PlanningContext:
     dataset = _input_dataset()
     return PlanningContext(
@@ -241,7 +246,7 @@ def _context(
                 snapshot_hash=_HASH_B,
             ),
         ),
-        capabilities=ExecutorCapabilities(),
+        capabilities=capabilities or ExecutorCapabilities(),
         resource_policy=PlanResourcePolicy(),
     )
 
@@ -265,12 +270,12 @@ def _proposal(
         ),
         input_alias="input_1",
         output_alias="filtered_revenue",
-        predicates=(
-            ComparisonPredicate(
-                column_key=column_key,
-                operator=ComparisonOperator.GT,
+        predicate=CompareExpression(
+            operator="greater_than",
+            left=ColumnExpression(column_key=column_key),
+            right=LiteralExpression(
                 value=50_000,
-                value_type=PredicateValueType.CURRENCY,
+                data_type="currency",
                 unit="USD",
             ),
         ),
@@ -1025,8 +1030,11 @@ class Phase8HumanApprovalTests(unittest.IsolatedAsyncioTestCase):
             self.run_store,
             clock=self.clock,
         )
-        self.plan_repository = MongoAnalysisPlanRepository(self.database)
-        self.context = _context()
+        self.plan_repository = MongoAnalysisPlanRepository(
+            self.database,
+            capabilities=NATIVE_ENGINE_READY,
+        )
+        self.context = _context(capabilities=NATIVE_ENGINE_READY)
         self.plan = _approval_plan(self.context)
         self.service = AnalysisPlanningService(
             repository=self.plan_repository,
@@ -1281,6 +1289,7 @@ class Phase8WorkerIntegrationTests(unittest.IsolatedAsyncioTestCase):
             PlanningExecutionResult(
                 outcome=PlanningOutcome.PLAN_READY,
                 plan=plan,
+                admission=ExecutionAdmission.QUEUE,
                 reports=(PlanValidationReport(),),
             )
         )
