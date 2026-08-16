@@ -45,6 +45,10 @@ class ExecutorCapabilities(BaseModel):
     # a deployment without the engine never parks runs in an undrained queue.
     # See runtime/execution/admission.py.
     native_execution_ready: bool = False
+    # The same staging gate for the workbook patch protocol. Executing an edit
+    # plan before a patch can be applied would produce a result with nowhere to
+    # go, so admission stops such plans at plan_ready until this is true.
+    workbook_patches_ready: bool = False
     supported_plan_schema_versions: tuple[str, ...] = ("2.0",)
     supported_patch_schema_versions: tuple[str, ...] = ("1.0",)
     supported_operations: tuple[str, ...] = NATIVE_SPREADSHEET_OPERATIONS
@@ -55,6 +59,8 @@ class ExecutorCapabilities(BaseModel):
     def validate_consistency(self) -> Self:
         if self.native_execution_ready and not self.native_execution:
             raise ValueError("native execution readiness requires native capability")
+        if self.workbook_patches_ready and not self.workbook_patches:
+            raise ValueError("patch readiness requires the workbook patch capability")
         if len(self.supported_operations) != len(set(self.supported_operations)):
             raise ValueError("supported operations must be unique")
         unsupported = set(self.supported_operations).difference(

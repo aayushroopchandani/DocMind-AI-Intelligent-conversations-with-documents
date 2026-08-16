@@ -30,7 +30,10 @@ from ..models.plans import (
     PLAN_CANONICALIZER_VERSION,
     PLAN_VERSION,
     AnalysisPlan,
+    PlanApprovalStatus,
+    WorkbookWriteIntent,
 )
+from .dag import unsupported_operations
 
 
 class ExecutionAdmission(str, Enum):
@@ -44,6 +47,17 @@ class ExecutionAdmission(str, Enum):
 
     REJECT = "reject"
     """The plan is history-only and must never reach an executor."""
+
+
+@dataclass(frozen=True, slots=True)
+class RunAdmissionState:
+    """The run facts admission needs, without importing the run service."""
+
+    user_id: str
+    workspace_id: str
+    current_plan_id: str | None
+    current_plan_hash: str | None
+    cancellation_requested: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,12 +123,89 @@ def evaluate_admission(
                 "not installed in this deployment."
             ),
         )
+    if _writes_workbook(plan) and not profile.workbook_patches_ready:
+        # Executing an edit plan would produce a result nothing can apply,
+        # because the patch protocol arrives later in Phase 9. Stopping at the
+        # plan is the honest outcome.
+        return AdmissionDecision(
+            ExecutionAdmission.PLAN_ONLY,
+            code="workbook_patches_not_installed",
+            message=(
+                "The plan proposes a workbook edit, and the patch protocol is "
+                "not installed in this deployment."
+            ),
+        )
+    unsupported = unsupported_operations(plan)
+    if unsupported:
+        return AdmissionDecision(
+            ExecutionAdmission.PLAN_ONLY,
+            code="operation_not_executable",
+            message=(
+                "The plan is valid, but the native engine cannot execute: "
+                + ", ".join(sorted(unsupported))
+            ),
+        )
     return AdmissionDecision(ExecutionAdmission.QUEUE)
+
+
+def check_execution_preconditions(
+    plan: AnalysisPlan,
+    run: RunAdmissionState,
+    *,
+    capabilities: ExecutorCapabilities | None = None,
+) -> AdmissionDecision:
+    """Re-check ownership, freshness and lifecycle immediately before running.
+
+    `evaluate_admission` decides what a plan is *allowed* to become at planning
+    time. This runs at the execution boundary, where the run may have moved on:
+    it may have been cancelled, paused, or superseded by a newer plan while it
+    sat in the queue. Phase 9.3.2 requires both.
+    """
+
+    if run.user_id != plan.user_id or run.workspace_id != plan.workspace_id:
+        return AdmissionDecision(
+            ExecutionAdmission.REJECT,
+            code="execution_tenant_mismatch",
+            message="The run and its plan belong to different tenants.",
+        )
+    if run.current_plan_id != plan.plan_id or run.current_plan_hash != plan.plan_hash:
+        return AdmissionDecision(
+            ExecutionAdmission.REJECT,
+            code="execution_plan_superseded",
+            message="A newer plan replaced the one queued for execution.",
+        )
+    if run.cancellation_requested:
+        return AdmissionDecision(
+            ExecutionAdmission.REJECT,
+            code="execution_cancelled",
+            message="The run was cancelled before execution started.",
+        )
+    if plan.approval.status is PlanApprovalStatus.REJECTED:
+        return AdmissionDecision(
+            ExecutionAdmission.REJECT,
+            code="execution_plan_rejected",
+            message="A rejected plan can never be executed.",
+        )
+    if plan.approval.status is PlanApprovalStatus.PENDING:
+        return AdmissionDecision(
+            ExecutionAdmission.REJECT,
+            code="execution_awaiting_approval",
+            message="The plan still needs approval before it can execute.",
+        )
+    return evaluate_admission(plan, capabilities)
+
+
+def _writes_workbook(plan: AnalysisPlan) -> bool:
+    return any(
+        isinstance(intent, WorkbookWriteIntent) for intent in plan.write_intents
+    )
 
 
 __all__ = [
     "AdmissionDecision",
     "ExecutionAdmission",
+    "RunAdmissionState",
+    "check_execution_preconditions",
     "evaluate_admission",
     "plan_contract_mismatch",
 ]
