@@ -13,6 +13,7 @@ from ..integration import (
     Phase7Progress,
     Phase7ProgressReporter,
 )
+from ..models.plans import AnalysisPlan
 from ..models import (
     AnalysisEventType,
     AnalysisRun,
@@ -26,7 +27,12 @@ from ..models import (
     TokenUsage,
     TERMINAL_RUN_STATUSES,
 )
-from ..execution.admission import ExecutionAdmission, plan_contract_mismatch
+from ..execution.admission import (
+    ExecutionAdmission,
+    RunAdmissionState,
+    plan_contract_mismatch,
+)
+from ..execution.service import NativeExecutionService
 from ..planning.contracts import (
     PlanningOutcome,
     PlanningProgress,
@@ -180,6 +186,7 @@ class DurableAnalysisWorker:
         dataset_catalog: DatasetCatalogRepository,
         adapter: Phase7AnalysisAdapter | None = None,
         planning_service: AnalysisPlanningService | None = None,
+        execution_service: NativeExecutionService | None = None,
         config: AnalysisWorkerConfig | None = None,
         worker_id: str | None = None,
     ) -> None:
@@ -187,6 +194,10 @@ class DurableAnalysisWorker:
         self._dataset_catalog = dataset_catalog
         self._adapter = adapter or Phase7AnalysisAdapter()
         self._planning_service = planning_service
+        # Absent when no native engine is installed. Admission already returns
+        # PLAN_ONLY in that deployment, so a queued run cannot reach execution
+        # without this being present.
+        self._execution_service = execution_service
         self._config = config or AnalysisWorkerConfig()
         self._worker_id = worker_id or f"analysis-worker-{uuid4()}"
         self._stop = asyncio.Event()
@@ -1153,6 +1164,12 @@ class DurableAnalysisWorker:
                 outcome=AnalysisRunOutcome.QUEUED_FOR_EXECUTION.value,
                 status=AnalysisRunStatus.WAITING.value,
             )
+            await self._execute_plan(
+                run=run,
+                plan=plan,
+                lease_attempt=lease_attempt,
+                summary=plan_summary,
+            )
             return
         # No native engine is installed, so the plan is the deliverable and the
         # run completes here exactly as it did in Phase 8. Flipping
@@ -1181,6 +1198,109 @@ class DurableAnalysisWorker:
             plan_step_count=len(plan.steps),
             duration_ms=planning_elapsed_ms,
             outcome=AnalysisRunOutcome.PLAN_READY.value,
+            status=AnalysisRunStatus.SUCCEEDED.value,
+        )
+
+    async def _execute_plan(
+        self,
+        *,
+        run: AnalysisRun,
+        plan: AnalysisPlan,
+        lease_attempt: int,
+        summary: dict[str, object],
+    ) -> None:
+        """Drain one queued plan through the native engine.
+
+        Phase 9.8 replaces this inline drain with durable stage scheduling. The
+        boundary is already correct: the run is durably marked queued before any
+        work starts, so a crash here leaves a record to resume from rather than
+        a silently lost run.
+        """
+
+        if self._execution_service is None:
+            return
+        started = monotonic()
+        await self._state_machine.transition(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            target_status=AnalysisRunStatus.ACTIVE,
+            target_phase=AnalysisRunPhase.EXECUTION,
+            outcome=None,
+            event_type=AnalysisEventType.EXECUTION_STARTED,
+            payload={"plan_id": plan.plan_id, "step_count": len(plan.steps)},
+            deduplication_key=f"attempt-{lease_attempt}:execution-started",
+            worker_id=self._worker_id,
+            lease_attempt=lease_attempt,
+        )
+        current = await self._state_machine.require_run(
+            user_id=run.user_id,
+            run_id=run.run_id,
+        )
+        outcome = await self._execution_service.execute(
+            plan=plan,
+            run=RunAdmissionState(
+                user_id=current.user_id,
+                workspace_id=current.workspace_id,
+                current_plan_id=current.current_plan_id,
+                current_plan_hash=current.current_plan_hash,
+                cancellation_requested=current.cancellation_requested,
+            ),
+        )
+        elapsed_ms = (monotonic() - started) * 1000
+
+        if not outcome.succeeded:
+            error = RunIssueSummary(
+                code=(
+                    outcome.failure_code.value
+                    if outcome.failure_code is not None
+                    else "native_execution_failed"
+                ),
+                message=(
+                    outcome.failure_message or "Native execution did not complete."
+                ),
+                retryable=False,
+            )
+            await self._finish_failed(
+                run=current,
+                lease_attempt=lease_attempt,
+                error=error,
+                errors=(error,),
+                elapsed_ms=elapsed_ms,
+            )
+            return
+
+        await self._state_machine.transition(
+            user_id=run.user_id,
+            run_id=run.run_id,
+            target_status=AnalysisRunStatus.SUCCEEDED,
+            target_phase=AnalysisRunPhase.COMPLETED,
+            outcome=AnalysisRunOutcome.COMPLETED,
+            event_type=AnalysisEventType.RUN_COMPLETED,
+            payload={
+                "plan_id": plan.plan_id,
+                "execution_key": outcome.execution_key,
+                "engine_version": outcome.engine_version,
+                "semantics_version": outcome.semantics_version,
+                "isolation": outcome.isolation,
+                "cache_hit": outcome.cache_hit,
+                "row_count": outcome.row_count,
+                "content_hash": outcome.content_hash,
+            },
+            deduplication_key=f"attempt-{lease_attempt}:execution-completed",
+            worker_id=self._worker_id,
+            lease_attempt=lease_attempt,
+            summary_updates=summary,
+        )
+        analysis_metrics.record_run_outcome(AnalysisRunOutcome.COMPLETED.value)
+        log_analysis_event(
+            logger,
+            "execution_completed",
+            run_id=run.run_id,
+            workspace_id=run.workspace_id,
+            phase=AnalysisRunPhase.COMPLETED.value,
+            operation="native_execution",
+            duration_ms=elapsed_ms,
+            outcome=AnalysisRunOutcome.COMPLETED.value,
             status=AnalysisRunStatus.SUCCEEDED.value,
         )
 

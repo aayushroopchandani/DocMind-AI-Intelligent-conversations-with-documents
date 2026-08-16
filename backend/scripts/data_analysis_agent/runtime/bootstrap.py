@@ -10,6 +10,9 @@ from .repositories import (
     MongoArtifactRepository,
     MongoAnalysisRunStore,
 )
+from .execution import ExecutionLimits, MongoNormalizedInputResolver
+from .execution.native.subprocess_backend import SubprocessNativeBackend
+from .execution.service import NativeExecutionService
 from .planning import (
     AnalysisPlanningService,
     ExecutorCapabilities,
@@ -218,10 +221,27 @@ def build_analysis_runtime(
             active_settings.analysis_input_initialization_timeout_seconds
         ),
     )
+    # Only built when the deployment declares a native engine. Admission
+    # returns PLAN_ONLY otherwise, so a run can never reach an absent executor.
+    execution_service = (
+        NativeExecutionService(
+            resolver=MongoNormalizedInputResolver(database),
+            backend=SubprocessNativeBackend(),
+            capabilities=capabilities,
+            limits=ExecutionLimits(
+                max_output_rows=active_settings.analysis_max_plan_rows_scanned,
+                max_output_cells=active_settings.analysis_max_plan_cells_written,
+                max_output_bytes=active_settings.analysis_max_artifact_bytes,
+            ),
+        )
+        if capabilities.native_execution_ready
+        else None
+    )
     worker = DurableAnalysisWorker(
         state_machine=state_machine,
         dataset_catalog=dataset_catalog,
         planning_service=planning_service,
+        execution_service=execution_service,
         config=AnalysisWorkerConfig(
             concurrency=active_settings.analysis_worker_concurrency,
             poll_seconds=active_settings.analysis_worker_poll_seconds,
