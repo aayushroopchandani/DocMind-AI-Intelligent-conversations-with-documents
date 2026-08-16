@@ -17,6 +17,7 @@ from pathlib import Path
 import polars as pl
 
 from scripts.data_analysis_agent.runtime.execution.contracts import (
+    NATIVE_SUPPORTED_OPERATIONS,
     ExecutionFailureCode,
     ExecutionLimits,
     NativeInputTable,
@@ -31,8 +32,8 @@ from scripts.data_analysis_agent.runtime.execution.native.expression_compiler im
     ExpressionCompilationError,
     compile_expression,
 )
-from scripts.data_analysis_agent.runtime.execution.native.operation_compiler import (
-    SUPPORTED_OPERATIONS,
+from scripts.data_analysis_agent.runtime.execution.native.operations import (
+    registered_kinds,
 )
 from scripts.data_analysis_agent.runtime.models.expressions import (
     BetweenExpression,
@@ -864,19 +865,14 @@ class ExpressionCompilerTests(unittest.TestCase):
 
 
 class OperationCapTests(unittest.TestCase):
-    def test_the_supported_set_is_exactly_the_five_capped_operations(self) -> None:
-        self.assertEqual(
-            SUPPORTED_OPERATIONS,
-            frozenset(
-                {
-                    "filter_rows",
-                    "select_columns",
-                    "sort_rows",
-                    "aggregate",
-                    "derive_column",
-                }
-            ),
-        )
+    def test_the_declared_cap_matches_what_is_actually_registered(self) -> None:
+        # Admission reads the frozen set; the engine reads the registry. If they
+        # drift, a plan is admitted for an operation nothing can run.
+        self.assertEqual(registered_kinds(), NATIVE_SUPPORTED_OPERATIONS)
+
+    def test_text_and_generation_stay_outside_the_engine(self) -> None:
+        self.assertNotIn("compose_response", NATIVE_SUPPORTED_OPERATIONS)
+        self.assertNotIn("generate_dataset", NATIVE_SUPPORTED_OPERATIONS)
 
 
 if __name__ == "__main__":  # pragma: no cover

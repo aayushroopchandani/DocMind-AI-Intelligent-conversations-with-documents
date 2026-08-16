@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.data_analysis_agent.analysis.models.preparation import (
     MaterializationType,
@@ -37,6 +38,7 @@ from scripts.data_analysis_agent.runtime.execution.dag import RecipeCompilationE
 from scripts.data_analysis_agent.runtime.execution.idempotency import (
     dataset_content_signature,
 )
+from scripts.data_analysis_agent.runtime.execution.native import subprocess_backend
 from scripts.data_analysis_agent.runtime.execution.native.subprocess_backend import (
     SubprocessNativeBackend,
     scrubbed_environment,
@@ -629,6 +631,38 @@ class SubprocessIsolationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(outcome.succeeded)
         self.assertEqual(outcome.failure_code, ExecutionFailureCode.TIMEOUT)
+
+    async def test_cancelling_mid_run_terminates_the_child(self) -> None:
+        plan = _plan()
+        service = NativeExecutionService(
+            resolver=_StubResolver(rows_per_dataset=5),
+            backend=SubprocessNativeBackend(project_root=Path.cwd()),
+            capabilities=ENGINE_READY,
+        )
+
+        async def already_cancelled() -> bool:
+            return True
+
+        # Poll immediately rather than after the default half second, so the
+        # test asserts the kill path instead of racing the child's startup.
+        self.enterContext(
+            patch.object(subprocess_backend, "CANCELLATION_POLL_SECONDS", 0.01)
+        )
+
+        outcome = await service.execute(
+            plan=plan.model_copy(
+                update={
+                    "input_datasets": (
+                        plan.input_datasets[0].model_copy(update={"row_count": 5}),
+                    )
+                }
+            ),
+            run=_run_state(plan),
+            cancelled=already_cancelled,
+        )
+
+        self.assertFalse(outcome.succeeded)
+        self.assertEqual(outcome.failure_code, ExecutionFailureCode.CANCELLED)
 
     async def test_a_real_child_process_executes_the_recipe(self) -> None:
         plan = _plan()
