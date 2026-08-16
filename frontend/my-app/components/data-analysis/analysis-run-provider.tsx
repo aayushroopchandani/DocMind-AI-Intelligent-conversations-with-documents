@@ -55,6 +55,19 @@ interface AnalysisRunsValue {
   refreshHistory: () => Promise<void>;
 }
 
+// Every event that changes the stored plan or its approval state. `plan_ready`
+// completes a run when no native engine is installed; `execution_queued` is the
+// same moment in a deployment that has one, so both must refresh the panel.
+const PLAN_REFRESH_EVENTS = new Set([
+  "plan_ready",
+  "execution_queued",
+  "plan_approval_required",
+  "plan_approved",
+  "plan_rejected",
+]);
+const RECONNECT_MIN_MS = 900;
+const RECONNECT_MAX_MS = 15_000;
+
 const AnalysisRunsContext = createContext<AnalysisRunsValue | null>(null);
 
 export function useAnalysisRuns(): AnalysisRunsValue {
@@ -111,6 +124,10 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
     streamAbortRef.current = controller;
     const generation = ++streamGenerationRef.current;
     let cursor = replayFrom;
+    // A run can sit in `waiting` indefinitely while it holds for plan approval
+    // or for the execution queue. Backing off keeps an idle run from
+    // reconnecting twice a second and holding an SSE slot open for nothing.
+    let reconnectDelay = RECONNECT_MIN_MS;
 
     const consume = async () => {
       while (!controller.signal.aborted && generation === streamGenerationRef.current) {
@@ -122,6 +139,7 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
             onEvent: (event) => {
               if (event.sequence <= cursor) return;
               cursor = event.sequence;
+              reconnectDelay = RECONNECT_MIN_MS;
               setEvents((current) => current.some((item) => item.sequence === event.sequence)
                 ? current
                 : [...current, event].sort((a, b) => a.sequence - b.sequence));
@@ -136,7 +154,7 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
                     pause_requested: event.event_type === "pause_requested" || current.pause_requested,
                   }
                 : current);
-              if (["plan_ready", "plan_approval_required", "plan_approved", "plan_rejected"].includes(event.event_type)) {
+              if (PLAN_REFRESH_EVENTS.has(event.event_type)) {
                 void loadPlan(event.run_id);
               }
               if (event.event_type === "run_paused" || event.status && TERMINAL_RUN_STATUSES.has(event.status)) {
@@ -151,7 +169,9 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
           if (controller.signal.aborted) return;
           console.warn("Analysis event stream reconnecting", error);
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        const delay = reconnectDelay;
+        reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
       }
     };
     void consume();

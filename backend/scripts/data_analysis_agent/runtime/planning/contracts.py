@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from ..execution.admission import ExecutionAdmission
 from ..models.capabilities import ExecutorCapabilities
 from ..models.plans import AnalysisPlan
 from ..models.events import AnalysisEventType
@@ -91,6 +92,11 @@ class PlanResourcePolicy(BaseModel):
     plan_approval_python_seconds: float = Field(default=15, ge=0)
     plan_approval_cost_usd: float = Field(default=0.10, ge=0)
     plan_approval_generated_rows: int = Field(default=25_000, ge=1)
+    # Phase 9.1.3 selective early approval. A workbook write wider than this,
+    # or a plan carrying more invented assumptions than this, is gated even
+    # when it is cheap and non-destructive.
+    plan_approval_cells_written: int = Field(default=10_000, ge=1)
+    plan_approval_assumptions: int = Field(default=2, ge=0)
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -102,6 +108,8 @@ class PlanResourcePolicy(BaseModel):
             raise ValueError("cost approval threshold cannot exceed its limit")
         if self.plan_approval_generated_rows > self.max_generated_rows:
             raise ValueError("generated-row approval threshold exceeds its limit")
+        if self.plan_approval_cells_written > self.max_cells_written:
+            raise ValueError("cell approval threshold cannot exceed its limit")
         return self
 
 
@@ -137,6 +145,10 @@ class NullPlanningProgressReporter:
 class PlanningExecutionResult(BaseModel):
     outcome: PlanningOutcome
     plan: AnalysisPlan | None = None
+    # What the runtime may do with `plan`, decided by the planning service
+    # because only it holds the active capability profile. See
+    # runtime/execution/admission.py.
+    admission: ExecutionAdmission = ExecutionAdmission.PLAN_ONLY
     reports: tuple[PlanValidationReport, ...] = Field(default=(), max_length=2)
     warnings: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)
     errors: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)

@@ -12,6 +12,7 @@ from .repositories import (
 )
 from .planning import (
     AnalysisPlanningService,
+    ExecutorCapabilities,
     PlanResourcePolicy,
     PlanningContextBuilder,
 )
@@ -81,11 +82,21 @@ def build_analysis_runtime(
         ),
     )
     dataset_catalog = MongoDatasetCatalogRepository()
-    plan_repository = MongoAnalysisPlanRepository(database)
+    # One profile for the whole process. Planning decides whether a plan may be
+    # queued and the repository decides the same for an approval, so they must
+    # read the identical capability document or the two paths would disagree.
+    # `native_execution_ready` stays false until the Phase 9.4 engine exists;
+    # flipping it there switches both paths from plan_ready to the queue.
+    capabilities = ExecutorCapabilities()
+    plan_repository = MongoAnalysisPlanRepository(
+        database,
+        capabilities=capabilities,
+    )
     planning_service = AnalysisPlanningService(
         repository=plan_repository,
         state_machine=state_machine,
         context_builder=PlanningContextBuilder(
+            capabilities=capabilities,
             resource_policy=PlanResourcePolicy(
                 max_context_bytes=(
                     active_settings.analysis_max_planning_context_bytes

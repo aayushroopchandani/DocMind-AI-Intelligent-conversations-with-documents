@@ -106,12 +106,16 @@ _TERMINAL_OUTCOME = {
     AnalysisRunStatus.EXPIRED: AnalysisRunOutcome.EXPIRED,
 }
 
+# PLAN_APPROVED is intentionally absent: it completes the run when no native
+# engine is installed, but keeps it waiting once approval feeds the execution
+# queue. PLAN_READY is only ever emitted by the completing branch.
 _TERMINAL_EVENT_TYPES = frozenset(
     {
         AnalysisEventType.RUN_COMPLETED,
         AnalysisEventType.RUN_FAILED,
         AnalysisEventType.RUN_CANCELLED,
         AnalysisEventType.RUN_EXPIRED,
+        AnalysisEventType.PLAN_READY,
         AnalysisEventType.PLAN_REJECTED,
     }
 )
@@ -677,6 +681,7 @@ class AnalysisRunStateMachine:
             if outcome not in {
                 AnalysisRunOutcome.DATASETS_PREPARED,
                 AnalysisRunOutcome.UNANSWERABLE,
+                AnalysisRunOutcome.PLAN_READY,
                 AnalysisRunOutcome.REJECTED,
                 AnalysisRunOutcome.COMPLETED,
             }:
@@ -689,6 +694,12 @@ class AnalysisRunStateMachine:
                 },
                 AnalysisRunOutcome.UNANSWERABLE: {
                     AnalysisEventType.RUN_COMPLETED,
+                },
+                # The plan is the deliverable while no native engine exists:
+                # planning emits PLAN_READY, approval emits PLAN_APPROVED.
+                AnalysisRunOutcome.PLAN_READY: {
+                    AnalysisEventType.PLAN_READY,
+                    AnalysisEventType.PLAN_APPROVED,
                 },
                 AnalysisRunOutcome.REJECTED: {
                     AnalysisEventType.PLAN_REJECTED,

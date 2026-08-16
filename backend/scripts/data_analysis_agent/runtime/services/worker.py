@@ -26,10 +26,8 @@ from ..models import (
     TokenUsage,
     TERMINAL_RUN_STATUSES,
 )
-from ..models.capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
-from ..models.plans import PLAN_VERSION
+from ..execution.admission import ExecutionAdmission, plan_contract_mismatch
 from ..planning.contracts import (
-    PlanningExecutionResult,
     PlanningOutcome,
     PlanningProgress,
     PlanningProgressReporter,
@@ -1016,16 +1014,19 @@ class DurableAnalysisWorker:
             return
         plan = planning.plan
         assert plan is not None
-        if (
-            plan.plan_version != PLAN_VERSION
-            or plan.capability_profile != CAPABILITY_PROFILE
-            or plan.capability_version != CAPABILITY_PROFILE_VERSION
-        ):
+        # Engine readiness comes from the planning service, which owns the
+        # capability profile. Contract validity is intrinsic to the plan, so the
+        # worker re-checks it here rather than trusting its caller.
+        admission = planning.admission
+        if plan_contract_mismatch(plan) is not None:
+            admission = ExecutionAdmission.REJECT
+        if admission is ExecutionAdmission.REJECT:
             error = RunIssueSummary(
                 code="plan_execution_admission_rejected",
                 message=(
                     "The validated plan does not match the active execution "
-                    "schema and capability profile. Re-planning is required."
+                    "schema, canonicalization rules, and capability profile. "
+                    "Re-planning is required."
                 ),
                 retryable=False,
             )
@@ -1123,30 +1124,64 @@ class DurableAnalysisWorker:
                 status=AnalysisRunStatus.WAITING.value,
             )
             return
+        if admission is ExecutionAdmission.QUEUE:
+            await self._state_machine.transition(
+                user_id=run.user_id,
+                run_id=run.run_id,
+                target_status=AnalysisRunStatus.WAITING,
+                target_phase=AnalysisRunPhase.EXECUTION,
+                outcome=AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
+                event_type=AnalysisEventType.EXECUTION_QUEUED,
+                payload=payload,
+                deduplication_key=f"attempt-{lease_attempt}:execution-queued",
+                worker_id=self._worker_id,
+                lease_attempt=lease_attempt,
+                summary_updates=plan_summary,
+            )
+            analysis_metrics.record_run_outcome(
+                AnalysisRunOutcome.QUEUED_FOR_EXECUTION.value
+            )
+            log_analysis_event(
+                logger,
+                "execution_queued",
+                run_id=run.run_id,
+                workspace_id=run.workspace_id,
+                phase=AnalysisRunPhase.EXECUTION.value,
+                operation="planning",
+                plan_step_count=len(plan.steps),
+                duration_ms=planning_elapsed_ms,
+                outcome=AnalysisRunOutcome.QUEUED_FOR_EXECUTION.value,
+                status=AnalysisRunStatus.WAITING.value,
+            )
+            return
+        # No native engine is installed, so the plan is the deliverable and the
+        # run completes here exactly as it did in Phase 8. Flipping
+        # `native_execution_ready` switches this to the queued path above.
         await self._state_machine.transition(
             user_id=run.user_id,
             run_id=run.run_id,
-            target_status=AnalysisRunStatus.WAITING,
-            target_phase=AnalysisRunPhase.EXECUTION,
-            outcome=AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
-            event_type=AnalysisEventType.EXECUTION_QUEUED,
-            payload=payload,
-            deduplication_key=f"attempt-{lease_attempt}:execution-queued",
+            target_status=AnalysisRunStatus.SUCCEEDED,
+            target_phase=AnalysisRunPhase.COMPLETED,
+            outcome=AnalysisRunOutcome.PLAN_READY,
+            event_type=AnalysisEventType.PLAN_READY,
+            payload={**payload, "execution_pending": False},
+            deduplication_key=f"attempt-{lease_attempt}:plan-ready",
             worker_id=self._worker_id,
             lease_attempt=lease_attempt,
             summary_updates=plan_summary,
         )
+        analysis_metrics.record_run_outcome(AnalysisRunOutcome.PLAN_READY.value)
         log_analysis_event(
             logger,
-            "execution_queued",
+            "run_completed",
             run_id=run.run_id,
             workspace_id=run.workspace_id,
-            phase=AnalysisRunPhase.EXECUTION.value,
+            phase=AnalysisRunPhase.COMPLETED.value,
             operation="planning",
             plan_step_count=len(plan.steps),
             duration_ms=planning_elapsed_ms,
-            outcome=AnalysisRunOutcome.QUEUED_FOR_EXECUTION.value,
-            status=AnalysisRunStatus.WAITING.value,
+            outcome=AnalysisRunOutcome.PLAN_READY.value,
+            status=AnalysisRunStatus.SUCCEEDED.value,
         )
 
     async def _finish_failed(

@@ -11,9 +11,9 @@ from scripts.data_analysis_agent.analysis.models.requirements import (
     AnalysisRequirements,
 )
 
+from ..execution.admission import evaluate_admission, plan_contract_mismatch
 from ..models.datasets import DatasetHandle
 from ..models.events import AnalysisEventType
-from ..models.capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
 from ..models.plans import (
     AnalysisPlan,
     AnalysisPlanDraft,
@@ -24,7 +24,6 @@ from ..models.plans import (
     PlanApprovalStatus,
     PlanDiagnostics,
     PlanProposal,
-    PLAN_VERSION,
 )
 from ..models.runs import (
     AnalysisRun,
@@ -119,14 +118,18 @@ class AnalysisPlanningService:
             user_id=run.user_id,
             run_id=run.run_id,
         )
+        # A stored plan may only be reused when it is still executable under the
+        # active contract; otherwise it is history and the run must replan.
+        existing_admission = (
+            evaluate_admission(existing, context.capabilities)
+            if existing is not None
+            else None
+        )
         if (
             existing is not None
-            and existing.plan_version == PLAN_VERSION
+            and existing_admission is not None
+            and not existing_admission.rejected
             and context.capabilities.supports_plan_version(existing.plan_version)
-            and existing.capability_profile
-            == context.capabilities.capability_profile
-            and existing.capability_version
-            == context.capabilities.profile_version
             and existing.input_signature == context.input_signature
             and existing.status
             in {
@@ -155,6 +158,7 @@ class AnalysisPlanningService:
                     else PlanningOutcome.PLAN_READY
                 ),
                 plan=existing,
+                admission=existing_admission.admission,
                 reports=(PlanValidationReport(),),
                 token_usage=existing.token_usage,
                 token_usage_by_stage=existing.token_usage_by_stage,
@@ -358,6 +362,7 @@ class AnalysisPlanningService:
                 else PlanningOutcome.PLAN_READY
             ),
             plan=plan,
+            admission=evaluate_admission(plan, context.capabilities).admission,
             reports=tuple(reports),
             token_usage=_sum_usage(invocations, failed_usages),
             token_usage_by_stage=_stage_usage(invocations, failed_stages),
@@ -442,7 +447,7 @@ class AnalysisPlanningService:
         )
         if plan is None:
             raise AnalysisPlanNotFoundError("analysis plan not found")
-        if plan.plan_version != PLAN_VERSION:
+        if plan_contract_mismatch(plan) is not None:
             raise AnalysisPlanConflictError(
                 "legacy plans cannot produce executable patch proposals"
             )
@@ -712,16 +717,15 @@ def _validate_plan_decision(
     command: PlanApprovalCommand,
 ) -> None:
     if command.decision == "approve":
-        if plan.plan_version != PLAN_VERSION:
+        mismatch = plan_contract_mismatch(plan)
+        if mismatch == "plan_version":
             raise AnalysisPlanConflictError(
                 "legacy plans are history-only and must be replanned before execution"
             )
-        if (
-            plan.capability_profile != CAPABILITY_PROFILE
-            or plan.capability_version != CAPABILITY_PROFILE_VERSION
-        ):
+        if mismatch is not None:
             raise AnalysisPlanConflictError(
-                "the plan capability profile is no longer active; re-planning is required"
+                "the plan execution contract is no longer active; "
+                "re-planning is required"
             )
     if (
         plan.revision != command.expected_revision

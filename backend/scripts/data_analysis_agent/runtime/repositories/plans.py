@@ -10,8 +10,9 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from db.mongodb import get_db
 
+from ..execution.admission import plan_contract_mismatch
 from ..models.events import AnalysisEventType, AnalysisRunEvent
-from ..models.capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
+from ..models.capabilities import ExecutorCapabilities
 from ..models.plans import (
     AnalysisPlan,
     AnalysisPlanStatus,
@@ -19,7 +20,6 @@ from ..models.plans import (
     PlanApprovalRecord,
     PlanApprovalStatus,
     PlanRejectionReason,
-    PLAN_VERSION,
 )
 from ..models.runs import (
     AnalysisRun,
@@ -134,8 +134,15 @@ class MongoAnalysisPlanRepository:
     runs_collection_name = "analysis_runs"
     events_collection_name = "analysis_run_events"
 
-    def __init__(self, database: Any | None = None) -> None:
+    def __init__(
+        self,
+        database: Any | None = None,
+        capabilities: ExecutorCapabilities | None = None,
+    ) -> None:
         self._database = database
+        # Approving a plan queues it for execution only where a native engine
+        # exists; otherwise approval completes the run, as it did in Phase 8.
+        self._capabilities = capabilities or ExecutorCapabilities()
 
     def _db(self) -> Any:
         return self._database if self._database is not None else get_db()
@@ -392,19 +399,24 @@ class MongoAnalysisPlanRepository:
             else AnalysisPlanStatus.REJECTED
         )
         target_run_approval = RunApprovalStatus(status.value)
-        target_outcome = (
-            AnalysisRunOutcome.QUEUED_FOR_EXECUTION
-            if status == PlanApprovalStatus.APPROVED
-            else AnalysisRunOutcome.REJECTED
+        queues_execution = (
+            status == PlanApprovalStatus.APPROVED
+            and self._capabilities.native_execution_ready
         )
+        if status != PlanApprovalStatus.APPROVED:
+            target_outcome = AnalysisRunOutcome.REJECTED
+        elif queues_execution:
+            target_outcome = AnalysisRunOutcome.QUEUED_FOR_EXECUTION
+        else:
+            target_outcome = AnalysisRunOutcome.PLAN_READY
         target_run_status = (
             AnalysisRunStatus.WAITING
-            if status == PlanApprovalStatus.APPROVED
+            if queues_execution
             else AnalysisRunStatus.SUCCEEDED
         )
         target_run_phase = (
             AnalysisRunPhase.EXECUTION
-            if status == PlanApprovalStatus.APPROVED
+            if queues_execution
             else AnalysisRunPhase.COMPLETED
         )
         event_type = (
@@ -418,7 +430,7 @@ class MongoAnalysisPlanRepository:
             "revision": expected_revision,
             "plan_hash": expected_plan_hash,
             "decision_id": decision_id,
-            "queued_for_execution": status == PlanApprovalStatus.APPROVED,
+            "queued_for_execution": queues_execution,
             "rejection_reason": (
                 rejection_reason.value if rejection_reason is not None else None
             ),
@@ -463,6 +475,8 @@ class MongoAnalysisPlanRepository:
                     input_signature=expected_input_signature,
                     status=status,
                     outcome=target_outcome,
+                    run_status=target_run_status,
+                    run_phase=target_run_phase,
                     event_type=event_type,
                     decision_id=decision_id,
                     payload=payload,
@@ -493,11 +507,7 @@ class MongoAnalysisPlanRepository:
             run = _run(run_document)
             if (
                 status == PlanApprovalStatus.APPROVED
-                and (
-                    plan.plan_version != PLAN_VERSION
-                    or plan.capability_profile != CAPABILITY_PROFILE
-                    or plan.capability_version != CAPABILITY_PROFILE_VERSION
-                )
+                and plan_contract_mismatch(plan) is not None
             ):
                 raise AnalysisPlanConflictError(
                     "plans outside the active execution contract cannot be approved"
@@ -573,9 +583,7 @@ class MongoAnalysisPlanRepository:
                         "plan_approval_status": target_run_approval,
                         "updated_at": operation_time,
                         "completed_at": (
-                            None
-                            if status == PlanApprovalStatus.APPROVED
-                            else operation_time
+                            None if queues_execution else operation_time
                         ),
                         "version": run.version + 1,
                         "last_event_sequence": run.last_event_sequence + 1,
@@ -841,6 +849,8 @@ def _is_same_plan_decision(
     input_signature: str,
     status: PlanApprovalStatus,
     outcome: AnalysisRunOutcome,
+    run_status: AnalysisRunStatus,
+    run_phase: AnalysisRunPhase,
     event_type: AnalysisEventType,
     decision_id: str,
     payload: Mapping[str, Any],
@@ -851,18 +861,8 @@ def _is_same_plan_decision(
         and plan.input_signature == input_signature
         and plan.approval.status == status
         and plan.approval.decision_id == decision_id
-        and run.status
-        == (
-            AnalysisRunStatus.WAITING
-            if status == PlanApprovalStatus.APPROVED
-            else AnalysisRunStatus.SUCCEEDED
-        )
-        and run.phase
-        == (
-            AnalysisRunPhase.EXECUTION
-            if status == PlanApprovalStatus.APPROVED
-            else AnalysisRunPhase.COMPLETED
-        )
+        and run.status == run_status
+        and run.phase == run_phase
         and run.outcome == outcome
         and run.current_plan_id == plan.plan_id
         and run.current_plan_hash == plan_hash
