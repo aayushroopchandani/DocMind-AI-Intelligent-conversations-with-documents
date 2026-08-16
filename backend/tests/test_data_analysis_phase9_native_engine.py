@@ -870,9 +870,13 @@ class OperationCapTests(unittest.TestCase):
         # drift, a plan is admitted for an operation nothing can run.
         self.assertEqual(registered_kinds(), NATIVE_SUPPORTED_OPERATIONS)
 
-    def test_text_and_generation_stay_outside_the_engine(self) -> None:
+    def test_response_composition_stays_outside_the_engine(self) -> None:
+        # `compose_response` produces prose; the result contract here is
+        # tabular, so it belongs with Phase 9.9's artifacts.
         self.assertNotIn("compose_response", NATIVE_SUPPORTED_OPERATIONS)
-        self.assertNotIn("generate_dataset", NATIVE_SUPPORTED_OPERATIONS)
+
+    def test_seeded_generation_is_part_of_the_engine(self) -> None:
+        self.assertIn("generate_dataset", NATIVE_SUPPORTED_OPERATIONS)
 
 
 if __name__ == "__main__":  # pragma: no cover
