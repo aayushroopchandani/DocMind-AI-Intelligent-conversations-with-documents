@@ -20,10 +20,20 @@ MAX_EXPRESSION_NODES = 256
 
 
 class ExpressionDataType(str, Enum):
+    """The literal types an expression may declare.
+
+    This mirrors the subset of `PlanDataType` that a plan author can write down.
+    `currency` and `percentage` are semantic numeric types: the shared type
+    system only matches them against themselves, so a literal compared to a
+    currency column must declare `currency` and the same unit.
+    """
+
     STRING = "string"
     INTEGER = "integer"
     NUMBER = "number"
     DECIMAL = "decimal"
+    CURRENCY = "currency"
+    PERCENTAGE = "percentage"
     BOOLEAN = "boolean"
     DATE = "date"
     PERIOD = "period"

@@ -51,6 +51,11 @@ from ..models.runs import AnalysisMode
 from ..models.workbook import a1_ranges_overlap
 from .context import PlanningContext
 from .expression_validation import expression_output_matches, validate_expression
+from .type_system import (
+    NUMERIC_TYPES as _NUMERIC_TYPES,
+    columns_compatible as _compatible_types,
+    literal_matches as _literal_matches_type,
+)
 from .contracts import (
     PlanValidationIssue,
     PlanValidationLayer,
@@ -59,15 +64,7 @@ from .contracts import (
 )
 
 
-_NUMERIC_TYPES = frozenset(
-    {
-        PlanDataType.INTEGER,
-        PlanDataType.NUMBER,
-        PlanDataType.DECIMAL,
-        PlanDataType.CURRENCY,
-        PlanDataType.PERCENTAGE,
-    }
-)
+
 _SUPERVISED_MODELS = frozenset(
     {
         "linear_regression",
@@ -208,9 +205,9 @@ class AnalysisPlanValidator:
         capabilities = context.capabilities
         for index, step in enumerate(draft.steps):
             supported = {
-                PlanExecutor.NATIVE: capabilities.native,
-                PlanExecutor.PYTHON: capabilities.python,
-                PlanExecutor.FRONTEND: capabilities.frontend,
+                PlanExecutor.NATIVE: capabilities.native_execution,
+                PlanExecutor.PYTHON: capabilities.python_execution,
+                PlanExecutor.FRONTEND: capabilities.frontend_execution,
             }[step.executor]
             if not supported:
                 issues.append(
@@ -276,9 +273,7 @@ class AnalysisPlanValidator:
             )
             for dataset in draft.input_datasets
         }
-        row_counts: dict[str, int | None] = {
-            dataset.alias: dataset.row_count for dataset in draft.input_datasets
-        }
+        row_counts = plan_row_counts(draft)
         for index, step in enumerate(draft.steps):
             input_aliases = step_input_aliases(step)
             for alias in input_aliases:
@@ -306,16 +301,11 @@ class AnalysisPlanValidator:
             producers[step.output_alias] = step.step_id
             if isinstance(step, GenerateDatasetStep):
                 lineages[step.output_alias] = frozenset()
-                row_counts[step.output_alias] = step.row_count
             else:
                 lineage: set[tuple[str, str]] = set()
                 for alias in input_aliases:
                     lineage.update(lineages.get(alias, frozenset()))
                 lineages[step.output_alias] = frozenset(lineage)
-                row_counts[step.output_alias] = _maximum_output_rows(
-                    step,
-                    row_counts,
-                )
         return schemas, producers, lineages, row_counts
 
     @staticmethod
@@ -851,31 +841,7 @@ class AnalysisPlanValidator:
                         path=f"steps.{index}.estimate.chart_cardinality",
                     )
                 )
-        for intent in draft.write_intents:
-            if not isinstance(intent, WorkbookWriteIntent):
-                continue
-            schema = next(
-                (
-                    step.expected_schema
-                    for step in draft.steps
-                    if step.output_alias == intent.input_alias
-                ),
-                next(
-                    (
-                        dataset.columns
-                        for dataset in draft.input_datasets
-                        if dataset.alias == intent.input_alias
-                    ),
-                    (),
-                ),
-            )
-            output_rows = row_counts.get(intent.input_alias)
-            if output_rows is None:
-                output_rows = max(
-                    (dataset.row_count for dataset in draft.input_datasets),
-                    default=0,
-                )
-            cells_written += output_rows * len(schema)
+        cells_written += workbook_write_cells(draft, row_counts)
         if rows_scanned > policy.max_rows_scanned:
             issues.append(
                 _resource_error(
@@ -1027,11 +993,72 @@ class AnalysisPlanValidator:
                 )
 
 
+def plan_row_counts(draft: AnalysisPlanDraft) -> dict[str, int | None]:
+    """Return the estimated row count produced by every alias in the plan.
+
+    Shared by the resource validator and the approval policy so both answer
+    "how big is this plan" the same way.
+    """
+
+    counts: dict[str, int | None] = {
+        dataset.alias: dataset.row_count for dataset in draft.input_datasets
+    }
+    for step in draft.steps:
+        if isinstance(step, GenerateDatasetStep):
+            counts[step.output_alias] = step.row_count
+        else:
+            counts[step.output_alias] = _maximum_output_rows(step, counts)
+    return counts
+
+
+def workbook_write_cells(
+    draft: AnalysisPlanDraft,
+    row_counts: dict[str, int | None],
+) -> int:
+    """Return how many workbook cells the plan's write intents would touch."""
+
+    total = 0
+    for intent in draft.write_intents:
+        if not isinstance(intent, WorkbookWriteIntent):
+            continue
+        schema = next(
+            (
+                step.expected_schema
+                for step in draft.steps
+                if step.output_alias == intent.input_alias
+            ),
+            next(
+                (
+                    dataset.columns
+                    for dataset in draft.input_datasets
+                    if dataset.alias == intent.input_alias
+                ),
+                (),
+            ),
+        )
+        output_rows = row_counts.get(intent.input_alias)
+        if output_rows is None:
+            output_rows = max(
+                (dataset.row_count for dataset in draft.input_datasets),
+                default=0,
+            )
+        total += output_rows * len(schema)
+    return total
+
+
 def derive_approval_policy(
     *,
     draft: AnalysisPlanDraft,
     context: PlanningContext,
 ) -> ApprovalPolicy:
+    """Decide whether a plan needs approval before it runs (Phase 9.1.3).
+
+    Read-only and cheap non-destructive work executes without a second
+    confirmation, because native execution is immutable and every workbook
+    mutation is still gated by the final patch approval. Expensive, ambiguous,
+    destructive, formula-overwriting or broad-impact plans are gated here.
+    """
+
     reasons: list[ApprovalReason] = []
     policy = context.resource_policy
     python_duration = sum(
@@ -1063,6 +1090,13 @@ def derive_approval_policy(
         reasons.append(ApprovalReason.DESTRUCTIVE_WRITE)
     if any(intent.overwrite_formulas for intent in workbook_writes):
         reasons.append(ApprovalReason.FORMULA_OVERWRITE)
+    if workbook_writes and (
+        workbook_write_cells(draft, plan_row_counts(draft))
+        > policy.plan_approval_cells_written
+    ):
+        reasons.append(ApprovalReason.BROAD_IMPACT)
+    if len(draft.assumptions) > policy.plan_approval_assumptions:
+        reasons.append(ApprovalReason.AMBIGUOUS_REQUEST)
     unique_reasons = tuple(dict.fromkeys(reasons))
     return ApprovalPolicy(
         plan_approval_required=bool(unique_reasons),
@@ -1273,6 +1307,9 @@ def _validate_expected_schema(
                 )
             )
         elif step.expected_schema != expected:
+            # Canonicalization already derives this schema, so in the service
+            # path this cannot fire. It is kept as a cheap invariant for any
+            # caller that validates a draft without canonicalizing it first.
             issues.append(
                 _error(
                     "join_schema_mismatch",
@@ -1513,31 +1550,6 @@ def _validate_generation_step(
                         index,
                     )
                 )
-
-
-def _compatible_types(left: PlanColumn, right: PlanColumn) -> bool:
-    semantic_numeric = {PlanDataType.CURRENCY, PlanDataType.PERCENTAGE}
-    if left.data_type in semantic_numeric or right.data_type in semantic_numeric:
-        type_compatible = left.data_type == right.data_type
-    else:
-        type_compatible = (
-            left.data_type == right.data_type
-            or left.data_type in _NUMERIC_TYPES
-            and right.data_type in _NUMERIC_TYPES
-        )
-    return type_compatible and left.unit == right.unit
-
-
-def _literal_matches_type(value: object, data_type: PlanDataType) -> bool:
-    if data_type in _NUMERIC_TYPES:
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if data_type == PlanDataType.BOOLEAN:
-        return isinstance(value, bool)
-    if data_type in {PlanDataType.DATE, PlanDataType.PERIOD}:
-        return isinstance(value, str)
-    if data_type == PlanDataType.STRING:
-        return isinstance(value, str)
-    return True
 
 
 def _require_numeric_columns(

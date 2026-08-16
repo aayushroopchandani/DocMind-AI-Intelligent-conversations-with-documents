@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
 
 from ..models.expressions import (
     BetweenExpression,
@@ -24,18 +23,26 @@ from ..models.expressions import (
     UnaryExpression,
 )
 from ..models.plans import PlanColumn, PlanDataType
-
-
-_NUMERIC = frozenset(
-    {
-        PlanDataType.INTEGER,
-        PlanDataType.NUMBER,
-        PlanDataType.DECIMAL,
-        PlanDataType.CURRENCY,
-        PlanDataType.PERCENTAGE,
-    }
+from .type_system import (
+    NUMERIC_TYPES as _NUMERIC,
+    ORDERABLE_TYPES as _ORDERABLE,
+    literal_matches as _literal_matches,
+    types_compatible,
+    wider_numeric_type as _wider_numeric_type,
 )
-_ORDERABLE = _NUMERIC | {PlanDataType.DATE, PlanDataType.PERIOD}
+
+
+_EXPRESSION_TO_PLAN_TYPE = {
+    ExpressionDataType.STRING: PlanDataType.STRING,
+    ExpressionDataType.INTEGER: PlanDataType.INTEGER,
+    ExpressionDataType.NUMBER: PlanDataType.NUMBER,
+    ExpressionDataType.DECIMAL: PlanDataType.DECIMAL,
+    ExpressionDataType.CURRENCY: PlanDataType.CURRENCY,
+    ExpressionDataType.PERCENTAGE: PlanDataType.PERCENTAGE,
+    ExpressionDataType.BOOLEAN: PlanDataType.BOOLEAN,
+    ExpressionDataType.DATE: PlanDataType.DATE,
+    ExpressionDataType.PERIOD: PlanDataType.PERIOD,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,15 +77,7 @@ def validate_expression(
                 return ExpressionType(PlanDataType.UNKNOWN)
             return ExpressionType(column.data_type, column.unit, column.nullable)
         if isinstance(node, LiteralExpression):
-            data_type = {
-                ExpressionDataType.STRING: PlanDataType.STRING,
-                ExpressionDataType.INTEGER: PlanDataType.INTEGER,
-                ExpressionDataType.NUMBER: PlanDataType.NUMBER,
-                ExpressionDataType.DECIMAL: PlanDataType.DECIMAL,
-                ExpressionDataType.BOOLEAN: PlanDataType.BOOLEAN,
-                ExpressionDataType.DATE: PlanDataType.DATE,
-                ExpressionDataType.PERIOD: PlanDataType.PERIOD,
-            }[node.data_type]
+            data_type = _EXPRESSION_TO_PLAN_TYPE[node.data_type]
             if not _literal_matches(node.value, data_type):
                 problem(
                     "expression_literal_type_mismatch",
@@ -236,15 +235,7 @@ def validate_expression(
             )
         if isinstance(node, CastExpression):
             source = infer(node.expression, f"{node_path}.expression")
-            target = {
-                ExpressionDataType.STRING: PlanDataType.STRING,
-                ExpressionDataType.INTEGER: PlanDataType.INTEGER,
-                ExpressionDataType.NUMBER: PlanDataType.NUMBER,
-                ExpressionDataType.DECIMAL: PlanDataType.DECIMAL,
-                ExpressionDataType.BOOLEAN: PlanDataType.BOOLEAN,
-                ExpressionDataType.DATE: PlanDataType.DATE,
-                ExpressionDataType.PERIOD: PlanDataType.PERIOD,
-            }[node.target_type]
+            target = _EXPRESSION_TO_PLAN_TYPE[node.target_type]
             return ExpressionType(
                 target,
                 (
@@ -296,72 +287,35 @@ def validate_expression(
 
 
 def expression_output_matches(result: ExpressionType, output: PlanColumn) -> bool:
-    if result.data_type == PlanDataType.UNKNOWN:
-        return False
-    type_matches = result.data_type == output.data_type or (
-        result.data_type in _NUMERIC and output.data_type in _NUMERIC
-    )
-    if not type_matches:
-        return False
+    """Return whether an inferred expression type can fill an output column."""
+
     if result.nullable and not output.nullable:
         return False
-    if result.unit == output.unit:
+    if types_compatible(
+        result.data_type,
+        result.unit,
+        output.data_type,
+        output.unit,
+    ):
         return True
+    # A ratio produced by safe_divide is unitless; writing it into a declared
+    # percentage column is the one intentional widening the planner may use.
     return (
         output.data_type == PlanDataType.PERCENTAGE
+        and result.data_type in _NUMERIC
+        and result.data_type != PlanDataType.CURRENCY
         and result.unit is None
         and output.unit in {None, "%", "percent", "percentage"}
     )
 
 
-def _literal_matches(value: object, data_type: PlanDataType) -> bool:
-    if value is None:
-        return True
-    if data_type == PlanDataType.STRING:
-        return isinstance(value, str)
-    if data_type == PlanDataType.BOOLEAN:
-        return isinstance(value, bool)
-    if data_type == PlanDataType.INTEGER:
-        return isinstance(value, int) and not isinstance(value, bool)
-    if data_type in _NUMERIC:
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if data_type == PlanDataType.PERIOD:
-        return isinstance(value, str) and bool(value.strip())
-    if data_type == PlanDataType.DATE:
-        if isinstance(value, date):
-            return True
-        if not isinstance(value, str):
-            return False
-        try:
-            date.fromisoformat(value)
-        except ValueError:
-            return False
-        return True
-    return False
-
-
 def _compatible(left: ExpressionType, right: ExpressionType) -> bool:
-    types_match = left.data_type == right.data_type or (
-        left.data_type in _NUMERIC and right.data_type in _NUMERIC
+    return types_compatible(
+        left.data_type,
+        left.unit,
+        right.data_type,
+        right.unit,
     )
-    return types_match and left.unit == right.unit
-
-
-def _wider_numeric_type(left: PlanDataType, right: PlanDataType) -> PlanDataType:
-    order = (
-        PlanDataType.INTEGER,
-        PlanDataType.DECIMAL,
-        PlanDataType.NUMBER,
-    )
-    normalized = [
-        PlanDataType.DECIMAL
-        if item in {PlanDataType.CURRENCY, PlanDataType.PERCENTAGE}
-        else item
-        for item in (left, right)
-    ]
-    if not all(item in order for item in normalized):
-        return PlanDataType.UNKNOWN
-    return max(normalized, key=order.index)
 
 
 def _divide_unit(left: str | None, right: str | None) -> str | None:

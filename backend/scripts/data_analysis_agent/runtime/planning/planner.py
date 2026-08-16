@@ -37,6 +37,13 @@ expression. A filter AST must produce a boolean. A derived expression's inferred
 and unit must match output_column. Use safe_divide with an explicit zero_division
 policy for division.
 
+Literal types are matched strictly against the column they are compared with. A
+literal compared to a currency column must use data_type "currency" and repeat that
+column's exact unit; a percentage column needs data_type "percentage" and its unit.
+Currency and percentage never match a plain number, decimal, or each other. Integer
+columns reject fractional literals, and a date literal must be an ISO calendar date
+such as "2026-08-16".
+
 Never request external network access. Ask mode cannot write. Analyse mode may create
 artifacts but cannot mutate workbooks. Edit mode may propose workbook writes, and
 every workbook write must require final approval. Step provenance is deterministic
@@ -534,30 +541,6 @@ def _normalize_step_payload(step: dict[str, object]) -> dict[str, object]:
                 default=None,
             )
             output["generation"] = normalized_generation
-    predicates = output.get("predicates")
-    if isinstance(predicates, list):
-        output["predicates"] = [
-            _normalize_predicate_payload(predicate)
-            if isinstance(predicate, dict)
-            else predicate
-            for predicate in predicates
-        ]
-    return output
-
-
-def _normalize_predicate_payload(
-    predicate: dict[str, object],
-) -> dict[str, object]:
-    output = dict(predicate)
-    if output.get("kind"):
-        return output
-    operator = str(output.get("operator") or "")
-    if "values" in output:
-        output["kind"] = "set_membership"
-    elif operator in {"is_null", "is_not_null"}:
-        output["kind"] = "null_check"
-    else:
-        output["kind"] = "comparison"
     return output
 
 
