@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import (
@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from .canonical import canonical_content
 from .datasets import DatasetSourceType
 from .capabilities import CAPABILITY_PROFILE, CAPABILITY_PROFILE_VERSION
 from .expressions import (
@@ -33,9 +34,15 @@ from .workbook import a1_dimensions
 
 PLAN_VERSION = "2.0"
 LEGACY_PLAN_VERSION = "1.0"
-PLANNER_PROMPT_VERSION = "2.0.0"
-PLAN_VALIDATOR_VERSION = "2.0.0"
-PLAN_CANONICALIZER_VERSION = "2.0.0"
+# 2.1.0 documents the strict semantic-literal rules enforced by
+# planning/type_system.py (currency and percentage never match a plain number).
+PLANNER_PROMPT_VERSION = "2.1.0"
+# 2.1.0 unifies the literal/compatibility rules onto planning/type_system.py and
+# adds the Phase 9.1.3 selective early-approval reasons.
+PLAN_VALIDATOR_VERSION = "2.1.0"
+# 2.1.0 projects canonical content through the model schema instead of stripping
+# display keys from dumped JSON, so opaque JsonValue payloads keep their keys.
+PLAN_CANONICALIZER_VERSION = "2.1.0"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,119}$")
 _COLUMN_SUFFIX_RE = re.compile(r"^_[A-Za-z0-9_]{1,31}$")
@@ -65,6 +72,10 @@ class PlanDataType(str, Enum):
 
 
 class PlanColumn(BaseModel):
+    # `label` is what the user reads; `key` is what the executor resolves.
+    # See models/canonical.py for how this declaration reaches the plan hash.
+    display_only_fields: ClassVar[frozenset[str]] = frozenset({"label"})
+
     key: str = Field(min_length=1, max_length=120)
     label: str = Field(min_length=1, max_length=240)
     data_type: PlanDataType
@@ -134,6 +145,8 @@ class PlanDatasetProvenance(BaseModel):
 
 
 class PlanInputDataset(BaseModel):
+    display_only_fields: ClassVar[frozenset[str]] = frozenset({"title"})
+
     alias: str = Field(min_length=1, max_length=120)
     dataset_id: str = Field(min_length=1, max_length=240)
     dataset_version: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -179,6 +192,8 @@ class PlanStepEstimate(BaseModel):
 
 
 class StepProvenance(BaseModel):
+    display_only_fields: ClassVar[frozenset[str]] = frozenset({"description"})
+
     source_dataset_ids: tuple[str, ...] = Field(default=(), max_length=100)
     source_versions: tuple[str, ...] = Field(default=(), max_length=100)
     generated: bool = False
@@ -384,100 +399,6 @@ class FilterRowsStep(PlanStepBase):
     predicate: Expression
     null_predicate_policy: Literal["exclude", "include", "error"] = "exclude"
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_flat_predicates(cls, value: object) -> object:
-        """Accept old in-process builders, but serialize only the v2 AST."""
-
-        if not isinstance(value, dict) or "predicate" in value:
-            return value
-        predicates = value.get("predicates")
-        if not isinstance(predicates, (list, tuple)) or not predicates:
-            return value
-        operands: list[dict[str, object]] = []
-        for item in predicates:
-            predicate = (
-                item.model_dump(mode="python")
-                if isinstance(item, BaseModel)
-                else dict(item)
-            )
-            kind = predicate.get("kind")
-            column = {"kind": "column_ref", "column_key": predicate["column_key"]}
-            if kind == "null_check":
-                operands.append(
-                    {
-                        "kind": "null_check",
-                        "operator": predicate["operator"],
-                        "expression": column,
-                    }
-                )
-                continue
-            raw_value_type = predicate["value_type"]
-            value_type = (
-                raw_value_type.value
-                if isinstance(raw_value_type, Enum)
-                else str(raw_value_type)
-            )
-            literal_type = {
-                "currency": "decimal",
-                "percentage": "decimal",
-            }.get(value_type, value_type)
-            if kind == "set_membership":
-                operands.append(
-                    {
-                        "kind": "set_membership",
-                        "operator": predicate["operator"],
-                        "expression": column,
-                        "values": [
-                            {
-                                "kind": "literal",
-                                "value": item_value,
-                                "data_type": literal_type,
-                                "unit": predicate.get("unit"),
-                            }
-                            for item_value in predicate["values"]
-                        ],
-                    }
-                )
-                continue
-            raw_operator = predicate["operator"]
-            operator_value = (
-                raw_operator.value
-                if isinstance(raw_operator, Enum)
-                else str(raw_operator)
-            )
-            operator = {
-                "eq": "equal",
-                "ne": "not_equal",
-                "gt": "greater_than",
-                "gte": "greater_than_or_equal",
-                "lt": "less_than",
-                "lte": "less_than_or_equal",
-                "contains": "contains",
-            }[operator_value]
-            operands.append(
-                {
-                    "kind": "compare",
-                    "operator": operator,
-                    "left": column,
-                    "right": {
-                        "kind": "literal",
-                        "value": predicate["value"],
-                        "data_type": literal_type,
-                        "unit": predicate.get("unit"),
-                    },
-                }
-            )
-        migrated = dict(value)
-        migrated.pop("predicates", None)
-        combine_with = migrated.pop("combine_with", "and")
-        migrated["predicate"] = (
-            operands[0]
-            if len(operands) == 1
-            else {"kind": "boolean", "operator": combine_with, "operands": operands}
-        )
-        return migrated
-
     @model_validator(mode="after")
     def validate_predicate_size(self) -> Self:
         validate_expression_size(self.predicate)
@@ -506,6 +427,8 @@ class SelectColumnsStep(PlanStepBase):
 
 
 class ColumnRename(BaseModel):
+    display_only_fields: ClassVar[frozenset[str]] = frozenset({"output_label"})
+
     source_key: str = Field(min_length=1, max_length=120)
     output_key: str = Field(min_length=1, max_length=120)
     output_label: str = Field(min_length=1, max_length=240)
@@ -812,6 +735,8 @@ class TrainModelStep(PlanStepBase):
 
 
 class VisualizationStep(PlanStepBase):
+    display_only_fields: ClassVar[frozenset[str]] = frozenset({"title"})
+
     kind: Literal["generate_visualization"] = "generate_visualization"
     # A visualization produces a chart artifact, not a tabular dataset. Its
     # source columns are declared by x/y/group fields and validated against the
@@ -875,6 +800,18 @@ PlanStep = Annotated[
     Field(discriminator="kind"),
 ]
 
+LEGACY_PLAN_STEP_TYPES = (
+    LegacyGenerateDatasetStep,
+    LegacyFilterRowsStep,
+    LegacyFillMissingStep,
+    LegacyDeriveColumnStep,
+    LegacyJoinStep,
+    LegacyPivotStep,
+)
+
+# Persisted v1 records only. Every member forbids extra fields and every legacy
+# variant carries a field its v2 counterpart rejects, so this union resolves
+# deterministically even though `kind` alone cannot discriminate it.
 HistoricalPlanStep = (
     LegacyGenerateDatasetStep
     | LegacyFilterRowsStep
@@ -886,10 +823,12 @@ HistoricalPlanStep = (
 )
 
 
-def step_input_aliases(step: PlanStep) -> tuple[str, ...]:
-    if isinstance(step, GenerateDatasetStep):
+def step_input_aliases(step: HistoricalPlanStep) -> tuple[str, ...]:
+    """Return the dataset aliases a step reads, for v2 and persisted v1 steps."""
+
+    if isinstance(step, (GenerateDatasetStep, LegacyGenerateDatasetStep)):
         return ()
-    if isinstance(step, JoinStep):
+    if isinstance(step, (JoinStep, LegacyJoinStep)):
         return (step.left_alias, step.right_alias)
     if isinstance(step, ComposeResponseStep):
         return step.input_aliases
@@ -1022,6 +961,8 @@ PlanWriteIntent = Annotated[
 
 
 class ExpectedArtifact(BaseModel):
+    display_only_fields: ClassVar[frozenset[str]] = frozenset({"title"})
+
     alias: str = Field(min_length=1, max_length=120)
     kind: Literal["dataset", "chart", "text", "workbook_patch", "model"]
     source_alias: str = Field(min_length=1, max_length=120)
@@ -1102,6 +1043,11 @@ class ApprovalReason(str, Enum):
     MEANINGFUL_COST = "meaningful_cost"
     DESTRUCTIVE_WRITE = "destructive_write"
     FORMULA_OVERWRITE = "formula_overwrite"
+    # Phase 9.1.3: a safe intent should not be approved twice, but a plan that
+    # rewrites a large region, or that rests on assumptions the planner had to
+    # invent, is worth one explicit confirmation before it runs.
+    BROAD_IMPACT = "broad_impact"
+    AMBIGUOUS_REQUEST = "ambiguous_request"
 
 
 class ApprovalPolicy(BaseModel):
@@ -1312,8 +1258,12 @@ class AnalysisPlan(AnalysisPlanDraft):
             raise ValueError("plan status and approval status disagree")
         if self.updated_at < self.created_at:
             raise ValueError("plan updated_at cannot precede created_at")
+        # Only a plan produced by the active canonicalizer can be re-derived.
+        # Records written by an earlier canonicalizer stay readable for audit;
+        # execution admission rejects them (runtime/execution/admission.py).
         if (
             self.plan_version == PLAN_VERSION
+            and self.canonicalizer_version == PLAN_CANONICALIZER_VERSION
             and self.plan_hash != analysis_plan_hash(self)
         ):
             raise ValueError("plan_hash does not match canonical plan content")
@@ -1459,7 +1409,7 @@ class FinalPatchApprovalCommand(BaseModel):
 
 def compute_input_signature(datasets: tuple[PlanInputDataset, ...]) -> str:
     payload = [
-        _execution_semantics(dataset.model_dump(mode="json"))
+        canonical_content(dataset)
         for dataset in sorted(datasets, key=lambda item: item.dataset_id)
     ]
     return _sha256_json(payload)
@@ -1507,6 +1457,9 @@ def _canonical_plan_content_hash(
     canonicalizer_version: str,
     privacy: PrivacySummary,
 ) -> str:
+    # `intent` and `assumptions` are the user-facing narrative. They are omitted
+    # here so an identical recipe stays cache- and approval-identical no matter
+    # how the planner phrased it; the approval record binds the prose separately.
     payload = {
         "plan_version": draft.plan_version,
         "capability_profile": draft.capability_profile,
@@ -1517,54 +1470,20 @@ def _canonical_plan_content_hash(
         "revision": revision,
         "mode": draft.mode.value,
         "input_signature": draft.input_signature,
-        "input_datasets": [
-            _execution_semantics(item.model_dump(mode="json"))
-            for item in draft.input_datasets
-        ],
-        "steps": [
-            _execution_semantics(item.model_dump(mode="json"))
-            for item in draft.steps
-        ],
-        "write_intents": [
-            _execution_semantics(item.model_dump(mode="json"))
-            for item in draft.write_intents
-        ],
+        "input_datasets": [canonical_content(item) for item in draft.input_datasets],
+        "steps": [canonical_content(item) for item in draft.steps],
+        "write_intents": [canonical_content(item) for item in draft.write_intents],
         "expected_artifacts": [
-            _execution_semantics(item.model_dump(mode="json"))
-            for item in draft.expected_artifacts
+            canonical_content(item) for item in draft.expected_artifacts
         ],
-        "approval_policy": approval_policy.model_dump(mode="json"),
+        "approval_policy": canonical_content(approval_policy),
         "model": model,
         "prompt_version": prompt_version,
         "validator_version": validator_version,
         "canonicalizer_version": canonicalizer_version,
-        "privacy": privacy.model_dump(mode="json"),
+        "privacy": canonical_content(privacy),
     }
     return _sha256_json(payload)
-
-
-_DISPLAY_ONLY_PLAN_FIELDS = frozenset(
-    {
-        "description",
-        "label",
-        "output_label",
-        "title",
-    }
-)
-
-
-def _execution_semantics(value: object) -> object:
-    """Remove presentation-only fields from canonical execution content."""
-
-    if isinstance(value, Mapping):
-        return {
-            key: _execution_semantics(item)
-            for key, item in value.items()
-            if key not in _DISPLAY_ONLY_PLAN_FIELDS
-        }
-    if isinstance(value, (list, tuple)):
-        return [_execution_semantics(item) for item in value]
-    return value
 
 
 def build_analysis_plan(
