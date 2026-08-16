@@ -23,13 +23,11 @@ NATIVE_RECIPE_VERSION = "1.0"
 # executable?" without pulling Polars into the request path. A test asserts this
 # stays identical to the registry in `native/operations`.
 #
-# Two declared operations are absent on purpose:
-#   * `generate_dataset` produces rows from a seeded spec rather than
-#     transforming a table; it belongs with the Phase 9.6 generator.
+# One declared operation is absent on purpose:
 #   * `compose_response` produces prose, not a table. The result contract here
 #     is tabular — columns, row count, content hash — so composing a response
 #     belongs with Phase 9.9's result and preview artifacts.
-# Admission reports both honestly as `operation_not_executable`.
+# Admission reports it honestly as `operation_not_executable`.
 NATIVE_SUPPORTED_OPERATIONS: frozenset[str] = frozenset(
     {
         "filter_rows",
@@ -43,6 +41,7 @@ NATIVE_SUPPORTED_OPERATIONS: frozenset[str] = frozenset(
         "pivot",
         "unpivot",
         "join",
+        "generate_dataset",
     }
 )
 
@@ -103,7 +102,8 @@ class NativeRecipe(BaseModel):
     engine_version: str = Field(min_length=1, max_length=60)
     semantics_version: str = Field(min_length=1, max_length=60)
     steps: tuple[PlanStep, ...] = Field(min_length=1, max_length=64)
-    inputs: tuple[NativeInputTable, ...] = Field(min_length=1, max_length=30)
+    # A generation-only recipe reads nothing, so an empty input tuple is valid.
+    inputs: tuple[NativeInputTable, ...] = Field(default=(), max_length=30)
     result_alias: str = Field(min_length=1, max_length=120)
     limits: ExecutionLimits = Field(default_factory=ExecutionLimits)
 

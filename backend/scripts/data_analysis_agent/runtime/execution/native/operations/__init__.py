@@ -4,13 +4,13 @@ Importing this package registers every executable operation. Modules are grouped
 by what they do to a table — rows, columns, groups, joins — which keeps each one
 small enough to read alongside the 9.5 rules it implements.
 
-`compose_response` and `generate_dataset` are deliberately absent; see
+`compose_response` is deliberately absent; see
 `runtime/execution/contracts.py` for why.
 """
 
 from __future__ import annotations
 
-from . import columns, grouping, joining, rows  # noqa: F401  (registration)
+from . import columns, grouping, joining, rows, sources  # noqa: F401  (registration)
 from .base import (
     NativeExecutionSemanticError,
     Operation,

@@ -198,25 +198,26 @@ def _run_stages(recipe: NativeRecipe) -> tuple[pl.DataFrame, list[StepMetrics]]:
                 ExecutionFailureCode.INPUT_UNAVAILABLE,
                 f"step '{step.step_id}' reads unknown alias '{missing[0]}'",
             )
-        primary = aliases[0]
+        # A source operation such as `generate_dataset` reads nothing.
+        primary = aliases[0] if aliases else None
 
-        if operation.guards is not None:
+        if operation.guards is not None and primary is not None:
             available = frozenset(lazy[primary].collect_schema().names())
             for expression in operation.guards(step, available):
                 batch.add_guard(step.step_id, lazy[primary].select(expression))
 
         if operation.barrier:
             # The operation needs real data, so the batch ends here.
-            source = flush(lazy[primary])
-            assert source is not None
-            produced = operation.apply(step, {primary: source})
+            source = flush(lazy[primary] if primary is not None else None)
+            frames = {primary: source} if primary is not None else {}
+            produced = operation.apply(step, frames)
             lazy[step.output_alias] = produced.lazy()
             _check_row_limit(recipe, produced.height)
             metrics.append(
                 StepMetrics(
                     step_id=step.step_id,
                     kind=step.kind,
-                    input_rows=row_counts.get(primary, 0),
+                    input_rows=row_counts.get(primary, 0) if primary else 0,
                     output_rows=produced.height,
                     output_columns=produced.width,
                 )
