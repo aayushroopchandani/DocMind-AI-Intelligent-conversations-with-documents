@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from ..contracts import (
     ExecutionFailureCode,
@@ -27,6 +29,47 @@ from .engine import engine_version
 
 
 _WORKER_MODULE = "scripts.data_analysis_agent.runtime.execution.native.worker_main"
+
+CANCELLATION_POLL_SECONDS = 0.5
+"""How often the parent asks whether the run was cancelled while the child runs."""
+
+
+class _Timeout(Exception):
+    """The child exceeded its wall-clock budget."""
+
+
+class _Cancelled(Exception):
+    """The run was cancelled while the child was running."""
+
+
+def _memory_limiter(megabytes: int) -> Callable[[], None] | None:
+    """Return a pre-exec hook capping the child's address space.
+
+    POSIX only, and even there enforcement varies: Linux honours `RLIMIT_AS`
+    reliably, macOS often does not. The hook is best-effort — the wall-clock
+    timeout and the kill remain the guarantees that always hold.
+    """
+
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - non-POSIX host
+        return None
+
+    limit = megabytes * 1024 * 1024
+
+    def apply() -> None:  # pragma: no cover - runs in the forked child
+        for name in ("RLIMIT_AS", "RLIMIT_DATA"):
+            constant: Any = getattr(resource, name, None)
+            if constant is None:
+                continue
+            try:
+                soft, hard = resource.getrlimit(constant)
+                ceiling = limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+                resource.setrlimit(constant, (ceiling, hard))
+            except (ValueError, OSError):
+                continue
+
+    return apply
 
 # Everything the interpreter genuinely needs to start. Anything carrying a
 # secret — MONGODB_URI, CLOUDINARY_*, OPENAI_API_KEY, QDRANT_* — is absent by
@@ -81,6 +124,7 @@ class SubprocessNativeBackend:
         recipe: NativeRecipe,
         *,
         output_path: Path,
+        cancelled: Callable[[], Awaitable[bool]] | None = None,
     ) -> NativeExecutionResult:
         staging = output_path.parent
         job_path = staging / "job.json"
@@ -97,18 +141,22 @@ class SubprocessNativeBackend:
             env=scrubbed_environment(project_root=self._project_root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            preexec_fn=_memory_limiter(recipe.limits.max_memory_mb),
         )
         try:
-            _stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=recipe.limits.wall_clock_seconds,
-            )
-        except asyncio.TimeoutError:
+            stderr = await self._await_child(process, recipe, cancelled)
+        except _Timeout:
             await self._terminate(process)
             return self._failure(
                 ExecutionFailureCode.TIMEOUT,
                 "native execution exceeded "
                 f"{recipe.limits.wall_clock_seconds:.1f}s and was terminated",
+            )
+        except _Cancelled:
+            await self._terminate(process)
+            return self._failure(
+                ExecutionFailureCode.CANCELLED,
+                "the run was cancelled and the native worker was terminated",
             )
         except asyncio.CancelledError:
             await self._terminate(process)
@@ -124,6 +172,44 @@ class SubprocessNativeBackend:
         return NativeExecutionResult.model_validate_json(
             manifest_path.read_text(encoding="utf-8")
         )
+
+    async def _await_child(
+        self,
+        process: asyncio.subprocess.Process,
+        recipe: NativeRecipe,
+        cancelled: Callable[[], Awaitable[bool]] | None,
+    ) -> bytes:
+        """Wait for the child, honouring both the deadline and cancellation.
+
+        Cancellation is polled rather than pushed because the authoritative flag
+        lives in MongoDB. `CANCELLATION_POLL_SECONDS` bounds how long a
+        cancelled run keeps burning CPU.
+        """
+
+        communicate = asyncio.ensure_future(process.communicate())
+        deadline = asyncio.get_running_loop().time() + recipe.limits.wall_clock_seconds
+        try:
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise _Timeout
+                slice_seconds = (
+                    min(CANCELLATION_POLL_SECONDS, remaining)
+                    if cancelled is not None
+                    else remaining
+                )
+                done, _pending = await asyncio.wait(
+                    (communicate,),
+                    timeout=slice_seconds,
+                )
+                if done:
+                    _stdout, stderr = communicate.result()
+                    return stderr
+                if cancelled is not None and await cancelled():
+                    raise _Cancelled
+        finally:
+            if not communicate.done():
+                communicate.cancel()
 
     @staticmethod
     async def _terminate(process: asyncio.subprocess.Process) -> None:

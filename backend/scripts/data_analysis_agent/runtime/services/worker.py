@@ -1236,6 +1236,18 @@ class DurableAnalysisWorker:
             user_id=run.user_id,
             run_id=run.run_id,
         )
+        async def cancellation_requested() -> bool:
+            """Re-read the durable flag so a cancel lands mid-execution."""
+
+            try:
+                latest = await self._state_machine.require_run(
+                    user_id=run.user_id,
+                    run_id=run.run_id,
+                )
+            except AnalysisRunStoreError:  # pragma: no cover - transient read
+                return False
+            return latest.cancellation_requested
+
         outcome = await self._execution_service.execute(
             plan=plan,
             run=RunAdmissionState(
@@ -1245,6 +1257,7 @@ class DurableAnalysisWorker:
                 current_plan_hash=current.current_plan_hash,
                 cancellation_requested=current.cancellation_requested,
             ),
+            cancelled=cancellation_requested,
         )
         elapsed_ms = (monotonic() - started) * 1000
 

@@ -42,7 +42,11 @@ from .dag import RecipeCompilationError, compile_recipe
 from .idempotency import execution_key
 from .inputs import InputResolutionError, NormalizedInputResolver
 from .native import staging
-from .native.backend import InProcessNativeBackend, NativeExecutionBackend
+from .native.backend import (
+    CancellationCheck,
+    InProcessNativeBackend,
+    NativeExecutionBackend,
+)
 from .native.engine import engine_version
 from .native.semantics import NATIVE_SEMANTICS_VERSION
 
@@ -116,6 +120,7 @@ class NativeExecutionService:
         *,
         plan: AnalysisPlan,
         run: RunAdmissionState,
+        cancelled: CancellationCheck | None = None,
     ) -> ExecutionOutcome:
         decision = check_execution_preconditions(
             plan,
@@ -186,6 +191,7 @@ class NativeExecutionService:
             result = await self._backend.execute(
                 recipe,
                 output_path=directory / "result.arrow",
+                cancelled=cancelled,
             )
             outcome = self._outcome(key, result)
             await self._results.put(key, outcome)
