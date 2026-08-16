@@ -126,10 +126,16 @@ _USER_ID = "user-1"
 _WORKSPACE_ID = "workspace-1"
 
 
+# Real normalized IDs match `^normalized_[a-f0-9]{24}$`. Using a realistic one
+# here lets execution tests resolve this dataset against the durable
+# normalized-dataset contract instead of a shape that could never be stored.
+NORMALIZED_DATASET_ID = "normalized_0123456789abcdef01234567"
+
+
 def _input_dataset() -> PlanInputDataset:
     return PlanInputDataset(
         alias="input_1",
-        dataset_id="normalized_dataset_1",
+        dataset_id=NORMALIZED_DATASET_ID,
         dataset_version=_HASH_C,
         title="Revenue data",
         row_count=100,

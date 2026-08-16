@@ -12,8 +12,15 @@ from __future__ import annotations
 import unittest
 from uuid import uuid4
 
-from scripts.data_analysis_agent.runtime.execution.admission import (
+from scripts.data_analysis_agent.runtime.execution import (
     ExecutionAdmission,
+    ExecutionFailureCode,
+    InputResolutionError,
+    NativeExecutionService,
+    ResolvedInput,
+)
+from scripts.data_analysis_agent.runtime.execution.idempotency import (
+    dataset_content_signature,
 )
 from scripts.data_analysis_agent.runtime.models.capabilities import (
     ExecutorCapabilities,
@@ -87,6 +94,8 @@ class WorkerAdmissionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self,
         admission: ExecutionAdmission,
         worker_id: str,
+        *,
+        execution_service=None,
     ):
         database = _Database()
         clock = _Clock()
@@ -135,6 +144,7 @@ class WorkerAdmissionLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     reports=(PlanValidationReport(),),
                 )
             ),
+            execution_service=execution_service,
             config=AnalysisWorkerConfig(
                 concurrency=1,
                 poll_seconds=0.01,
@@ -197,6 +207,100 @@ class WorkerAdmissionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             after_queue.get("queued_for_execution", 0),
             after_plan.get("queued_for_execution", 0) + 1,
+        )
+
+
+class WorkerNativeExecutionTests(unittest.IsolatedAsyncioTestCase):
+    """The queue must actually drain once a native engine is installed."""
+
+    async def test_a_queued_run_executes_and_completes(self) -> None:
+        harness = WorkerAdmissionLifecycleTests()
+        service = NativeExecutionService(
+            resolver=_ExecutionStubResolver(),
+            capabilities=ExecutorCapabilities(native_execution_ready=True),
+        )
+
+        current, events = await harness._run_worker(
+            ExecutionAdmission.QUEUE,
+            "worker-native-execute",
+            execution_service=service,
+        )
+
+        self.assertEqual(current.status, AnalysisRunStatus.SUCCEEDED)
+        self.assertEqual(current.phase, AnalysisRunPhase.COMPLETED)
+        self.assertEqual(current.outcome, AnalysisRunOutcome.COMPLETED)
+        self.assertIsNotNone(current.completed_at)
+        types = [event.event_type for event in events]
+        self.assertIn(AnalysisEventType.EXECUTION_QUEUED, types)
+        self.assertIn(AnalysisEventType.EXECUTION_STARTED, types)
+        self.assertEqual(types[-1], AnalysisEventType.RUN_COMPLETED)
+        payload = events[-1].payload
+        self.assertTrue(payload["content_hash"])
+        self.assertIn("polars", payload["engine_version"])
+
+    async def test_an_execution_failure_fails_the_run_with_its_code(self) -> None:
+        harness = WorkerAdmissionLifecycleTests()
+        service = NativeExecutionService(
+            resolver=_ExecutionFailingResolver(),
+            capabilities=ExecutorCapabilities(native_execution_ready=True),
+        )
+
+        current, events = await harness._run_worker(
+            ExecutionAdmission.QUEUE,
+            "worker-native-failure",
+            execution_service=service,
+        )
+
+        self.assertEqual(current.status, AnalysisRunStatus.FAILED)
+        self.assertEqual(events[-1].event_type, AnalysisEventType.RUN_FAILED)
+        self.assertEqual(
+            events[-1].payload["code"],
+            ExecutionFailureCode.INPUT_UNAVAILABLE.value,
+        )
+
+    async def test_a_queued_run_without_an_engine_stays_queued(self) -> None:
+        harness = WorkerAdmissionLifecycleTests()
+
+        current, events = await harness._run_worker(
+            ExecutionAdmission.QUEUE,
+            "worker-native-absent",
+            execution_service=None,
+        )
+
+        self.assertEqual(current.status, AnalysisRunStatus.WAITING)
+        self.assertEqual(current.outcome, AnalysisRunOutcome.QUEUED_FOR_EXECUTION)
+        self.assertEqual(events[-1].event_type, AnalysisEventType.EXECUTION_QUEUED)
+
+
+class _ExecutionStubResolver:
+    async def resolve(self, *, user_id, workspace_id, datasets):
+        return tuple(
+            ResolvedInput(
+                alias=dataset.alias,
+                dataset_id=dataset.dataset_id,
+                content_signature=dataset_content_signature(dataset),
+                columns=dataset.columns,
+                rows=tuple(
+                    {
+                        column.key: (
+                            100_000.0
+                            if column.data_type.value == "currency"
+                            else f"value-{index}"
+                        )
+                        for column in dataset.columns
+                    }
+                    for index in range(dataset.row_count)
+                ),
+            )
+            for dataset in datasets
+        )
+
+
+class _ExecutionFailingResolver:
+    async def resolve(self, *, user_id, workspace_id, datasets):
+        raise InputResolutionError(
+            ExecutionFailureCode.INPUT_UNAVAILABLE,
+            "the normalized dataset is no longer available",
         )
 
 
