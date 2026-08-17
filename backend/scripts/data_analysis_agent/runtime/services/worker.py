@@ -1258,6 +1258,9 @@ class DurableAnalysisWorker:
                 cancellation_requested=current.cancellation_requested,
             ),
             cancelled=cancellation_requested,
+            # The lease attempt is the fencing token: a worker whose lease was
+            # taken over cannot publish over the attempt that replaced it.
+            fencing_token=lease_attempt,
         )
         elapsed_ms = (monotonic() - started) * 1000
 

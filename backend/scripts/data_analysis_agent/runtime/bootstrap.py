@@ -12,7 +12,9 @@ from .repositories import (
 )
 from .execution import ExecutionLimits, MongoNormalizedInputResolver
 from .execution.native.subprocess_backend import SubprocessNativeBackend
+from .execution.publication import ResultPublisher
 from .execution.service import NativeExecutionService
+from .repositories.executions import MongoExecutionRepository
 from .planning import (
     AnalysisPlanningService,
     ExecutorCapabilities,
@@ -144,6 +146,9 @@ def build_analysis_runtime(
     artifact_service: ArtifactVersionService | None = None
     artifact_reconciler: ArtifactUploadReconciler | None = None
     workbook_context: WorkbookContextService | None = None
+    # Shared by the artifact service and the execution result publisher, so both
+    # write through one configured provider.
+    blob_store: CloudinaryArtifactBlobStore | None = None
     if active_settings.cloudinary_is_configured:
         blob_store = CloudinaryArtifactBlobStore(
             CloudinaryBlobStoreConfig(
@@ -223,10 +228,23 @@ def build_analysis_runtime(
     )
     # Only built when the deployment declares a native engine. Admission
     # returns PLAN_ONLY otherwise, so a run can never reach an absent executor.
+    #
+    # The publisher needs blob storage. Without it the engine still runs, but a
+    # result cannot be made durable, so executions stay process-local rather
+    # than pretending to be published.
+    result_publisher = (
+        ResultPublisher(
+            repository=MongoExecutionRepository(database),
+            store=blob_store,
+        )
+        if capabilities.native_execution_ready and blob_store is not None
+        else None
+    )
     execution_service = (
         NativeExecutionService(
             resolver=MongoNormalizedInputResolver(database),
             backend=SubprocessNativeBackend(),
+            publisher=result_publisher,
             capabilities=capabilities,
             limits=ExecutionLimits(
                 max_output_rows=active_settings.analysis_max_plan_rows_scanned,

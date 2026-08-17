@@ -23,7 +23,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..models.capabilities import ExecutorCapabilities
-from ..models.plans import AnalysisPlan, PlanColumn
+from ..models.executions import AnalysisExecution, ResultArtifacts
+from ..models.plans import AnalysisPlan, PlanColumn, WorkbookWriteIntent
 from .admission import (
     AdmissionDecision,
     ExecutionAdmission,
@@ -49,6 +50,7 @@ from .native.backend import (
 )
 from .native.engine import engine_version
 from .native.semantics import NATIVE_SEMANTICS_VERSION
+from .publication import ResultPublisher, cached_outcome
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,18 +72,25 @@ class ExecutionOutcome:
     failure_code: ExecutionFailureCode | None = None
     failure_message: str | None = None
     admission: AdmissionDecision | None = None
+    # Set when a durable record and artifact bundle were committed (9.8/9.9).
+    execution_id: str | None = None
+    artifacts: ResultArtifacts | None = None
 
     @property
     def rejected_by_admission(self) -> bool:
         return self.admission is not None and self.admission.rejected
 
+    @property
+    def published(self) -> bool:
+        return self.artifacts is not None
+
 
 class ExecutionResultStore:
-    """Tenant-scoped record of verified executions, keyed by execution key.
+    """Process-local memo of verified executions, keyed by execution key.
 
-    A real deployment persists this in MongoDB alongside the published artifact.
-    The in-memory default keeps the orchestration testable and lets a single
-    process satisfy "duplicate queue delivery produces one logical execution".
+    Used when no `ResultPublisher` is configured — tests, and any deployment
+    without blob storage. When a publisher is present the durable execution
+    record is the authority instead, and this is bypassed entirely.
     """
 
     def __init__(self) -> None:
@@ -104,16 +113,22 @@ class NativeExecutionService:
         resolver: NormalizedInputResolver,
         backend: NativeExecutionBackend | None = None,
         result_store: ExecutionResultStore | None = None,
+        publisher: ResultPublisher | None = None,
         capabilities: ExecutorCapabilities | None = None,
         limits: ExecutionLimits | None = None,
         staging_root: Path | None = None,
+        worker_id: str = "native-execution",
     ) -> None:
         self._resolver = resolver
         self._backend = backend or InProcessNativeBackend()
         self._results = result_store or ExecutionResultStore()
+        # When present, the durable execution record replaces the in-memory
+        # memo and the result bundle is stored (Phase 9.8/9.9).
+        self._publisher = publisher
         self._capabilities = capabilities or ExecutorCapabilities()
         self._limits = limits or ExecutionLimits()
         self._staging_root = staging_root
+        self._worker_id = worker_id
 
     async def execute(
         self,
@@ -121,6 +136,7 @@ class NativeExecutionService:
         plan: AnalysisPlan,
         run: RunAdmissionState,
         cancelled: CancellationCheck | None = None,
+        fencing_token: int = 1,
     ) -> ExecutionOutcome:
         decision = check_execution_preconditions(
             plan,
@@ -136,11 +152,32 @@ class NativeExecutionService:
             return self._failure(plan, error.code, error.message)
 
         key = execution_key(plan, result_alias=recipe_plan.result_alias)
-        cached = await self._results.get(key)
-        if cached is not None:
-            # Identical tenant, inputs, recipe, engine and semantics: replaying
-            # would produce the same content hash by construction.
-            return replace(cached, cache_hit=True)
+
+        # The durable record is both the reservation and the cache. Reserving
+        # before any work means duplicate delivery finds the first attempt
+        # rather than starting a second one.
+        execution = None
+        if self._publisher is not None:
+            execution = await self._publisher.reserve(
+                plan=plan,
+                recipe_plan=recipe_plan,
+                execution_key=key,
+                engine_version=engine_version(),
+                semantics_version=NATIVE_SEMANTICS_VERSION,
+            )
+            if cached_outcome(execution):
+                return self._from_record(execution, key)
+            execution = await self._publisher.start(
+                execution=execution,
+                worker_id=self._worker_id,
+                fencing_token=fencing_token,
+            )
+        else:
+            cached = await self._results.get(key)
+            if cached is not None:
+                # Identical tenant, inputs, recipe, engine and semantics:
+                # replaying produces the same content hash by construction.
+                return replace(cached, cache_hit=True)
 
         try:
             resolved = await self._resolver.resolve(
@@ -188,16 +225,68 @@ class NativeExecutionService:
                 result_alias=recipe_plan.result_alias,
                 limits=self._limits,
             )
+            output_path = directory / "result.arrow"
             result = await self._backend.execute(
                 recipe,
-                output_path=directory / "result.arrow",
+                output_path=output_path,
                 cancelled=cancelled,
             )
             outcome = self._outcome(key, result)
-            await self._results.put(key, outcome)
-            return outcome
+
+            if execution is None or self._publisher is None:
+                await self._results.put(key, outcome)
+                return outcome
+
+            publication = await self._publisher.finalize(
+                execution=execution,
+                plan=plan,
+                recipe=recipe,
+                result=result,
+                output_path=output_path,
+                limits=self._limits,
+                workbook_bound=_writes_workbook(plan),
+            )
+            if not publication.succeeded:
+                return replace(
+                    outcome,
+                    succeeded=False,
+                    execution_id=publication.execution.execution_id,
+                    failure_code=publication.failure_code or outcome.failure_code,
+                    failure_message=(
+                        publication.failure_message or outcome.failure_message
+                    ),
+                )
+            return replace(
+                outcome,
+                execution_id=publication.execution.execution_id,
+                artifacts=publication.execution.artifacts,
+                output_bytes=publication.execution.metrics.output_bytes,
+            )
         finally:
             shutil.rmtree(directory, ignore_errors=True)
+
+    def _from_record(
+        self,
+        execution: AnalysisExecution,
+        key: str,
+    ) -> ExecutionOutcome:
+        """Return a cache hit reconstructed from the durable record."""
+
+        return ExecutionOutcome(
+            succeeded=True,
+            execution_key=key,
+            engine_version=execution.engine_version,
+            semantics_version=execution.semantics_version,
+            isolation=self._backend.isolation,
+            cache_hit=True,
+            result_columns=execution.result_columns,
+            row_count=execution.metrics.output_rows,
+            content_hash=execution.result_content_hash,
+            output_bytes=execution.metrics.output_bytes,
+            duration_ms=execution.metrics.duration_ms,
+            execution_id=execution.execution_id,
+            artifacts=execution.artifacts,
+        )
 
     def _outcome(
         self,
@@ -258,6 +347,14 @@ class NativeExecutionService:
             admission=decision,
         )
 
+
+
+def _writes_workbook(plan: AnalysisPlan) -> bool:
+    """Workbook-bound results get the extra formula-injection safety layer."""
+
+    return any(
+        isinstance(intent, WorkbookWriteIntent) for intent in plan.write_intents
+    )
 
 
 __all__ = [
