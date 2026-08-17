@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:cell-hash": "node scripts/verify-cell-hash.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
