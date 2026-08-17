@@ -66,7 +66,7 @@ def execute_recipe(recipe: NativeRecipe, *, output_path: Path) -> NativeExecutio
         columns = _result_columns(recipe)
         assert_frame_matches(result, columns)
         _enforce_limits(recipe, result)
-        content_hash = _content_hash(result, columns)
+        content_hash = result_content_hash(result, columns)
         result.write_ipc(output_path, compression="zstd")
         size = output_path.stat().st_size
         if size > recipe.limits.max_output_bytes:
@@ -331,7 +331,10 @@ def _enforce_limits(recipe: NativeRecipe, frame: pl.DataFrame) -> None:
                 )
 
 
-def _content_hash(frame: pl.DataFrame, columns: tuple[PlanColumn, ...]) -> str:
+def result_content_hash(
+    frame: pl.DataFrame,
+    columns: tuple[PlanColumn, ...],
+) -> str:
     """Hash schema plus row bytes so replay can be proven identical.
 
     The schema is hashed from the logical plan columns, not from the physical
@@ -360,4 +363,5 @@ __all__ = [
     "ENGINE_NAME",
     "engine_version",
     "execute_recipe",
+    "result_content_hash",
 ]
