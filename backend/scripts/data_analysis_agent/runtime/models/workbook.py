@@ -122,6 +122,56 @@ def a1_dimensions(value: str) -> tuple[int, int]:
     return _parse_a1_range(value).dimensions
 
 
+def a1_bounds(value: str) -> tuple[int, int, int, int]:
+    """Return `(first_row, first_column, last_row, last_column)`, 1-based.
+
+    The one public way to turn an A1 range into arithmetic. Placement,
+    reservations and collision checks all need rectangle coordinates, and every
+    one of them must agree with the parser the guards and snapshots already use
+    — so they read bounds from here rather than parsing A1 a second time.
+    """
+
+    parsed = _parse_a1_range(value)
+    return (
+        parsed.start_row,
+        parsed.start_column,
+        parsed.end_row,
+        parsed.end_column,
+    )
+
+
+def a1_sheet_name(value: str) -> str | None:
+    """Return the sheet qualifier of `value`, if it carries one."""
+
+    return _parse_a1_range(value).sheet_name
+
+
+def a1_from_bounds(
+    first_row: int,
+    first_column: int,
+    last_row: int,
+    last_column: int,
+    *,
+    sheet_name: str | None = None,
+) -> str:
+    """Return the absolute A1 range covering the given 1-based bounds."""
+
+    if first_row < 1 or first_column < 1:
+        raise ValueError("A1 bounds are 1-based")
+    if last_row < first_row or last_column < first_column:
+        raise ValueError("A1 range end cannot precede its start")
+    if last_row > MAX_WORKBOOK_ROWS or last_column > MAX_WORKBOOK_COLUMNS:
+        raise ValueError("A1 range exceeds spreadsheet limits")
+    prefix = ""
+    if sheet_name is not None:
+        escaped = sheet_name.replace("'", "''")
+        prefix = f"'{escaped}'!"
+    return (
+        f"{prefix}{_column_label(first_column)}{first_row}:"
+        f"{_column_label(last_column)}{last_row}"
+    )
+
+
 def a1_ranges_overlap(left: str, right: str) -> bool:
     """Return whether two bounded ranges on the same sheet share any cell."""
 
@@ -172,6 +222,12 @@ def a1_subrange(
     )
 
 
+def column_label(number: int) -> str:
+    """Return the spreadsheet letter for a 1-based column number."""
+
+    return _column_label(number)
+
+
 def _column_label(number: int) -> str:
     if not 1 <= number <= MAX_WORKBOOK_COLUMNS:
         raise ValueError("column number exceeds spreadsheet limits")
@@ -181,6 +237,97 @@ def _column_label(number: int) -> str:
         value, remainder = divmod(value - 1, 26)
         output.append(chr(ord("A") + remainder))
     return "".join(reversed(output))
+
+
+@dataclass(frozen=True, slots=True)
+class Rect:
+    """A bounded, 1-based rectangle of cells on one worksheet.
+
+    Placement, collision checks and write reservations are all interval
+    arithmetic, and doing that arithmetic on A1 strings is how off-by-one
+    overwrites happen. Every one of them converts to this once, reasons in
+    integers, and converts back only to address a range.
+
+    The sheet is deliberately *not* part of the rectangle: two rectangles are
+    only comparable once the caller has established they are on the same sheet,
+    and folding that into `intersects` would make it easy to forget.
+    """
+
+    first_row: int
+    first_column: int
+    last_row: int
+    last_column: int
+
+    def __post_init__(self) -> None:
+        if self.first_row < 1 or self.first_column < 1:
+            raise ValueError("rectangles are 1-based")
+        if self.last_row < self.first_row or self.last_column < self.first_column:
+            raise ValueError("rectangle end cannot precede its start")
+
+    @classmethod
+    def from_a1(cls, value: str) -> Rect:
+        first_row, first_column, last_row, last_column = a1_bounds(value)
+        return cls(
+            first_row=first_row,
+            first_column=first_column,
+            last_row=last_row,
+            last_column=last_column,
+        )
+
+    @classmethod
+    def sized(cls, *, first_row: int, first_column: int, rows: int, columns: int) -> Rect:
+        if rows < 1 or columns < 1:
+            raise ValueError("rectangle dimensions must be positive")
+        return cls(
+            first_row=first_row,
+            first_column=first_column,
+            last_row=first_row + rows - 1,
+            last_column=first_column + columns - 1,
+        )
+
+    def to_a1(self, *, sheet_name: str | None = None) -> str:
+        return a1_from_bounds(
+            self.first_row,
+            self.first_column,
+            self.last_row,
+            self.last_column,
+            sheet_name=sheet_name,
+        )
+
+    @property
+    def rows(self) -> int:
+        return self.last_row - self.first_row + 1
+
+    @property
+    def columns(self) -> int:
+        return self.last_column - self.first_column + 1
+
+    @property
+    def cell_count(self) -> int:
+        return self.rows * self.columns
+
+    @property
+    def within_sheet_limits(self) -> bool:
+        return (
+            self.last_row <= MAX_WORKBOOK_ROWS
+            and self.last_column <= MAX_WORKBOOK_COLUMNS
+        )
+
+    def intersects(self, other: Rect) -> bool:
+        return not (
+            self.last_column < other.first_column
+            or other.last_column < self.first_column
+            or self.last_row < other.first_row
+            or other.last_row < self.first_row
+        )
+
+    def contains(self, other: Rect) -> bool:
+        return (
+            self.first_row <= other.first_row
+            and self.first_column <= other.first_column
+            and self.last_row >= other.last_row
+            and self.last_column >= other.last_column
+        )
 
 
 class WorkbookRangeSnapshot(BaseModel):
@@ -436,13 +583,18 @@ __all__ = [
     "CellValue",
     "MAX_WORKBOOK_COLUMNS",
     "MAX_WORKBOOK_ROWS",
+    "Rect",
     "SpreadsheetContext",
     "WorkbookCellType",
     "WorkbookRangeSnapshot",
+    "a1_bounds",
     "a1_dimensions",
+    "a1_from_bounds",
     "a1_ranges_overlap",
+    "a1_sheet_name",
     "a1_subrange",
     "canonical_snapshot_bytes",
     "canonical_snapshot_hash",
     "canonical_snapshot_payload",
+    "column_label",
 ]
