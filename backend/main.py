@@ -11,6 +11,7 @@ from apis.analysis_runs import router as analysis_runs_router
 from apis.analysis_artifacts import router as analysis_artifacts_router
 from apis.analysis_spreadsheets import router as analysis_spreadsheets_router
 from apis.analysis_plans import router as analysis_plans_router
+from apis.analysis_patches import router as analysis_patches_router
 from apis.analysis_diagnostics import router as analysis_diagnostics_router
 from config.settings import settings
 from db.mongodb import init_mongodb, close_mongodb
@@ -85,6 +86,7 @@ app.include_router(quiz_attempts_router)
 app.include_router(tables_router)
 app.include_router(analysis_runs_router)
 app.include_router(analysis_plans_router)
+app.include_router(analysis_patches_router)
 app.include_router(analysis_artifacts_router)
 app.include_router(analysis_spreadsheets_router)
 app.include_router(analysis_diagnostics_router)
@@ -92,6 +94,8 @@ app.state.analysis_runtime = None
 app.state.analysis_run_service = None
 app.state.analysis_artifact_service = None
 app.state.analysis_planning_service = None
+app.state.analysis_patch_service = None
+app.state.analysis_patch_repository = None
 app.state.analysis_diagnostics_service = None
 app.state.analysis_sse_limiter = SSEConnectionLimiter(
     SSEConnectionLimits(
@@ -119,6 +123,8 @@ async def on_startup() -> None:
             app.state.analysis_run_service = runtime.run_service
             app.state.analysis_artifact_service = runtime.artifact_service
             app.state.analysis_planning_service = runtime.planning_service
+            app.state.analysis_patch_service = runtime.patch_service
+            app.state.analysis_patch_repository = runtime.patch_repository
             app.state.analysis_diagnostics_service = runtime.diagnostics_service
 
 
@@ -131,6 +137,8 @@ async def on_shutdown() -> None:
     app.state.analysis_run_service = None
     app.state.analysis_artifact_service = None
     app.state.analysis_planning_service = None
+    app.state.analysis_patch_service = None
+    app.state.analysis_patch_repository = None
     app.state.analysis_diagnostics_service = None
     await cancel_docling_table_fallbacks()
     await close_mongodb()

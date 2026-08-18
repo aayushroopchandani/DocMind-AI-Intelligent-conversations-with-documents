@@ -32,7 +32,7 @@ from ..execution.admission import (
     RunAdmissionState,
     plan_contract_mismatch,
 )
-from ..execution.service import NativeExecutionService
+from ..execution.service import ExecutionOutcome, NativeExecutionService
 from ..planning.contracts import (
     PlanningOutcome,
     PlanningProgress,
@@ -49,6 +49,7 @@ from ..repositories.runs import (
     AnalysisRunNotFoundError,
     AnalysisRunStoreError,
 )
+from .patch_service import PatchService, workbook_write_intent
 from .state_machine import (
     AnalysisRunStateMachine,
     InvalidAnalysisRunTransition,
@@ -187,6 +188,7 @@ class DurableAnalysisWorker:
         adapter: Phase7AnalysisAdapter | None = None,
         planning_service: AnalysisPlanningService | None = None,
         execution_service: NativeExecutionService | None = None,
+        patch_service: PatchService | None = None,
         config: AnalysisWorkerConfig | None = None,
         worker_id: str | None = None,
     ) -> None:
@@ -198,6 +200,10 @@ class DurableAnalysisWorker:
         # PLAN_ONLY in that deployment, so a queued run cannot reach execution
         # without this being present.
         self._execution_service = execution_service
+        # Absent until the deployment can both compile patches and store their
+        # payloads. Without it a workbook-writing run completes at its result
+        # rather than waiting for a handshake nobody will answer.
+        self._patch_service = patch_service
         self._config = config or AnalysisWorkerConfig()
         self._worker_id = worker_id or f"analysis-worker-{uuid4()}"
         self._stop = asyncio.Event()
@@ -1285,6 +1291,26 @@ class DurableAnalysisWorker:
             )
             return
 
+        if await self._request_patch_context(
+            run=current,
+            plan=plan,
+            outcome=outcome,
+            lease_attempt=lease_attempt,
+        ):
+            # A workbook edit is not finished when the result is: the browser
+            # still has to report where the output can safely go (9.11.1).
+            log_analysis_event(
+                logger,
+                "patch_context_required",
+                run_id=run.run_id,
+                workspace_id=run.workspace_id,
+                phase=AnalysisRunPhase.PROPOSAL.value,
+                operation="native_execution",
+                duration_ms=elapsed_ms,
+                status=AnalysisRunStatus.WAITING.value,
+            )
+            return
+
         await self._state_machine.transition(
             user_id=run.user_id,
             run_id=run.run_id,
@@ -1319,6 +1345,40 @@ class DurableAnalysisWorker:
             outcome=AnalysisRunOutcome.COMPLETED.value,
             status=AnalysisRunStatus.SUCCEEDED.value,
         )
+
+    async def _request_patch_context(
+        self,
+        *,
+        run: AnalysisRun,
+        plan: AnalysisPlan,
+        outcome: ExecutionOutcome,
+        lease_attempt: int,
+    ) -> bool:
+        """Hand a workbook-writing run to the patch handshake.
+
+        Returns whether the run was parked. A read-only analysis, a deployment
+        without the patch service, or an execution that published nothing all
+        fall through to ordinary completion — a run must never wait on a
+        handshake nothing will answer.
+        """
+
+        if self._patch_service is None:
+            return False
+        if workbook_write_intent(plan) is None:
+            return False
+        if outcome.execution_id is None or not outcome.published:
+            return False
+        await self._patch_service.request_context(
+            run=run,
+            plan=plan,
+            execution_id=outcome.execution_id,
+            execution_key=outcome.execution_key,
+            output_rows=outcome.row_count + 1,
+            output_columns=len(outcome.result_columns),
+            worker_id=self._worker_id,
+            lease_attempt=lease_attempt,
+        )
+        return True
 
     async def _finish_failed(
         self,

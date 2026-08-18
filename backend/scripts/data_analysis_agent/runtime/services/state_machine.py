@@ -59,6 +59,11 @@ _ALLOWED_STATUS_TRANSITIONS: dict[
     AnalysisRunStatus.WAITING: frozenset(
         {
             AnalysisRunStatus.ACTIVE,
+            # The patch flow waits three times in a row — for context, for
+            # approval, then while the browser applies. Each is a distinct
+            # outcome at a non-decreasing phase, so the run stays waiting
+            # rather than briefly pretending to be active in between.
+            AnalysisRunStatus.WAITING,
             AnalysisRunStatus.PAUSED,
             AnalysisRunStatus.SUCCEEDED,
             AnalysisRunStatus.FAILED,
@@ -117,6 +122,7 @@ _TERMINAL_EVENT_TYPES = frozenset(
         AnalysisEventType.RUN_EXPIRED,
         AnalysisEventType.PLAN_READY,
         AnalysisEventType.PLAN_REJECTED,
+        AnalysisEventType.PATCH_REJECTED,
     }
 )
 
@@ -137,6 +143,13 @@ _SUMMARY_UPDATE_FIELDS = frozenset(
         "current_plan_revision",
         "current_plan_hash",
         "plan_approval_status",
+        "current_execution_id",
+        "current_execution_key",
+        "current_patch_id",
+        "current_patch_revision",
+        "current_patch_hash",
+        "patch_approval_status",
+        "applied_workbook_revision",
     }
 )
 
@@ -663,6 +676,18 @@ class AnalysisRunStateMachine:
                 AnalysisRunOutcome.PLAN_READY: (
                     AnalysisEventType.PLAN_APPROVAL_REQUIRED
                 ),
+                # Phase 9.11/9.12 park the run three more times: once for the
+                # live workbook context, once for patch approval, and once
+                # while the browser applies the approved patch.
+                AnalysisRunOutcome.PATCH_CONTEXT_REQUIRED: (
+                    AnalysisEventType.PATCH_CONTEXT_REQUIRED
+                ),
+                AnalysisRunOutcome.PATCH_READY: (
+                    AnalysisEventType.PATCH_APPROVAL_REQUIRED
+                ),
+                AnalysisRunOutcome.AWAITING_APPLICATION: (
+                    AnalysisEventType.PATCH_APPROVED
+                ),
             }.get(outcome)
             execution_events = {
                 AnalysisEventType.EXECUTION_QUEUED,
@@ -703,6 +728,7 @@ class AnalysisRunStateMachine:
                 },
                 AnalysisRunOutcome.REJECTED: {
                     AnalysisEventType.PLAN_REJECTED,
+                    AnalysisEventType.PATCH_REJECTED,
                 },
                 AnalysisRunOutcome.COMPLETED: {
                     AnalysisEventType.RUN_COMPLETED,

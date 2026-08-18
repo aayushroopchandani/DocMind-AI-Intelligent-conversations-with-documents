@@ -14,7 +14,11 @@ from .execution import ExecutionLimits, MongoNormalizedInputResolver
 from .execution.native.subprocess_backend import SubprocessNativeBackend
 from .execution.publication import ResultPublisher
 from .execution.service import NativeExecutionService
+from .execution.results.reader import BlobExecutionResultReader
+from .placement import WriteReservationService
 from .repositories.executions import MongoExecutionRepository
+from .repositories.patches import MongoPatchProposalRepository
+from .repositories.reservations import MongoSpatialReservationRepository
 from .planning import (
     AnalysisPlanningService,
     ExecutorCapabilities,
@@ -34,6 +38,7 @@ from .services.worker import (
     DurableAnalysisWorker,
 )
 from .services.diagnostics import AnalysisDiagnosticsService
+from .services.patch_service import PatchService, PatchServiceConfig
 from .services.workbook_context import (
     WorkbookContextLimits,
     WorkbookContextService,
@@ -42,6 +47,7 @@ from .storage.cloudinary import (
     CloudinaryArtifactBlobStore,
     CloudinaryBlobStoreConfig,
 )
+from .storage.patch_payloads import BlobPayloadReader, BlobPayloadWriter
 from .storage.validation import ArtifactValidationLimits
 
 
@@ -53,6 +59,8 @@ class AnalysisRuntime:
     planning_service: AnalysisPlanningService | None = None
     artifact_reconciler: ArtifactUploadReconciler | None = None
     diagnostics_service: AnalysisDiagnosticsService | None = None
+    patch_service: PatchService | None = None
+    patch_repository: MongoPatchProposalRepository | None = None
 
     async def start(self) -> None:
         if self.artifact_reconciler is not None:
@@ -255,11 +263,47 @@ def build_analysis_runtime(
         if capabilities.native_execution_ready
         else None
     )
+    # Only built when a patch can be compiled *and* its payload stored. A
+    # deployment without blob storage completes a workbook run at its result
+    # rather than parking it on a handshake it could never finish (9.11.1).
+    patch_repository = MongoPatchProposalRepository(database)
+    patch_service = (
+        PatchService(
+            state_machine=state_machine,
+            plans=plan_repository,
+            executions=MongoExecutionRepository(database),
+            proposals=patch_repository,
+            reservations=WriteReservationService(
+                MongoSpatialReservationRepository(database),
+            ),
+            result_reader=BlobExecutionResultReader(
+                blob_store,
+                max_bytes=active_settings.analysis_max_artifact_bytes,
+            ),
+            payload_writers=lambda *, workspace_id, patch_id, patch_revision: (
+                BlobPayloadWriter(
+                    blob_store,
+                    workspace_id=workspace_id,
+                    patch_id=patch_id,
+                    patch_revision=patch_revision,
+                )
+            ),
+            payload_reader=BlobPayloadReader(blob_store),
+            config=PatchServiceConfig(
+                max_affected_cells=(
+                    active_settings.analysis_max_plan_cells_written
+                ),
+            ),
+        )
+        if capabilities.workbook_patches_ready and blob_store is not None
+        else None
+    )
     worker = DurableAnalysisWorker(
         state_machine=state_machine,
         dataset_catalog=dataset_catalog,
         planning_service=planning_service,
         execution_service=execution_service,
+        patch_service=patch_service,
         config=AnalysisWorkerConfig(
             concurrency=active_settings.analysis_worker_concurrency,
             poll_seconds=active_settings.analysis_worker_poll_seconds,
@@ -277,6 +321,8 @@ def build_analysis_runtime(
             database=database,
             worker=worker,
         ),
+        patch_service=patch_service,
+        patch_repository=patch_repository,
     )
 
 

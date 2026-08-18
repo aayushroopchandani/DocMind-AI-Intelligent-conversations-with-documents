@@ -258,6 +258,11 @@ class AnalysisRunView(BaseModel):
     current_plan_revision: int | None
     current_plan_hash: str | None
     plan_approval_status: RunApprovalStatus | None
+    current_patch_id: str | None
+    current_patch_revision: int | None
+    current_patch_hash: str | None
+    patch_approval_status: RunApprovalStatus | None
+    applied_workbook_revision: int | None
     warnings_summary: tuple[RunIssueSummary, ...]
     errors_summary: tuple[RunIssueSummary, ...]
     model_versions: dict[str, str]
@@ -287,6 +292,10 @@ class AnalysisRunView(BaseModel):
                     "lease_attempt",
                     "cancellation_requested_at",
                     "pause_requested_at",
+                    # Control-plane internals: the browser addresses a patch by
+                    # its patch ID, never by the execution behind it.
+                    "current_execution_id",
+                    "current_execution_key",
                 }
             )
         )

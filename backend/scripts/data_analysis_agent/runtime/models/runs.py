@@ -57,6 +57,11 @@ class AnalysisRunOutcome(str, Enum):
     UNANSWERABLE = "unanswerable"
     PLAN_READY = "plan_ready"
     QUEUED_FOR_EXECUTION = "queued_for_execution"
+    # The result exists; the browser has to say what its workbook looks like
+    # before a patch can be compiled against it (9.11.1).
+    PATCH_CONTEXT_REQUIRED = "patch_context_required"
+    PATCH_READY = "patch_ready"
+    AWAITING_APPLICATION = "awaiting_application"
     REJECTED = "rejected"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -204,6 +209,23 @@ class AnalysisRun(BaseModel):
         pattern=r"^[0-9a-f]{64}$",
     )
     plan_approval_status: RunApprovalStatus | None = None
+    #: The published execution this run's patch is compiled from. Recorded so
+    #: the patch handshake can find the result minutes later, on another
+    #: worker, without the client naming it.
+    current_execution_id: str | None = Field(default=None, max_length=120)
+    current_execution_key: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    current_patch_id: str | None = Field(default=None, max_length=120)
+    current_patch_revision: int | None = Field(default=None, ge=1)
+    current_patch_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    patch_approval_status: RunApprovalStatus | None = None
+    #: The workbook revision the applied patch produced, from its receipt.
+    applied_workbook_revision: int | None = Field(default=None, ge=1)
 
     warnings_summary: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)
     errors_summary: tuple[RunIssueSummary, ...] = Field(default=(), max_length=100)
@@ -418,9 +440,16 @@ class AnalysisRun(BaseModel):
                 AnalysisRunOutcome.CLARIFICATION_REQUIRED,
                 AnalysisRunOutcome.PLAN_READY,
                 AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
+                # Phase 9.11/9.12 wait three more times, all of them on the
+                # browser: for its workbook context, for the final patch
+                # decision, and while it applies the approved patch.
+                AnalysisRunOutcome.PATCH_CONTEXT_REQUIRED,
+                AnalysisRunOutcome.PATCH_READY,
+                AnalysisRunOutcome.AWAITING_APPLICATION,
             }:
                 raise ValueError(
-                    "waiting runs need clarification, approval, or execution admission"
+                    "waiting runs need clarification, approval, execution "
+                    "admission, or a workbook patch step"
                 )
             if (
                 self.outcome == AnalysisRunOutcome.PLAN_READY
@@ -442,6 +471,30 @@ class AnalysisRun(BaseModel):
                 )
             ):
                 raise ValueError("queued execution requires a usable plan")
+            if (
+                self.outcome
+                in {
+                    AnalysisRunOutcome.PATCH_CONTEXT_REQUIRED,
+                    AnalysisRunOutcome.PATCH_READY,
+                    AnalysisRunOutcome.AWAITING_APPLICATION,
+                }
+                and self.phase
+                not in {
+                    AnalysisRunPhase.PROPOSAL,
+                    AnalysisRunPhase.APPLICATION,
+                }
+            ):
+                raise ValueError("patch waits belong to proposal or application")
+            if (
+                self.outcome == AnalysisRunOutcome.PATCH_READY
+                and self.current_patch_id is None
+            ):
+                raise ValueError("a patch approval wait needs a proposed patch")
+            if (
+                self.outcome == AnalysisRunOutcome.AWAITING_APPLICATION
+                and self.patch_approval_status != RunApprovalStatus.APPROVED
+            ):
+                raise ValueError("an application wait requires an approved patch")
         elif (
             not terminal
             and self.status != AnalysisRunStatus.PAUSED
@@ -462,6 +515,19 @@ class AnalysisRun(BaseModel):
             value is not None for value in plan_values
         ):
             raise ValueError("current plan identity and approval must be complete")
+        patch_values = (
+            self.current_patch_id,
+            self.current_patch_revision,
+            self.current_patch_hash,
+        )
+        # Approval status is deliberately outside this group: it is set to
+        # pending when the handshake starts, before any patch exists to name.
+        if any(value is not None for value in patch_values) != all(
+            value is not None for value in patch_values
+        ):
+            raise ValueError("current patch identity must be complete")
+        if self.applied_workbook_revision is not None and self.current_patch_id is None:
+            raise ValueError("an applied workbook revision needs an applied patch")
         if self.outcome in {
             AnalysisRunOutcome.PLAN_READY,
             AnalysisRunOutcome.QUEUED_FOR_EXECUTION,
@@ -473,8 +539,15 @@ class AnalysisRun(BaseModel):
             }:
                 raise ValueError("plan-ready runs require a usable plan")
         if self.outcome == AnalysisRunOutcome.REJECTED:
-            if self.plan_approval_status != RunApprovalStatus.REJECTED:
-                raise ValueError("rejected runs require a rejected plan")
+            # A run ends rejected when either gate is refused: the plan up
+            # front, or the final patch after the result exists (9.12.1).
+            if RunApprovalStatus.REJECTED not in {
+                self.plan_approval_status,
+                self.patch_approval_status,
+            }:
+                raise ValueError(
+                    "rejected runs require a rejected plan or patch"
+                )
         return self
 
 

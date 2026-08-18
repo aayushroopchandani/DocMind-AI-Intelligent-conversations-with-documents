@@ -77,6 +77,23 @@ LEGACY_ANALYSIS_INDEX_REPLACEMENTS: Mapping[
     Mapping[str, tuple[MongoIndexDefinition, ...]],
 ] = MappingProxyType(
     {
+        "analysis_patch_proposals": MappingProxyType(
+            {
+                # Phase 9.12 added patch revisions. This is the exact pre-9.12
+                # definition that may be replaced.
+                "uq_analysis_patch_proposals_identity": (
+                    MongoIndexDefinition(
+                        keys=(
+                            ("user_id", ASCENDING),
+                            ("run_id", ASCENDING),
+                            ("patch_id", ASCENDING),
+                        ),
+                        name="uq_analysis_patch_proposals_identity",
+                        unique=True,
+                    ),
+                ),
+            }
+        ),
         "analysis_runs": MappingProxyType(
             {
                 # Phase 8.10 added pause fencing to both worker queues. These
@@ -424,11 +441,14 @@ ANALYSIS_INDEX_DEFINITIONS = (
     CollectionIndexDefinitions(
         collection_name="analysis_patch_proposals",
         indexes=(
+            # A rebase or relocation issues a new revision of the same patch,
+            # so identity is the pair, not the patch alone (9.12.1).
             MongoIndexDefinition(
                 keys=(
                     ("user_id", ASCENDING),
                     ("run_id", ASCENDING),
                     ("patch_id", ASCENDING),
+                    ("revision", ASCENDING),
                 ),
                 name="uq_analysis_patch_proposals_identity",
                 unique=True,
@@ -441,6 +461,64 @@ ANALYSIS_INDEX_DEFINITIONS = (
                     ("created_at", DESCENDING),
                 ),
                 name="ix_analysis_patch_proposals_approval_queue",
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("run_id", ASCENDING),
+                    ("created_at", DESCENDING),
+                    ("revision", DESCENDING),
+                ),
+                name="ix_analysis_patch_proposals_run_history",
+            ),
+        ),
+    ),
+    CollectionIndexDefinitions(
+        collection_name="analysis_write_reservations",
+        indexes=(
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("reservation_id", ASCENDING),
+                ),
+                name="uq_analysis_write_reservations_identity",
+                unique=True,
+            ),
+            # The overlap query (9.11.5): sheet first, then the four interval
+            # bounds it compares. MongoDB cannot enforce non-overlap with an
+            # index, so this exists to make the repository's check cheap rather
+            # than to enforce anything by itself.
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("workbook_id", ASCENDING),
+                    ("worksheet_id", ASCENDING),
+                    ("status", ASCENDING),
+                    ("expires_at", ASCENDING),
+                    ("first_row", ASCENDING),
+                    ("last_row", ASCENDING),
+                    ("first_column", ASCENDING),
+                    ("last_column", ASCENDING),
+                ),
+                name="ix_analysis_write_reservations_overlap",
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("run_id", ASCENDING),
+                    ("patch_id", ASCENDING),
+                    ("patch_revision", ASCENDING),
+                ),
+                name="uq_analysis_write_reservations_patch_revision",
+                unique=True,
+                partial_filter=MappingProxyType({"status": "active"}),
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("status", ASCENDING),
+                    ("expires_at", ASCENDING),
+                ),
+                name="ix_analysis_write_reservations_expiry_sweep",
             ),
         ),
     ),

@@ -82,6 +82,7 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
                 "dataset_catalog",
                 "analysis_plans",
                 "analysis_patch_proposals",
+                "analysis_write_reservations",
             },
         )
         for group in ANALYSIS_INDEX_DEFINITIONS:
@@ -153,6 +154,25 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
                 ("user_id", 1),
                 ("run_id", 1),
                 ("patch_id", 1),
+                # A rebase issues a new revision of the same patch (9.12.1),
+                # so identity is the pair rather than the patch alone.
+                ("revision", 1),
+            ),
+            (
+                "analysis_write_reservations",
+                "uq_analysis_write_reservations_identity",
+            ): (
+                ("user_id", 1),
+                ("reservation_id", 1),
+            ),
+            (
+                "analysis_write_reservations",
+                "uq_analysis_write_reservations_patch_revision",
+            ): (
+                ("user_id", 1),
+                ("run_id", 1),
+                ("patch_id", 1),
+                ("patch_revision", 1),
             ),
         }
 
@@ -334,6 +354,9 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
             "ix_analysis_runs_expiration_queue",
             "ix_analysis_runs_pause_queue",
             "ix_artifact_versions_reconciliation_queue",
+            # Expired write leases are swept across tenants, like the run
+            # queues: a reservation nobody released must not outlive its owner.
+            "ix_analysis_write_reservations_expiry_sweep",
         }
         names: set[str] = set()
         for group in ANALYSIS_INDEX_DEFINITIONS:
