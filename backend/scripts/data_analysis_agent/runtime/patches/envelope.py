@@ -42,6 +42,9 @@ class PatchStatus(str, Enum):
     REJECTED = "rejected"
     APPLIED = "applied"
     EXPIRED = "expired"
+    # A newer revision of the same patch replaced this one — a rebase onto a
+    # newer workbook revision, or a relocation after the target was taken.
+    SUPERSEDED = "superseded"
 
 
 class WorkbookGuard(BaseModel):

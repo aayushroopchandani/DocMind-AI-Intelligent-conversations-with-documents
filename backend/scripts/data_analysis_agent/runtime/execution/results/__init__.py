@@ -8,6 +8,12 @@ types, and a result nobody can read back is not durable.
 
 from .lineage import LINEAGE_FORMAT_VERSION, build_lineage
 from .previews import MAX_PREVIEW_ROWS, build_preview
+from .reader import (
+    BlobExecutionResultReader,
+    ExecutionResultReader,
+    ResultRows,
+    ResultUnavailableError,
+)
 from .publisher import (
     PublishedBundle,
     ResultPublicationError,
@@ -23,6 +29,7 @@ from .serialization import (
     decode_rows,
     encode_json,
     encode_rows,
+    iter_result_rows,
 )
 from .validation import ResultIssue, validate_result
 
@@ -31,8 +38,12 @@ __all__ = [
     "MAX_PREVIEW_ROWS",
     "NULL_SENTINEL",
     "RESULT_FORMAT_VERSION",
+    "BlobExecutionResultReader",
+    "ExecutionResultReader",
     "PublishedBundle",
     "ResultIssue",
+    "ResultRows",
+    "ResultUnavailableError",
     "ResultPublicationError",
     "ResultSerializationError",
     "build_lineage",
@@ -41,6 +52,7 @@ __all__ = [
     "decode_rows",
     "encode_json",
     "encode_rows",
+    "iter_result_rows",
     "object_key",
     "publish_result",
     "validate_result",

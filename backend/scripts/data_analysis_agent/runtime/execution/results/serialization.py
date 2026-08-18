@@ -26,6 +26,7 @@ import gzip
 import io
 import json
 from datetime import date, datetime
+from collections.abc import Iterator
 from typing import Any
 
 import polars as pl
@@ -112,11 +113,16 @@ def encode_rows(frame: pl.DataFrame, columns: tuple[PlanColumn, ...]) -> bytes:
     return gzip.compress(buffer.getvalue().encode("utf-8"), mtime=0)
 
 
-def decode_rows(
+def iter_result_rows(
     payload: bytes,
     columns: tuple[PlanColumn, ...],
-) -> list[dict[str, Any]]:
-    """Return the typed rows encoded in `payload`."""
+) -> Iterator[tuple[Any, ...]]:
+    """Yield the typed rows encoded in `payload`, one at a time.
+
+    Used by the patch compiler, which streams a result straight into payload
+    chunks: materializing a quarter of a million rows as dictionaries first
+    would cost more memory than the entire patch it is building.
+    """
 
     text = gzip.decompress(payload).decode("utf-8")
     reader = csv.reader(io.StringIO(text), **_CSV_DIALECT)
@@ -130,19 +136,28 @@ def decode_rows(
             f"result CSV header {header} does not match the declared schema "
             f"{expected}"
         )
-    rows: list[dict[str, Any]] = []
     for line in reader:
         if len(line) != len(columns):
             raise ResultSerializationError(
                 f"result CSV row has {len(line)} fields, expected {len(columns)}"
             )
-        rows.append(
-            {
-                column.key: decode_value(field, column)
-                for column, field in zip(columns, line, strict=True)
-            }
+        yield tuple(
+            decode_value(field, column)
+            for column, field in zip(columns, line, strict=True)
         )
-    return rows
+
+
+def decode_rows(
+    payload: bytes,
+    columns: tuple[PlanColumn, ...],
+) -> list[dict[str, Any]]:
+    """Return the typed rows encoded in `payload`."""
+
+    keys = [column.key for column in columns]
+    return [
+        dict(zip(keys, row, strict=True))
+        for row in iter_result_rows(payload, columns)
+    ]
 
 
 def build_schema_manifest(
@@ -217,4 +232,5 @@ __all__ = [
     "encode_json",
     "encode_rows",
     "encode_value",
+    "iter_result_rows",
 ]

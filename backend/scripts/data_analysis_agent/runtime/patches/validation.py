@@ -34,6 +34,9 @@ class PatchIssue:
     code: str
     message: str
     op_id: str | None = None
+    #: (worksheet_id, range_a1) for guard failures, so a caller can tell a
+    #: changed source apart from an occupied target without parsing messages.
+    range_key: tuple[str, str] | None = None
 
 
 def validate_patch(patch: WorkbookPatch) -> tuple[PatchIssue, ...]:
@@ -135,7 +138,8 @@ def check_guards(
             )
         )
     for guard in (*patch.source_guards, *patch.target_guards):
-        cells = live.get((guard.worksheet_id, guard.range_a1))
+        key = (guard.worksheet_id, guard.range_a1)
+        cells = live.get(key)
         if cells is None:
             issues.append(
                 PatchIssue(
@@ -144,6 +148,7 @@ def check_guards(
                         f"no captured context for {guard.role} range "
                         f"{guard.range_a1}"
                     ),
+                    range_key=key,
                 )
             )
             continue
@@ -155,6 +160,7 @@ def check_guards(
                         f"{guard.role} range {guard.range_a1} changed since the "
                         "patch was compiled"
                     ),
+                    range_key=key,
                 )
             )
     return tuple(issues)
