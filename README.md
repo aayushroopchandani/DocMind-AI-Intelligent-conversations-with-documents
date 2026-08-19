@@ -240,7 +240,7 @@ flowchart TB
     REJECT --> STATE
     STATE --> EVENTS
 
-    PLANREADY -. Phase 9 boundary .-> NEXT[Not implemented in Phase 8<br/>execute native/Python/frontend steps<br/>validate exact results · propose patch<br/>final patch approval · apply workbook receipt]:::terminal
+    PLANREADY -. Phase 9 boundary .-> NEXT[Continues in Phase 9<br/>admit and execute natively · validate exact results<br/>place output · reserve the rectangle · compile a patch<br/>final patch approval · apply and verify the receipt]:::terminal
     APPROVED -. Phase 9 boundary .-> NEXT
 ```
 
@@ -285,20 +285,170 @@ plan hashes, input signatures, or workbook guards as appropriate.
 | `GET /health`, `GET /ready` | Expose minimal liveness and dependency readiness without sensitive details. |
 | `GET /analysis/diagnostics` | Return protected local worker, queue, latency, token, and error aggregates. |
 
-> **Current implementation boundary:** Phase 8 ends with a durable, validated,
-> versioned plan/run record whose outcome is `plan_ready`, `rejected`, or
+> **Phase 8 boundary:** Phase 8 ends with a durable, validated, versioned
+> plan/run record whose outcome is `plan_ready`, `rejected`, or
 > `clarification_required`; plans that required HITL also retain their exact
-> `approved` or `rejected` decision. It can describe filters, formulas, generated
-> data, joins, statistics, ML, visualizations, and workbook write intent, but it
-> does **not** execute those steps or mutate a workbook. Native/Python/frontend
-> execution, exact result validation, patch proposal, final patch approval, and
-> workbook application belong to Phase 9.
+> `approved` or `rejected` decision. It describes filters, formulas, generated
+> data, joins, statistics, ML, visualizations, and workbook write intent without
+> executing any of it. Execution, exact result validation, patch proposal, final
+> patch approval, and workbook application are Phase 9, below.
 
-### Data Analysis Agent — durable Phase 8 lifecycle
+### Data Analysis Agent — Phase 9 native execution and safe workbook editing
+
+Phase 9 continues exactly where the diagram above stops. A validated plan is now
+admitted, compiled into a deterministic recipe, executed in a bounded worker
+process with no LLM and no arbitrary Python, and published as an immutable
+content-hashed bundle. Only then does the workbook enter the picture: the
+backend asks the browser what its sheet actually looks like, chooses one
+rectangle that is provably safe to write, holds it, compiles a declarative
+patch against that exact view, and applies nothing until a human approves the
+patch and the browser returns a receipt whose hashes the server itself produced.
+
+The rule that shapes every box below: the workbook lives in the browser, so the
+backend never assumes what is in a cell it has not been shown.
+
+```mermaid
+flowchart TB
+    classDef client fill:#0f172a,stroke:#38bdf8,color:#f8fafc,stroke-width:2px
+    classDef api fill:#172554,stroke:#60a5fa,color:#eff6ff
+    classDef process fill:#132e2a,stroke:#34d399,color:#ecfdf5
+    classDef decision fill:#422006,stroke:#fbbf24,color:#fffbeb,stroke-width:2px
+    classDef store fill:#2e1065,stroke:#c084fc,color:#faf5ff
+    classDef terminal fill:#3f1d2e,stroke:#fb7185,color:#fff1f2
+    classDef boundary fill:#1f2937,stroke:#f8fafc,color:#f8fafc,stroke-width:2px
+
+    PLANOK[Validated Plan v2<br/>approved, or approval-free by policy]:::boundary
+
+    subgraph EXEC["G · Admission and deterministic native execution"]
+        direction TB
+        PLANOK --> ADMIT[Execution admission<br/>tenant ownership · plan still current<br/>capability profile · resource ceilings<br/>cancellation flag re-read from durable state]:::process
+        ADMIT --> ADMITTED{Executable in this deployment?}:::decision
+        ADMITTED -- engine absent or plan superseded --> PLANONLY[status succeeded<br/>outcome plan_ready]:::terminal
+        ADMITTED -- yes --> KEY[Deterministic execution key<br/>plan hash · input content signatures<br/>recipe hash · engine and semantics versions]:::process
+        KEY --> EXECREC[(MongoDB analysis_executions<br/>reservation · fencing token · stages<br/>metrics · artifacts · failure code)]:::store
+        EXECREC --> CACHED{Key already published?}:::decision
+        CACHED -- yes, reuse --> BUNDLE
+        CACHED -- no --> RESOLVE[Durable input resolution<br/>normalized dataset ID + content signature<br/>re-verified against what the plan was built on]:::process
+        RESOLVE --> DAG[Recipe compiler<br/>topological stages · lazy fusion<br/>checkpoint boundaries]:::process
+        DAG --> NATIVE[Bounded worker subprocess<br/>Polars LazyFrame · seeded generation<br/>no LLM · no arbitrary Python · no credentials<br/>memory, time and output caps]:::process
+        NATIVE --> RESVALID[Result validation<br/>declared schema · plan assertions<br/>row and cell ceilings<br/>content hash recomputed from the bytes that arrived]:::process
+        RESVALID --> BUNDLE[Immutable result bundle<br/>rows · schema manifest · lineage · redacted preview]:::process
+        BUNDLE --> BLOBRES[(Cloudinary private result bundle)]:::store
+        BUNDLE --> PUBLISH[Fenced compare-and-set publish<br/>upload before commit<br/>a superseded worker cannot overwrite a newer attempt]:::process
+        PUBLISH --> EXECREC
+    end
+
+    subgraph HANDSHAKE["H · Patch-context handshake, placement and reservations"]
+        direction TB
+        PUBLISH --> WRITES{Does the plan write to the workbook?}:::decision
+        WRITES -- no --> DONEREAD[status succeeded<br/>outcome completed]:::terminal
+        WRITES -- yes --> ASKCTX[patch_context_required<br/>exact output rows and columns<br/>intended placement and source range<br/>run waits durably · SSE replay restores the request]:::terminal
+        ASKCTX --> CAPTURE[Browser captures a bounded live view<br/>workbook revision · used ranges · merges<br/>protected ranges · tables · drawings<br/>candidate rectangles · SHA-256 context hash]:::client
+        CAPTURE -->|POST /analysis/runs/id/patch/context<br/>context hash + idempotency key| PLACE[Placement decision<br/>adjacent-right · new sheet · exact range]:::process
+        PLACE --> CHECK[Full output rectangle checked<br/>used-range and structure intervals first<br/>captured cells only where they overlap content<br/>an uncaptured overlap is never assumed empty]:::process
+        CHECK --> FREE{Rectangle free?}:::decision
+        FREE -- occupied, and replacement was<br/>requested and approved up front --> OVERWRITE[Capture the previous cells<br/>so the edit has a real inverse]:::process
+        FREE -- occupied, reserved, merged<br/>protected, tabled or uncaptured --> RELOCATE[Deterministic new sheet<br/>sanitized 31-character name<br/>numeric collision suffix · stable synthetic sheet ID]:::process
+        FREE -- yes --> RECT[Chosen rectangle]:::process
+        OVERWRITE --> RECT
+        RELOCATE --> RECT
+        RECT --> SPATIAL[Exact rectangle reservation<br/>intersecting active leases queried and inserted<br/>inside one transaction · owner and expiry<br/>released on reject, cancel, apply, supersede]:::process
+        SPATIAL --> RESV[(MongoDB analysis_write_reservations)]:::store
+    end
+
+    subgraph PATCHC["I · Patch compilation and final approval"]
+        direction TB
+        SPATIAL --> COMPILE[Patch compiler<br/>one streaming pass over the published result<br/>typed cells · text kept text · nulls stay canonically blank<br/>source and target guards · impact · canonical patch hash]:::process
+        BLOBRES --> COMPILE
+        COMPILE --> PAYLOAD{Payload size}:::decision
+        PAYLOAD -- small --> INLINEP[Inline grid carried in the patch]:::process
+        PAYLOAD -- large --> CHUNKS[Immutable row-block chunks<br/>index · row bounds · byte length · checksum<br/>the patch hash commits to the ordered checksums]:::process
+        CHUNKS --> BLOBPATCH[(Cloudinary private payload chunks)]:::store
+        INLINEP --> INVERSE
+        CHUNKS --> INVERSE[Inverse patch built before application<br/>clear a verified-blank target<br/>restore captured cells · delete a created sheet]:::process
+        INVERSE --> PROPOSAL[(MongoDB analysis_patch_proposals<br/>patch · placement · preview · reservation<br/>approval binding · application receipt)]:::store
+        PROPOSAL --> CARD[Patch preview card<br/>exact target · affected cells · sampled redacted diff<br/>relocation reason · reversibility]:::client
+        CARD -->|approve patch ID · revision · patch hash<br/>plan hash · base workbook revision| PAPPROVE[Bound approval<br/>changing any one of the five voids it]:::process
+        CARD -->|reject with a structured reason| PREJECT[Release the rectangle<br/>status succeeded · outcome rejected]:::terminal
+    end
+
+    subgraph APPLYP["J · Preflight, application, conflict matrix and undo"]
+        direction TB
+        PAPPROVE --> PREFLIGHT[Live preflight before any mutation<br/>revision · source, target and structural guards<br/>already-applied detection · chunk checksums]:::process
+        PREFLIGHT --> CONFLICT{Conflict?}:::decision
+        CONFLICT -- revision moved, guards intact --> REBASE[Deterministic rebase<br/>same operations, new binding<br/>new patch revision requires fresh approval]:::process
+        REBASE --> PROPOSAL
+        CONFLICT -- source range changed --> REPLAN[Re-plan and re-execute<br/>in a new linked run]:::terminal
+        CONFLICT -- only the target became occupied --> ASKCTX
+        CONFLICT -- workbook or sheet removed --> ASKTARGET[Ask for a new target, or cancel]:::terminal
+        CONFLICT -- expected result already present --> RECOVERR[Treat as applied<br/>recover the existing receipt]:::process
+        CONFLICT -- none --> ADAPTER9[UniverPatchAdapter<br/>verify ownership and chunk checksums<br/>confirm workbook and worksheet IDs<br/>recheck every guard · prepare the inverse<br/>apply as one logical command]:::client
+        ADAPTER9 --> RECEIPT[Apply receipt<br/>per-operation results · touched ranges<br/>pre and post hashes · base to applied revision<br/>local persistence confirmation]:::client
+        RECEIPT -->|POST /analysis/runs/id/patch/receipt| VERIFY[Server verification<br/>binding · exactly one revision step<br/>every operation applied<br/>hashes the server itself computed]:::process
+        VERIFY --> TRUTH{Receipt truthful?}:::decision
+        TRUTH -- partial or mismatched --> ROLLBACK[Run does not complete<br/>durable inverse offered for recovery]:::terminal
+        TRUTH -- re-delivered after a lost response --> RECOVERR
+        RECOVERR --> COMPLETE
+        TRUTH -- yes --> COMPLETE[Reservation released as applied<br/>status succeeded · outcome completed]:::terminal
+        COMPLETE -. minutes or days later .-> UNDO[Durable AI undo<br/>stored inverse proposed as a new patch<br/>conflict-checked and separately approved<br/>the original application record stands]:::process
+        UNDO --> PROPOSAL
+    end
+
+    EDITORUNDO[Immediate editor undo<br/>one Ctrl/Cmd+Z reverses the whole patch<br/>because it was applied as one command]:::client
+    COMPLETE -. same session .-> EDITORUNDO
+```
+
+#### Implemented Phase 9 guarantees
+
+| Concern | Implemented behavior |
+| --- | --- |
+| **Execution boundary** | The planner emits only operations a verified executor supports. Native steps run in a bounded subprocess with Polars: no LLM, no arbitrary Python, no network, no database or cloud credentials, and hard memory, time, row and cell caps. |
+| **Determinism** | Replaying the same recipe over the same input content signatures produces the same output hash. Generation is seeded, formulas are compiled from a closed AST, and the content hash is always recomputed from the bytes that actually arrived rather than trusted from the worker. |
+| **Durable execution** | One execution per deterministic key. Every mutation is a compare-and-set guarded by version and fencing token, and the bundle is uploaded before the record is committed — so a crash leaves recoverable objects, never a record promising a result that was never stored. |
+| **Patch protocol** | Every workbook change is declarative data: operation type, target, expected before and after hashes, payload reference, affected cells, inverse reference. A patch cannot contain JavaScript or a Univer command, because there is no field in which to put one. |
+| **Placement** | The full output rectangle is checked only once its exact size is known, against one hashed view of the live workbook. Values, formulas, merges, protection, structured tables, drawings and other runs' reservations all block it. A rectangle that overlaps content but was not captured is refused, never assumed empty. |
+| **No silent overwrite** | A collision relocates to a deterministically named new sheet. Writing over existing content requires all of: the user asked for replacement, the destructive plan was approved before execution, the previous cells were captured for the inverse, and the live preflight hash still matches. Structure is never overwritten at all. |
+| **Write reservations** | Exact rectangles are reserved, not whole sheets. The overlap check queries intersecting active leases and inserts inside one transaction, so two patches cannot claim overlapping areas while two non-overlapping patches on one sheet proceed together. Reservations are leases and are released on rejection, cancellation, application, supersession or expiry. |
+| **Final HITL** | Patch approval binds to patch ID, patch revision, patch hash, plan hash and base workbook revision. If any one changes — including through a rebase the server performed itself — the old approval no longer matches and cannot be replayed. |
+| **Preview safety** | The proposal preview is bounded, redacted through the same privacy gateway as result previews, and derived from rows captured while the payload was written. It mutates nothing; the realistic preview happens in a throwaway workbook clone in the browser. |
+| **Application** | The run completes only on a receipt whose binding, per-operation results, touched ranges and pre/post hashes all match values the server computed. One patch advances the logical workbook revision exactly once. A partial application is never a success: the run stays waiting with its inverse intact. |
+| **Idempotency and recovery** | A re-delivered receipt after a lost response is recognized as the same application rather than a second edit. Re-posting the same workbook context returns the same proposal instead of taking a second reservation. Every conflict follows one table — rebase, re-plan, relocate, ask, recover, or roll back — and never partially applies the remainder. |
+| **Undo** | Two levels. One editor undo reverses the entire patch, because the adapter applied it as a single logical command. The stored inverse can also be proposed later as a new, conflict-checked, separately approved patch — a second auditable action, not an invisible rollback. |
+| **Storage** | MongoDB stores execution records, patch proposals, approvals, receipts and rectangle reservations. Cloudinary stores result bundles and patch payload chunks. Payload blocks are read back through the authenticated API rather than a signed URL, so the tenant check applies to every byte and nothing time-limited is persisted in a patch. |
+
+#### Phase 9 API surface
+
+Patch routes sit alongside the Phase 8 run routes, behind the same
+Clerk-authenticated BFF and internal secret. Every mutating call is bound to
+hashes the server produced, and every one is safe to retry.
+
+| Endpoint | Responsibility |
+| --- | --- |
+| `GET /analysis/runs/{run_id}/patch` | Read the current patch proposal: placement, impact, bounded preview, approval state, and application receipt. |
+| `POST /analysis/runs/{run_id}/patch/context` | Post the hashed live workbook view; the backend places, reserves, compiles and proposes a patch against exactly that view. |
+| `POST /analysis/runs/{run_id}/patch/approve` | Approve one patch, bound to its ID, revision, patch hash, plan hash and base workbook revision. |
+| `POST /analysis/runs/{run_id}/patch/reject` | Reject the patch with a structured reason and release its rectangle. |
+| `POST /analysis/runs/{run_id}/patch/preflight` | Re-check the live workbook immediately before mutation and return the conflict verdict, including a rebased patch when one applies. |
+| `POST /analysis/runs/{run_id}/patch/receipt` | Submit the apply receipt; the run completes only if every claim matches what the server computed. |
+| `POST /analysis/runs/{run_id}/patch/undo` | Propose the stored inverse as a new, separately approved patch. |
+| `GET /analysis/runs/{run_id}/patch/{patch_id}/revisions/{revision}/operations/{op_id}/chunks/{index}` | Stream one verified payload block through the authenticated boundary. |
+
+> **Current implementation boundary:** the backend executes plans, publishes
+> immutable results, and compiles, reserves, approves and verifies workbook
+> patches end to end. The remaining work is the browser half of Phase 9.13: the
+> `UniverPatchAdapter` that applies a patch as one logical command, the preview
+> clone, and the patch preview/conflict cards. The flow is gated on the
+> `workbook_patches_ready` capability flag, so until that adapter ships a
+> workbook-writing run completes at its published result rather than waiting on
+> a handshake nothing would answer.
+
+### Data Analysis Agent — durable run lifecycle (Phase 8 and 9)
 
 `status`, `phase`, and `outcome` are intentionally separate. This keeps the
 frontend stable while the internal graph advances and makes pause/recovery
-semantics explicit.
+semantics explicit. Phase 9 adds three more waits, and all three are waits on
+the browser: for the live workbook context, for the final patch decision, and
+while the approved patch is being applied.
 
 ```mermaid
 stateDiagram-v2
@@ -316,9 +466,30 @@ stateDiagram-v2
 
     Active --> WaitingClarification: evidence/plan ambiguity
     Active --> WaitingApproval: valid plan requires HITL
-    Active --> SucceededPlanReady: valid safe plan
-    WaitingApproval --> SucceededPlanReady: approve current revision/hash/guards
+    Active --> SucceededPlanReady: valid safe plan, no engine installed
+    WaitingApproval --> SucceededPlanReady: approve, no engine installed
     WaitingApproval --> SucceededRejected: reject with reason
+
+    Active --> Executing: admitted for native execution
+    WaitingApproval --> Executing: approve with the engine installed
+
+    state Executing {
+        [*] --> NativeStages
+        NativeStages --> ResultValidation
+        ResultValidation --> ResultPublished
+    }
+
+    Executing --> SucceededCompleted: read-only analysis
+    Executing --> WaitingPatchContext: the plan writes to the workbook
+    Executing --> Failed: execution or validation failure
+
+    WaitingPatchContext --> WaitingPatchApproval: context posted, rectangle reserved, patch compiled
+    WaitingPatchApproval --> WaitingApplication: approve patch hash + base revision
+    WaitingPatchApproval --> SucceededRejected: reject patch, release the rectangle
+    WaitingApplication --> WaitingPatchApproval: deterministic rebase after a revision change
+    WaitingApplication --> WaitingPatchContext: target taken, relocate and re-propose
+    WaitingApplication --> WaitingApplication: partial receipt refused, inverse retained
+    WaitingApplication --> SucceededCompleted: verified apply receipt
 
     Active --> PauseRequested: pause
     PauseRequested --> Paused: safe checkpoint + lease release
@@ -337,6 +508,9 @@ stateDiagram-v2
     NewLinkedRun --> Created: new run_id + parent/root lineage
 
     WaitingClarification --> Cancelled: cancel waiting run
+    WaitingPatchContext --> Cancelled: cancel before a patch exists
+    WaitingPatchApproval --> Cancelled: cancel a proposed patch
+    SucceededCompleted --> [*]
     SucceededPlanReady --> [*]
     SucceededRejected --> [*]
     Cancelled --> [*]
@@ -371,6 +545,10 @@ stateDiagram-v2
 | **Durable analysis orchestration** | Frontend run creation → replayable SSE → Phase 1–7 evidence preparation → typed planning → deterministic validation → one bounded repair |
 | **Typed operation planning** | Strict plans cover native transforms, spreadsheet formulas, Python statistics/ML, visualization artifacts, workbook writes, and response composition |
 | **Selective HITL and recovery** | Risk-based plan approval, stale-workbook guards, pause/resume, immutable cancellation, linked retries, leases, and run history |
+| **Deterministic native execution** | Validated plans run on Polars in a bounded subprocess — no LLM, no arbitrary Python, no credentials, hard memory/time/output caps, and a reproducible content hash |
+| **Immutable result bundles** | Every result is validated against its declared schema and assertions, then published as rows + schema manifest + lineage + redacted preview behind a fenced compare-and-set |
+| **Safe workbook placement** | Output goes beside the source table, or onto a deterministically named new sheet — chosen against a hashed live view of the workbook, with exact rectangle reservations so two runs cannot collide |
+| **Reviewable workbook patches** | Edits are declarative data with before/after cell hashes and a prebuilt inverse; final approval binds to the exact patch, and the run completes only on a verified apply receipt |
 | **Grounded provenance** | Every planned output carries immutable dataset versions and source table/page or workbook/range lineage |
 
 ### Cross-Document Reasoning
@@ -696,6 +874,10 @@ DocMind-AI-Intelligent-conversations-with-documents/
 │   │   ├── chats.py                   # Chats, PDF upload, SSE stream
 │   │   ├── documents.py               # Node / summary-index status
 │   │   ├── users.py                   # Clerk → Mongo sync
+│   │   ├── analysis_runs.py           # Run creation, history, controls, SSE replay
+│   │   ├── analysis_plans.py          # Plan inspection + plan-level approval
+│   │   ├── analysis_patches.py        # Patch context, approval, preflight, receipt, undo
+│   │   ├── analysis_artifacts.py      # Immutable artifact upload + signed download
 │   │   └── deps.py                    # Auth headers + internal secret
 │   ├── config/settings.py             # Env-backed settings
 │   ├── db/
@@ -707,6 +889,20 @@ DocMind-AI-Intelligent-conversations-with-documents/
 │   │   ├── chat_with_pdf.py           # RAG ask_question pipeline
 │   │   ├── intent_detection/          # Intent router
 │   │   ├── data_analysis_agent/       # Tables · hybrid retrieval · analysis agent
+│   │   │   ├── extraction/            # PDF tables → validate → summarize → index
+│   │   │   ├── retrieval/             # Query generation · hybrid search · fusion
+│   │   │   ├── analysis/              # Phase 1–7 evidence graph, nodes and caches
+│   │   │   ├── spreadsheet_io/        # XLSX/CSV readers, writers and limits
+│   │   │   └── runtime/               # Phase 8–9 durable runtime
+│   │   │       ├── models/            # Runs, plans, executions, patches, reservations
+│   │   │       ├── planning/          # Context, canonicalization, validation layers
+│   │   │       ├── execution/         # Admission, DAG, native Polars engine, results
+│   │   │       ├── formulas/          # Semantic formula AST, compiler and safety
+│   │   │       ├── patches/           # Patch protocol, compiler, conflicts, undo
+│   │   │       ├── placement/         # Output placement + exact rectangle reservations
+│   │   │       ├── repositories/      # Mongo stores with CAS and fencing
+│   │   │       ├── services/          # State machine, worker, patch orchestration
+│   │   │       └── storage/           # Cloudinary blob boundary + payload chunks
 │   │   └── intention_pipelines/
 │   │       ├── summarization_pipeline/
 │   │       └── quiz_pipeline/
@@ -726,6 +922,7 @@ DocMind-AI-Intelligent-conversations-with-documents/
         │   ├── home/                  # Marketing landing
         │   └── ui/                    # shadcn primitives
         ├── lib/                       # API client, types, quiz helpers
+        │   └── data-analysis/          # Univer bridge, sheet commands, patch cell hash
         └── proxy.ts                   # Clerk middleware (Next 16)
 ```
 
@@ -941,7 +1138,7 @@ All FastAPI routes are intended to be called by the **Next.js BFF**, not the bro
 
 Actively being built on top of the shipped table + retrieval layer (`scripts/data_analysis_agent/`):
 
-- **Full LangGraph data-analysis orchestration** — multi-step plan → execute → repair loops (system / execution diagrams above)
+- **Univer patch adapter (Phase 9.13)** — the browser half of workbook editing: apply a patch as one logical command, preview in a throwaway clone, and render the patch/conflict cards
 - **Research-agent tool loops** — broader multi-hop investigation across narrative + tabular evidence
 - **Stronger cross-document reasoning** — explicit compare / conflict / timeline synthesis modes
 - **Auto-generated charts & dashboards** — visualization planner + dashboard composer
