@@ -295,17 +295,22 @@ plan hashes, input signatures, or workbook guards as appropriate.
 
 ### Data Analysis Agent — Phase 9 native execution and safe workbook editing
 
-Phase 9 continues exactly where the diagram above stops. A validated plan is now
-admitted, compiled into a deterministic recipe, executed in a bounded worker
-process with no LLM and no arbitrary Python, and published as an immutable
-content-hashed bundle. Only then does the workbook enter the picture: the
-backend asks the browser what its sheet actually looks like, chooses one
-rectangle that is provably safe to write, holds it, compiles a declarative
-patch against that exact view, and applies nothing until a human approves the
-patch and the browser returns a receipt whose hashes the server itself produced.
+Phase 8 stopped at a validated plan. Phase 9 is everything that happens after
+it: the plan is admitted against the installed capability profile, compiled into
+a deterministic recipe, executed in a bounded subprocess that has no LLM, no
+arbitrary Python, no network and no credentials, and published as an immutable
+content-hashed bundle. Only then does the workbook enter the picture — and it
+enters carefully, because the workbook is not on the server.
 
-The rule that shapes every box below: the workbook lives in the browser, so the
-backend never assumes what is in a cell it has not been shown.
+That last point shapes every design decision below. Univer holds the sheet in
+the browser, so the backend cannot look at a cell to decide whether writing over
+it is safe. Instead it asks. The browser returns one bounded, hashed view of the
+live workbook; the backend picks exactly one rectangle it can prove is free,
+holds a lease on it, compiles a declarative patch against that specific view,
+and applies nothing until a human approves the patch and the browser returns a
+receipt whose every hash the server itself produced. An uncaptured rectangle is
+never assumed empty, and a patch never contains a line of JavaScript or a Univer
+command — there is no field in the schema in which to put one.
 
 ```mermaid
 flowchart TB
@@ -397,6 +402,249 @@ flowchart TB
     EDITORUNDO[Immediate editor undo<br/>one Ctrl/Cmd+Z reverses the whole patch<br/>because it was applied as one command]:::client
     COMPLETE -. same session .-> EDITORUNDO
 ```
+
+#### G · Admission and deterministic native execution
+
+Admission runs the cheap, conclusive checks before a single byte is allocated:
+tenant ownership, whether the plan is still the run's current plan, whether this
+deployment's capability profile can execute every operation in it, resource
+ceilings, and the durable cancellation flag re-read from MongoDB. A deployment
+without the engine returns `plan_only`, so a run can never be parked in a queue
+nothing drains.
+
+A run that is admitted gets a **deterministic execution key** derived from the
+plan hash, every input's content signature, the compiled recipe hash, and the
+engine and semantics versions. The key is claimed by a conditional insert, which
+gives two properties at once: duplicate queue delivery finds the existing record
+instead of starting a second execution, and an already-succeeded record is
+returned as a cache hit rather than recomputed.
+
+| Native operation | Notes |
+| --- | --- |
+| `generate_dataset` | Seeded synthetic data (generator `1.0`); the same seed and spec always produce the same rows |
+| `filter_rows`, `sort_rows` | Predicates and orderings come from a typed expression AST, never a string |
+| `select_columns`, `rename_columns` | Stable column keys survive the whole pipeline; labels are display-only |
+| `fill_missing`, `deduplicate` | Missing-value markers are decided by Phase 7 normalization, never re-derived here |
+| `derive_column` | Bounded expression tree — depth 16, 256 nodes |
+| `aggregate` | Closed list: `count`, `count_distinct`, `sum`, `mean`, `median`, `minimum`, `maximum`, `standard_deviation` |
+| `join` | Collisions renamed with the plan's declared suffixes; an unresolved collision fails the step |
+| `pivot`, `unpivot` | A pivot cell with no source rows is null, not `0` — "no data" must not look like "sums to zero" |
+| `compose_response` | Turns the final frame into the analyst-facing answer |
+
+The semantics are pinned as version `2.0` and are part of the execution key, so
+changing any of them changes the key rather than silently changing results:
+
+| Rule | Value |
+| --- | --- |
+| Timezone / locale | `UTC` / `en-US` |
+| Date parsing | ISO-8601 calendar dates only — ambiguous regional forms are rejected, not guessed |
+| Rounding | Banker's rounding (`half_even`), so repeated aggregation does not drift upward |
+| Integer overflow | Widens to float rather than wrapping — silent wraparound is the one outcome a financial table must never produce |
+| Text comparison | Byte-for-byte; no implicit case folding or Unicode normalization |
+| Tie-breaking | Explicit everywhere it matters, so keep-first and top-N are reproducible |
+| NaN / infinity | Never reach a published result; they fail validation |
+
+Execution runs in a separate process rather than a thread, because a thread
+cannot be given an address-space rlimit. The parent enforces its own caps on
+output rows, output cells, output bytes, wall-clock seconds and memory,
+independent of whatever the plan estimated. Failures are typed and
+non-retryable by default — `input_version_mismatch`, `schema_mismatch`,
+`row_limit_exceeded`, `assertion_failed`, `timeout`, `engine_crashed` and
+others — so the worker never loops on a deterministic error.
+
+The result is then validated against its declared schema, the plan's assertions,
+and the row/cell ceilings, with the content hash **recomputed from the bytes
+that actually arrived** rather than trusted from the worker's manifest. Only
+after that does it become a four-member bundle — `result.csv.gz`, schema
+manifest, lineage, redacted preview — uploaded to Cloudinary *before* the
+execution record is committed. The ordering is deliberate: a crash after upload
+leaves objects reconciliation can collect, while a crash after commit leaves
+everything already durable. Committing first would allow the one unrecoverable
+state — a record promising a result that was never stored.
+
+Publication is a fenced compare-and-set on `(execution_id, version,
+fencing_token)`, using the worker's lease attempt as the token. A worker that
+lost its lease can still finish computing — nothing can stop a process
+mid-flight — but its publication is rejected, so a stale attempt can never
+overwrite the one that replaced it.
+
+#### H · The patch-context handshake, placement and reservations
+
+Once the output's exact dimensions are known, a workbook-writing run emits
+`patch_context_required` and waits durably. If the browser is closed, the run
+waits; SSE replay restores the request on reconnect.
+
+The browser answers with one bounded, hashed capture:
+
+| Field | Purpose |
+| --- | --- |
+| `workbook_revision` | The logical revision the patch will be compiled against |
+| `sheets[]` | Per sheet: dimensions, used range, merged ranges, protected ranges, structured tables, drawings |
+| `source` | The cells the result was computed from, so a source guard can be built |
+| `candidates[]` | Cell states for rectangles that actually overlap content — up to 32 ranges, 50,000 cells total |
+| `context_hash` | SHA-256 over the whole capture; the backend recomputes and rejects a mismatch |
+| `idempotency_key` | Re-posting the same context returns the same proposal instead of a second reservation |
+
+Placement then picks one rectangle. It reasons in intervals first and only reads
+cells where the target genuinely overlaps the used range — a full sheet scan is
+never performed:
+
+| Policy | Behavior |
+| --- | --- |
+| `adjacent_right` | Offset from the source's right edge by `minimum_column_gap` (default 2, leaving one empty column), aligned to the source's first row so headers line up |
+| `new_sheet` | A fresh sheet at `A1`, named deterministically |
+| `exact_range` | The result anchored at the requested top-left, and required to fit inside the rectangle the user actually approved |
+
+A target is rejected if it holds values or formulas, intersects merged cells,
+protected ranges, structured tables or drawings, exceeds the sheet's own limits,
+overlaps another run's live reservation, or overlaps used content and was not
+captured. Formatting alone does not occupy a cell — a merely styled rectangle is
+still safe to write into.
+
+**Overwriting requires all four conditions**, per 9.11.4: the user explicitly
+asked for replacement, the destructive plan was approved *before* execution, the
+previous cells were captured so a real inverse can be built, and the live
+preflight hash still matches at apply time. Structure is never overwritten at
+all, because a patch cannot restore a merge or a protection rule. Anything short
+of that relocates to a new sheet whose name is sanitized (`[ ] : * ? / \`
+removed, whitespace collapsed, 31-character limit, `History` reserved) and
+de-duplicated with numeric suffixes that trim the base rather than overflow the
+limit. Later operations bind to a derived synthetic worksheet ID, not the
+display name, so a rename between approval and application cannot redirect the
+write.
+
+The chosen rectangle is then **reserved exactly**, not sheet-wide. MongoDB
+cannot express "no two active rectangles may overlap" as an index, so the
+repository queries intersecting active leases — four integer range comparisons
+answered from a compound index — and inserts inside one transaction. Two patches
+cannot claim overlapping areas; two non-overlapping patches on the same sheet
+proceed together. A reservation is a lease with an owner and a 30-minute
+default expiry, released on rejection, cancellation, application, supersession,
+compilation failure, or expiry, so a crashed worker never parks a rectangle
+permanently.
+
+#### I · Workbook Patch Protocol v1
+
+A patch is declarative data. The frontend adapter reads an operation type and
+calls the API it already knows; nothing in a patch names a function to invoke.
+
+| Operation | Status |
+| --- | --- |
+| `create_sheet`, `rename_sheet`, `write_range`, `clear_range`, `set_formula`, `fill_formula`, `set_number_format` | Supported and proposable |
+| `delete_sheet` | Supported, but reachable only through the controlled undo path — never proposed by a plan |
+| `create_table`, `attach_chart`, `attach_image`, `insert_rows`, `insert_columns` | Reserved in the registry; validation returns `unsupported_patch_operation` until a verified adapter exists |
+
+Reserving rather than omitting is deliberate: a planner that proposes a chart
+gets an honest capability error instead of a confusing schema error, and the
+patch schema stays stable while the adapter catches up.
+
+**Cell hash (version `1.0`).** One algorithm, implemented twice — Python here
+and TypeScript in `frontend/my-app/lib/data-analysis/patch/cell-hash.ts` —
+pinned by golden fixtures both sides run. It covers typed value, formula text,
+cell type, number format, and merged/protected state. Fill colour and font are
+excluded on purpose: a patch that refused to apply because someone changed a
+background would be useless, and colour cannot make an overwrite unsafe. A blank
+cell has a canonical hash, so a missing cell and an explicitly blank cell are
+indistinguishable and a rectangle hashes the same however the client enumerated
+it.
+
+**Patch hash.** Commits to the schema version, patch ID and revision, the owning
+user and workspace, run/plan/plan-hash/execution identity, workbook ID and base
+revision, every source and target guard, every operation, every inverse
+operation, the impact summary, the maximum affected cells, the idempotency key,
+and the compiler and cell-hash versions. It deliberately excludes the hash
+itself, the approval status, the expiry and the creation time — lifecycle and
+timing must not change the identity of the change being approved. Tenant
+identity is *inside* the hash so an approval cannot be replayed against a
+different workspace.
+
+**Payloads.** Up to 400 cells travel inline. Anything larger is uploaded as
+immutable row blocks of roughly 20,000 cells each (maximum 1,000 blocks), and
+each block carries its index, row bounds, byte length and SHA-256. The patch
+hash commits to the ordered checksums, so a swapped or truncated block changes
+the patch identity. Blocks are read back through the authenticated API rather
+than a signed URL, which keeps the tenant check on every byte and means nothing
+time-limited is ever persisted in a patch.
+
+The compiler makes one streaming pass over the published result. Rows feed the
+canonical range hash and the current chunk buffer and are then dropped, so a
+250,000-cell result never exists simultaneously as a Python list and as a JSON
+string. Three conversion rules matter: a null becomes a canonically blank cell
+rather than a typed empty one; a value beginning with `=`, `+`, `-` or `@` is
+written so the spreadsheet keeps it as text; and number formats come from the
+declared column type, not from whichever value happened to be first.
+
+**Inverse.** Built before application, because once cells are overwritten the
+previous values are gone. Writing into a verified-blank target inverts to
+clearing it and needs no stored payload at all; writing over content inverts to
+restoring the captured cells (chunked if large); creating a sheet inverts to
+deleting it. An inverse carries the same guards with before and after swapped,
+so applying it later is conflict-checked exactly like any other patch.
+
+#### J · Approval, application, conflicts and undo
+
+Final approval binds to five values — patch ID, patch revision, patch hash, plan
+hash, and base workbook revision. Change any one of them, including through a
+rebase the server performed itself, and the stored approval simply no longer
+matches; it cannot be replayed. Approvals carry a one-hour default expiry.
+
+The proposal card shows a bounded, redacted preview built from rows captured
+while the payload was written — no chunk is fetched back to render it, and it
+mutates nothing. The realistic preview happens in the browser, in a throwaway
+workbook clone with its own unit ID that never writes localStorage and is
+destroyed afterwards.
+
+Before the first mutation the adapter verifies run and patch ownership,
+downloads every payload chunk and checks its checksum, confirms workbook and
+worksheet IDs, rechecks revision and all source, target and structural guards,
+confirms the patch is not already applied, prepares the complete inverse, and
+validates every operation. Only then does it apply the patch as **one logical
+command**, which is what makes a single Ctrl/Cmd+Z reverse the whole edit.
+
+The receipt it returns carries the application ID and idempotency key, the full
+binding, the execution ID, base and applied revisions, adapter and engine
+versions, a per-operation result, the touched ranges with their resulting
+hashes, and pre/post application hashes. The server verifies all of it against
+values it computed itself: one patch must advance the workbook by exactly one
+revision, every operation must be accounted for and applied, and every hash must
+match. A partial application is never a success — the run stays waiting with its
+inverse intact rather than reporting completion.
+
+Every divergence between the patch's world and the live one resolves through one
+table, and never by continuing:
+
+| Conflict | Response |
+| --- | --- |
+| Revision changed, but source, target and structure hashes still match | Deterministic rebase onto the new revision, issued as a new patch revision requiring fresh approval — no LLM involved |
+| Source range changed | Re-plan and re-execute in a new linked run |
+| Only the target became occupied | Release the rectangle, return to the handshake, relocate and re-propose |
+| Workbook or sheet was removed | Ask for a new target, or cancel |
+| Expected after-hash already present | Treat as already applied and recover the receipt |
+| Partial or mismatched state | Do not continue; offer the durable inverse for recovery |
+
+A re-delivered receipt after a lost response is recognized as the same
+application rather than a second edit, which is what makes the client's
+"store a local marker and retry the same receipt" strategy safe.
+
+**Undo has two levels.** The immediate one is the editor's: one Ctrl/Cmd+Z,
+because the patch was applied as a single command. The durable one proposes the
+stored inverse as a *new* patch — conflict-checked against the workbook as it is
+now, approved on its own terms, and applied with its own receipt. It is not a
+database rollback and it does not rewrite history: the original application
+record stands, and the undo is a second linked record.
+
+#### Durable stores added in Phase 9
+
+| Collection | Contents |
+| --- | --- |
+| `analysis_executions` | One record per deterministic execution key: reservation, fencing token, stage records and checkpoints, metrics, result columns, artifact references, typed failure code |
+| `analysis_patch_proposals` | Patch envelope, placement summary, bounded preview, reservation ID, approval binding, application receipt, and supersession/undo lineage — keyed by `(user, run, patch, revision)` so a rebase is a new revision rather than a lost one |
+| `analysis_write_reservations` | Exact rectangles with owner, lease expiry and status; indexed for the four-comparison overlap query and for the cross-tenant expiry sweep |
+
+Bulk data stays out of MongoDB throughout: result bundles and patch payload
+blocks live in private Cloudinary storage, and only their references, checksums
+and byte counts are persisted.
+
 
 #### Implemented Phase 9 guarantees
 
