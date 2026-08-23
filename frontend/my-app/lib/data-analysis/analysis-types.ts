@@ -24,6 +24,13 @@ export type AnalysisRunPhase =
 
 export type AnalysisPrivacyMode = "standard" | "schema_only" | "local_only";
 
+export type RunApprovalStatus =
+  | "not_required"
+  | "pending"
+  | "approved"
+  | "rejected"
+  | null;
+
 export interface PrivacySummary {
   mode: AnalysisPrivacyMode;
   columns_inspected: number;
@@ -36,6 +43,20 @@ export interface PrivacySummary {
   classifications: Record<string, string>;
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+}
+
+export interface DatasetVersionReference {
+  dataset_id: string;
+  source_version: string;
+  row_count: number;
+  column_count: number;
+}
+
 export interface StageTokenUsage {
   stage: string;
   model: string;
@@ -44,10 +65,11 @@ export interface StageTokenUsage {
   pricing_configured: boolean;
   call_count: number;
   duration_ms: number;
-  usage: AnalysisRun["token_usage"];
+  usage: TokenUsage;
 }
 
 export interface AnalysisRun {
+  schema_version: number;
   run_id: string;
   workspace_id: string;
   chat_id: string;
@@ -63,6 +85,9 @@ export interface AnalysisRun {
   cancellation_requested: boolean;
   pause_requested: boolean;
   paused_at: string | null;
+  paused_from_status: AnalysisRunStatus | null;
+  paused_from_phase: AnalysisRunPhase | null;
+  paused_from_outcome: string | null;
   checkpoint_id: string | null;
   last_completed_step_id: string | null;
   resume_count: number;
@@ -70,27 +95,34 @@ export interface AnalysisRun {
   root_run_id: string | null;
   version: number;
   last_event_sequence: number;
+  input_artifact_version_ids: string[];
+  input_dataset_versions: DatasetVersionReference[];
+  selected_document_ids: string[];
   final_artifact_ids: string[];
   final_dataset_ids: string[];
   current_plan_id: string | null;
   current_plan_revision: number | null;
   current_plan_hash: string | null;
-  plan_approval_status: "not_required" | "pending" | "approved" | "rejected" | null;
+  plan_approval_status: RunApprovalStatus;
+  current_patch_id: string | null;
+  current_patch_revision: number | null;
+  current_patch_hash: string | null;
+  patch_approval_status: RunApprovalStatus;
+  /** The workbook revision an applied patch produced, from its receipt. */
+  applied_workbook_revision: number | null;
   warnings_summary: Array<{ code: string; message: string; count: number }>;
   errors_summary: Array<{ code: string; message: string; count: number }>;
-  token_usage: {
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-    estimated_cost_usd: number;
-  };
+  token_usage: TokenUsage;
   token_usage_by_stage: Record<string, StageTokenUsage>;
+  model_versions: Record<string, string>;
+  prompt_versions: Record<string, string>;
   component_versions: Record<string, string>;
   timings_ms: Record<string, number>;
   created_at: string;
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+  expires_at: string | null;
 }
 
 export interface AnalysisRunEvent {
@@ -180,7 +212,7 @@ export interface AnalysisPlan {
   validator_version: string;
   privacy: PrivacySummary;
   plan_hash: string;
-  token_usage: AnalysisRun["token_usage"];
+  token_usage: TokenUsage;
   token_usage_by_stage: Record<string, StageTokenUsage>;
   created_at: string;
   updated_at: string;

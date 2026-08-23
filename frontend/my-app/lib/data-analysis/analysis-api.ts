@@ -5,25 +5,10 @@ import type {
   CreateAnalysisRunResponse,
   WorkbookVersionGuard,
 } from "@/lib/data-analysis/analysis-types";
-
-async function errorMessage(response: Response): Promise<string> {
-  const payload = await response.json().catch(() => null) as
-    | { detail?: string | { message?: string }; error?: string }
-    | null;
-  if (typeof payload?.detail === "string") return payload.detail;
-  if (payload?.detail && typeof payload.detail === "object") {
-    return payload.detail.message ?? "Analysis request failed";
-  }
-  return payload?.error ?? response.statusText ?? "Analysis request failed";
-}
-
-async function json<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error(await errorMessage(response));
-  return response.json() as Promise<T>;
-}
+import { AnalysisApiError, readJson } from "@/lib/data-analysis/api-client";
 
 export async function createAnalysisRun(body: unknown, idempotencyKey: string) {
-  return json<CreateAnalysisRunResponse>(await fetch("/api/analysis/runs", {
+  return readJson<CreateAnalysisRunResponse>(await fetch("/api/analysis/runs", {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
     body: JSON.stringify(body),
@@ -32,17 +17,17 @@ export async function createAnalysisRun(body: unknown, idempotencyKey: string) {
 
 export async function listAnalysisRuns(workspaceId: string) {
   const query = new URLSearchParams({ workspace_id: workspaceId, limit: "50" });
-  return json<{ items: AnalysisRun[]; next_cursor: string | null }>(
+  return readJson<{ items: AnalysisRun[]; next_cursor: string | null }>(
     await fetch(`/api/analysis/runs?${query}`, { cache: "no-store" }),
   );
 }
 
 export async function getAnalysisRun(runId: string) {
-  return json<AnalysisRun>(await fetch(`/api/analysis/runs/${runId}`, { cache: "no-store" }));
+  return readJson<AnalysisRun>(await fetch(`/api/analysis/runs/${runId}`, { cache: "no-store" }));
 }
 
 export async function getAnalysisPlan(runId: string) {
-  return json<AnalysisPlanResponse>(
+  return readJson<AnalysisPlanResponse>(
     await fetch(`/api/analysis/runs/${runId}/plan`, { cache: "no-store" }),
   );
 }
@@ -51,7 +36,7 @@ export async function controlAnalysisRun(
   run: AnalysisRun,
   operation: "pause" | "resume" | "cancel",
 ) {
-  return json<{ changed: boolean; run: AnalysisRun }>(
+  return readJson<{ changed: boolean; run: AnalysisRun }>(
     await fetch(`/api/analysis/runs/${run.run_id}/${operation}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -61,7 +46,7 @@ export async function controlAnalysisRun(
 }
 
 export async function resumeAnalysisRunAsNew(runId: string) {
-  return json<CreateAnalysisRunResponse>(
+  return readJson<CreateAnalysisRunResponse>(
     await fetch(`/api/analysis/runs/${runId}/resume-as-new`, {
       method: "POST",
       headers: {
@@ -84,7 +69,7 @@ export async function decideAnalysisPlan(args: {
   reason?: "wrong_dataset" | "wrong_operation" | "wrong_target" | "too_destructive" | "other";
   comment?: string;
 }) {
-  return json<AnalysisPlanResponse>(
+  return readJson<AnalysisPlanResponse>(
     await fetch(`/api/analysis/runs/${args.runId}/${args.decision}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -113,7 +98,13 @@ export async function streamAnalysisEvents(args: {
     `/api/analysis/runs/${args.runId}/events?after=${args.after}`,
     { signal: args.signal, cache: "no-store" },
   );
-  if (!response.ok || !response.body) throw new Error(await errorMessage(response));
+  // Surfaces the same typed error as every other call, so a caller can tell a
+  // missing run from a backend that is down. `readJson` always throws here,
+  // because the response is not ok.
+  if (!response.ok) await readJson<never>(response);
+  if (!response.body) {
+    throw new AnalysisApiError("The event stream returned no body", response.status);
+  }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -167,7 +158,7 @@ export async function uploadWorkbookSnapshot(args: {
       type: "application/json",
     }),
   );
-  return json<{ version_id: string }>(await fetch("/api/analysis/artifacts", {
+  return readJson<{ version_id: string }>(await fetch("/api/analysis/artifacts", {
     method: "POST",
     headers: { "idempotency-key": `snapshot-${args.hash}` },
     body: form,
