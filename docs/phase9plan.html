@@ -1,0 +1,1282 @@
+<title>Phase 9 Session Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap">
+
+<style>
+  /* DocMind is a deliberately dark-only product (see app/globals.css:52 —
+     ":root" and ".dark" resolve to the same values). This page commits to that
+     single visual world rather than inventing a second theme for it, so every
+     color is painted explicitly and nothing is left to the host ground. */
+  :root {
+    --ground:      oklch(0.09 0 0);
+    --surface:     oklch(0.135 0 0);
+    --surface-2:   oklch(0.175 0 0);
+    --line:        oklch(1 0 0 / 9%);
+    --line-strong: oklch(1 0 0 / 16%);
+
+    --ink:         oklch(0.985 0 0);
+    --ink-dim:     oklch(0.66 0 0);
+    --ink-faint:   oklch(0.45 0 0);
+
+    /* Semantic build-state, drawn from the app's own accent ramp. */
+    --built:       oklch(0.78 0.15 162);
+    --dormant:     oklch(0.60 0 0);
+    --gap:         oklch(0.82 0.16 75);
+    --risk:        oklch(0.72 0.19 12);
+    /* The accent: DocMind's "agent is running" cyan. Spent on the gates. */
+    --live:        oklch(0.83 0.13 205);
+
+    --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SFMono-Regular", "Menlo", monospace;
+
+    --measure: 74ch;
+    --radius: 0.75rem;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 1.25rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 60rem;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  .prose { max-width: var(--measure); }
+
+  a { color: var(--live); text-decoration-color: oklch(0.83 0.13 205 / 40%); }
+  a:hover { text-decoration-color: var(--live); }
+  a:focus-visible,
+  summary:focus-visible {
+    outline: 2px solid var(--live);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 0.1em 0.38em;
+    color: var(--ink);
+    word-break: break-word;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    padding-top: 4.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  h1 {
+    font-size: clamp(2rem, 5vw, 2.85rem);
+    line-height: 1.1;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    max-width: var(--measure);
+    font-size: 1.0625rem;
+    color: var(--ink-dim);
+    margin: 0;
+  }
+
+  .standfirst strong { color: var(--ink); font-weight: 500; }
+
+  /* ---------- section scaffolding ---------- */
+
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.018em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h2 .h2-num {
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--ink-faint);
+    letter-spacing: 0.08em;
+    display: block;
+    margin-bottom: 0.5rem;
+  }
+
+  h3 {
+    font-size: 1.0625rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+  }
+
+  p { margin: 0; }
+  .prose p + p { margin-top: 0.9rem; }
+
+  .rule {
+    height: 1px;
+    background: var(--line);
+    border: 0;
+    margin: 0;
+  }
+
+  /* ---------- pipeline strip ---------- */
+
+  .pipe {
+    display: flex;
+    gap: 2px;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+    border-radius: var(--radius);
+  }
+
+  .pipe-cell {
+    flex: 1 0 8.5rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0.7rem 0.8rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .pipe-cell .pipe-id {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.09em;
+    color: var(--ink-faint);
+  }
+
+  .pipe-cell .pipe-name {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    line-height: 1.35;
+    color: var(--ink);
+  }
+
+  .pipe-bar { height: 3px; border-radius: 2px; margin-top: 0.15rem; }
+  .pipe-built   .pipe-bar { background: var(--built); }
+  .pipe-dormant .pipe-bar { background: var(--dormant); }
+  .pipe-gap     .pipe-bar { background: var(--gap); }
+  .pipe-missing .pipe-bar { background: var(--risk); }
+
+  .pipe-missing { border-color: oklch(0.72 0.19 12 / 35%); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.25rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--ink-dim);
+  }
+
+  .legend span { display: inline-flex; align-items: center; gap: 0.45rem; }
+  .legend i {
+    width: 14px; height: 3px; border-radius: 2px; display: inline-block;
+  }
+
+  /* ---------- status table ---------- */
+
+  .board {
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .board-row {
+    display: grid;
+    grid-template-columns: 4.25rem minmax(0, 1fr) 7.5rem;
+    gap: 0.75rem;
+    align-items: baseline;
+    padding: 0.62rem 1rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.875rem;
+  }
+
+  .board-row:first-child { border-top: 0; }
+
+  .board-row .sect {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .board-row .what { color: var(--ink); min-width: 0; }
+  .board-row .note {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--ink-faint);
+    line-height: 1.45;
+  }
+
+  .chip {
+    justify-self: start;
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 0.16rem 0.5rem;
+    border-radius: 999px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+
+  .chip-built   { color: var(--built);   border-color: oklch(0.78 0.15 162 / 40%); background: oklch(0.78 0.15 162 / 9%); }
+  .chip-dormant { color: var(--dormant); border-color: var(--line-strong);          background: oklch(1 0 0 / 4%); }
+  .chip-gap     { color: var(--gap);     border-color: oklch(0.82 0.16 75 / 40%);  background: oklch(0.82 0.16 75 / 9%); }
+  .chip-missing { color: var(--risk);    border-color: oklch(0.72 0.19 12 / 40%);  background: oklch(0.72 0.19 12 / 9%); }
+
+  @media (max-width: 34rem) {
+    .board-row { grid-template-columns: 3.5rem minmax(0, 1fr); }
+    .board-row .chip { grid-column: 2; }
+  }
+
+  /* ---------- blockers ---------- */
+
+  .blockers { display: flex; flex-direction: column; gap: 1rem; }
+
+  .blocker {
+    display: grid;
+    grid-template-columns: 2.25rem minmax(0, 1fr);
+    gap: 0 1rem;
+    padding: 1.05rem 1.15rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--gap);
+    border-radius: 0 var(--radius) var(--radius) 0;
+  }
+
+  .blocker-num {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--gap);
+    padding-top: 0.15rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .blocker-body { display: flex; flex-direction: column; gap: 0.4rem; min-width: 0; }
+  .blocker-body p { font-size: 0.9rem; color: var(--ink-dim); }
+  .blocker-body p strong { color: var(--ink); font-weight: 500; }
+
+  /* ---------- stage bands ---------- */
+
+  .band {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 1.4rem 0 0.25rem;
+    border-top: 1px solid var(--line-strong);
+  }
+
+  .band-label {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--live);
+  }
+
+  .band h2 { font-size: 1.75rem; }
+
+  .band-sub { max-width: var(--measure); color: var(--ink-dim); font-size: 0.95rem; }
+
+  /* ---------- session cards ---------- */
+
+  .sessions { display: flex; flex-direction: column; gap: 1rem; }
+
+  .session {
+    display: grid;
+    grid-template-columns: 3.5rem minmax(0, 1fr);
+    gap: 0 1.1rem;
+    padding: 1.25rem 1.35rem 1.35rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+
+  .session-id {
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: 0.02em;
+    padding-top: 0.05rem;
+  }
+
+  .session-main { display: flex; flex-direction: column; gap: 0.85rem; min-width: 0; }
+
+  .session-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.9rem;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+  }
+
+  .session-meta b { color: var(--ink-dim); font-weight: 500; }
+  .session-meta .hot { color: var(--risk); }
+
+  .session dl {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+
+  .session dt {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 0.2rem;
+  }
+
+  .session dd {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--ink-dim);
+  }
+
+  .session dd strong { color: var(--ink); font-weight: 500; }
+
+  .files {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-family: var(--mono);
+    font-size: 0.775rem;
+    color: var(--ink-dim);
+    overflow-x: auto;
+  }
+
+  .files span { white-space: nowrap; }
+  .files span::before { content: "· "; color: var(--ink-faint); }
+
+  .exit {
+    border-left: 2px solid var(--built);
+    padding-left: 0.85rem;
+    color: var(--ink);
+    font-size: 0.9rem;
+  }
+
+  @media (max-width: 34rem) {
+    .session { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+    .blocker { grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+  }
+
+  /* ---------- gate ---------- */
+
+  .gate {
+    border: 1px solid oklch(0.83 0.13 205 / 35%);
+    background:
+      linear-gradient(180deg,
+        oklch(0.83 0.13 205 / 7%),
+        oklch(0.83 0.13 205 / 2%));
+    border-radius: var(--radius);
+    padding: 1.35rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .gate-label {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--live);
+  }
+
+  .gate h3 { font-size: 1.0625rem; }
+
+  .gate-flag {
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    color: var(--ink);
+    background: oklch(0.09 0 0 / 60%);
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    padding: 0.5rem 0.7rem;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .gate p { font-size: 0.9rem; color: var(--ink-dim); max-width: var(--measure); }
+
+  /* ---------- practice list ---------- */
+
+  ul.plain {
+    margin: 0;
+    padding-left: 1.15rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    color: var(--ink-dim);
+    font-size: 0.9375rem;
+    max-width: var(--measure);
+  }
+
+  ul.plain li::marker { color: var(--ink-faint); }
+  ul.plain strong { color: var(--ink); font-weight: 500; }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 1.5rem;
+    font-size: 0.85rem;
+    color: var(--ink-faint);
+    max-width: var(--measure);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">DocMind · Data Analysis Agent</div>
+    <h1>Phase 9 Session Plan</h1>
+    <p class="standfirst">
+      The backend runs the whole pipeline through 9.12 and passes 815 tests — and
+      none of it is reachable from the product, because two capability flags are
+      still <code>False</code>. <strong>What remains is 9.13, plus two backend gaps
+      that sit inside it.</strong> This is that work, cut into sessions.
+    </p>
+  </header>
+
+  <hr class="rule">
+
+  <!-- ============ WHERE THINGS STAND ============ -->
+  <section>
+    <h2><span class="h2-num">Baseline</span>Where the pipeline actually stands</h2>
+
+    <div class="pipe">
+      <div class="pipe-cell pipe-dormant">
+        <span class="pipe-id">9.1–9.3</span>
+        <span class="pipe-name">Admission &amp; plan v2</span>
+        <span class="pipe-bar"></span>
+      </div>
+      <div class="pipe-cell pipe-dormant">
+        <span class="pipe-id">9.4–9.7</span>
+        <span class="pipe-name">Native engine</span>
+        <span class="pipe-bar"></span>
+      </div>
+      <div class="pipe-cell pipe-dormant">
+        <span class="pipe-id">9.8–9.9</span>
+        <span class="pipe-name">Execution &amp; results</span>
+        <span class="pipe-bar"></span>
+      </div>
+      <div class="pipe-cell pipe-dormant">
+        <span class="pipe-id">9.10–9.11</span>
+        <span class="pipe-name">Patch &amp; placement</span>
+        <span class="pipe-bar"></span>
+      </div>
+      <div class="pipe-cell pipe-dormant">
+        <span class="pipe-id">9.12</span>
+        <span class="pipe-name">Approve &amp; verify</span>
+        <span class="pipe-bar"></span>
+      </div>
+      <div class="pipe-cell pipe-missing">
+        <span class="pipe-id">9.13</span>
+        <span class="pipe-name">Browser half</span>
+        <span class="pipe-bar"></span>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span><i style="background: var(--built)"></i> built &amp; live</span>
+      <span><i style="background: var(--dormant)"></i> built, flag off</span>
+      <span><i style="background: var(--gap)"></i> partial</span>
+      <span><i style="background: var(--risk)"></i> not started</span>
+    </div>
+
+    <div class="prose">
+      <p>
+        Every stage above the browser is written and tested. The reason none of it
+        runs is a single line in
+        <code>runtime/models/capabilities.py</code>: <code>native_execution_ready</code>
+        and <code>workbook_patches_ready</code> both default to <code>False</code>,
+        and <code>bootstrap.py</code> constructs the profile with those defaults. So
+        <code>evaluate_admission</code> returns <code>PLAN_ONLY</code> for every plan,
+        the execution and patch services are never even built, and every run still
+        terminates at <code>plan_ready</code> exactly as it did in Phase 8.
+      </p>
+      <p>
+        That is by design — the staging gate is deliberate and correct. It also means
+        the flags, not the code, are the real sequencing instrument in this phase.
+      </p>
+    </div>
+
+    <div class="board">
+      <div class="board-row">
+        <span class="sect">9.1–9.3</span>
+        <span class="what">Capability profile, Plan Schema v2, expression AST, input resolution, admission</span>
+        <span class="chip chip-dormant">flag off</span>
+      </div>
+      <div class="board-row">
+        <span class="sect">9.4–9.7</span>
+        <span class="what">Polars engine in a bounded subprocess, operation semantics, seeded generation, formula compiler</span>
+        <span class="chip chip-dormant">flag off</span>
+      </div>
+      <div class="board-row">
+        <span class="sect">9.8</span>
+        <span class="what">Durable executions, leases, fencing, pause/cancel
+          <span class="note">Stage scheduling is still an inline drain, and <code>execution/checkpoints.py</code> is not wired into <code>execution/service.py</code>.</span>
+        </span>
+        <span class="chip chip-gap">partial</span>
+      </div>
+      <div class="board-row">
+        <span class="sect">9.9–9.12</span>
+        <span class="what">Result validation and publishing, patch protocol, placement and reservations, approval / preflight / receipt / conflict / undo</span>
+        <span class="chip chip-dormant">flag off</span>
+      </div>
+      <div class="board-row">
+        <span class="sect">9.13</span>
+        <span class="what">Frontend integration and the Univer adapter
+          <span class="note">Only <code>lib/data-analysis/patch/cell-hash.ts</code> exists — all 12 golden fixtures verified against Python. Roughly 5% of the section.</span>
+        </span>
+        <span class="chip chip-missing">not started</span>
+      </div>
+      <div class="board-row">
+        <span class="sect">9.14</span>
+        <span class="what">APIs, events, persistence, lifecycle
+          <span class="note">Patch routes and collections exist. No execution read route; the event set is coarser than specified; the BFF proxy admits none of it.</span>
+        </span>
+        <span class="chip chip-gap">partial</span>
+      </div>
+      <div class="board-row">
+        <span class="sect">9.15–9.16</span>
+        <span class="what">Security, privacy, performance, observability, tests
+          <span class="note">815 backend tests green. No integration or end-to-end coverage, no performance evidence.</span>
+        </span>
+        <span class="chip chip-gap">partial</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ BLOCKERS ============ -->
+  <section>
+    <h2><span class="h2-num">Before you start</span>Four things that stop this from being simple wiring</h2>
+
+    <div class="blockers">
+      <article class="blocker">
+        <span class="blocker-num">01</span>
+        <div class="blocker-body">
+          <h3>There is no endpoint that returns an execution result</h3>
+          <p>
+            9.14.1 specifies <code>GET /analysis/runs/{run_id}/execution</code>; it does
+            not exist. A <code>result.preview.json</code> blob <em>is</em> published, but
+            the worker passes <code>plan_summary</code> through on the execution path, so
+            <code>final_dataset_ids</code> and <code>final_artifact_ids</code> are never
+            populated either. <strong>Turn on the engine today and an analysis run computes
+            a correct answer that the user cannot see.</strong> This is a backend gap sitting
+            inside what looks like a frontend phase, and it gates everything downstream.
+          </p>
+        </div>
+      </article>
+
+      <article class="blocker">
+        <span class="blocker-num">02</span>
+        <div class="blocker-body">
+          <h3>The existing capture cannot answer the handshake</h3>
+          <p>
+            <code>captureWorkbookContext</code> reads values, formulas, types, formats and
+            merges. <code>WorkbookPatchContext</code> additionally needs per-sheet
+            <code>used_range_a1</code>, <code>protected_ranges</code>,
+            <code>table_ranges</code> and <code>drawing_ranges</code>, plus a
+            <code>protected</code> flag per cell — and a TypeScript
+            <code>computeContextHash</code> that reproduces
+            <code>canonical_context_payload</code> byte for byte, because the server
+            recomputes it and rejects a mismatch. Same file also hardcodes
+            <code>hidden_rows: []</code> and <code>hidden_columns: []</code>, so the
+            backend's privacy accounting always sees zero hidden rows.
+          </p>
+        </div>
+      </article>
+
+      <article class="blocker">
+        <span class="blocker-num">03</span>
+        <div class="blocker-body">
+          <h3>Every mutation currently bumps the workbook revision</h3>
+          <p>
+            <code>univer-host.tsx</code> dispatches <code>BUMP_WORKBOOK_REVISION</code> and
+            schedules a debounced save on <em>every</em> Univer <code>MUTATION</code>. A
+            seven-operation patch would advance the revision seven times and save seven
+            times, which breaks the receipt invariant that
+            <strong>one patch advances the logical revision exactly once</strong>. The
+            coordinator in 9.13.3 is not optional polish.
+          </p>
+        </div>
+      </article>
+
+      <article class="blocker">
+        <span class="blocker-num">04</span>
+        <div class="blocker-body">
+          <h3>One-undo in Univer 0.25.1 is an open question</h3>
+          <p>
+            The only batching API in the pinned version is
+            <code>IUndoRedoService.__tempBatchingUndoRedo</code>, and it carries an explicit
+            <code>@deprecated — This is a temporary solution. We are going to refactor the
+            undo redo service shortly.</code> It is not on the facade; you reach it through
+            the protected injector. The cleaner route exists —
+            <code>pushUndoRedo({unitID, undoMutations, redoMutations})</code> is public, and
+            the facade exposes <code>syncExecuteCommand</code> and bulk
+            <code>setValues</code>/<code>setFormulas</code> — but registering one DocMind
+            patch command with correct undo state is a genuine spike.
+            <strong>This is the highest-variance item left in the phase.</strong>
+          </p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- ============ STAGE 1 ============ -->
+  <div class="band">
+    <span class="band-label">Stage One</span>
+    <h2>Make execution visible</h2>
+    <p class="band-sub">
+      Five sessions, no Univer risk anywhere in them. Ends with a real feature:
+      ask a question, the Polars engine computes it, the user sees the answer.
+      Edit-mode plans keep stopping safely at <code>plan_ready</code> throughout.
+    </p>
+  </div>
+
+  <section class="sessions">
+
+    <article class="session">
+      <span class="session-id">S1</span>
+      <div class="session-main">
+        <h3>Execution read API and run linkage</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> backend</span>
+          <span><b>Risk</b> low</span>
+          <span><b>Depends on</b> nothing</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Add <code>GET /analysis/runs/{run_id}/execution</code> returning the execution
+              record, result metrics and a bounded preview read through the authenticated
+              boundary — mirroring how <code>download_patch_chunk</code> already serves blob
+              bytes. In the same pass, populate the run's result linkage when execution
+              completes, so history and the run view can point at what was produced.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>apis/analysis_executions.py (new)</span>
+              <span>runtime/repositories/executions.py</span>
+              <span>runtime/services/worker.py — _execute_plan summary</span>
+              <span>main.py — router registration</span>
+              <span>tests/test_data_analysis_phase9_execution_api.py (new)</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">The endpoint is tenant-scoped, the preview is redacted through
+              the privacy gateway, a cross-user read returns not-found, and the full suite
+              is still green.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S2</span>
+      <div class="session-main">
+        <h3>Granular execution events</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> backend</span>
+          <span><b>Risk</b> medium</span>
+          <span><b>Depends on</b> S1</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Emit the 9.14.2 events the enum is missing — <code>execution_stage_started</code>,
+              <code>execution_step_completed</code>, <code>execution_checkpoint_created</code>,
+              <code>result_materialized</code>, <code>result_validation_started/completed</code>,
+              plus <code>application_required</code> and <code>patch_apply_failed</code> for
+              Stage Two. Without these, the activity stream in 9.13.2 cannot narrate stages —
+              it can only say "execution started" and then wait.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>runtime/models/events.py</span>
+              <span>runtime/services/state_machine.py — transition table</span>
+              <span>runtime/execution/service.py</span>
+              <span>runtime/services/worker.py</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">One execution produces an ordered, replayable stage narrative
+              through SSE, and all 815 existing tests still pass.</dd>
+          </div>
+          <div>
+            <dt>Note</dt>
+            <dd>Deferrable past Gate A if you want the engine on sooner — at the cost of
+              building the progress UI twice.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S3</span>
+      <div class="session-main">
+        <h3>Open the BFF transport</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> medium — this is the tenant boundary</span>
+          <span><b>Depends on</b> S1</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>The catch-all proxy allowlists two GET operations and six POST operations and
+              requires <code>path.length === 2</code>. Every Phase 9 route fails that check —
+              <code>patch</code> is not in the GET set, <code>patch/context</code> is length
+              three, chunk download is length seven. Replace the matcher with an explicit
+              route table, and forward idempotency keys and trace IDs on patch routes.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>app/api/analysis/runs/[...path]/route.ts</span>
+              <span>lib/server/backend.ts — binary-safe passthrough</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Watch for</dt>
+            <dd><code>passthrough()</code> reads the body with <code>res.text()</code>. Chunk
+              payloads are hashed and verified byte for byte, so they need a stream or
+              <code>arrayBuffer</code> path rather than a decode-and-re-encode round trip.</dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">Every backend analysis route is reachable from the browser with
+              auth, unknown paths still 404, and typecheck and lint are clean.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S4</span>
+      <div class="session-main">
+        <h3>Typed execution and patch clients</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> low</span>
+          <span><b>Depends on</b> S3</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Add <code>execution/execution-api.ts</code> and <code>execution-events.ts</code>,
+              and mirror the Pydantic models into <code>analysis-types.ts</code>. Mirror the
+              <em>patch</em> types in the same pass even though nothing consumes them yet —
+              one careful reading of the models beats two.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/execution/execution-api.ts (new)</span>
+              <span>lib/data-analysis/execution/execution-events.ts (new)</span>
+              <span>lib/data-analysis/analysis-types.ts</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">The provider can fetch an execution and the types compile against
+              a real response. No UI yet.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S5</span>
+      <div class="session-main">
+        <h3>Execution progress and result preview</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> low</span>
+          <span><b>Depends on</b> S2, S4</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Build the progress card and result table, and teach the run provider about
+              execution events — today <code>PLAN_REFRESH_EVENTS</code> knows five plan events
+              and nothing else. Extend the activity bar's status labels past
+              "waiting for approval".</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>components/data-analysis/analyst/execution-progress-card.tsx (new)</span>
+              <span>lib/data-analysis/execution/result-preview.ts (new)</span>
+              <span>components/data-analysis/analysis-run-provider.tsx</span>
+              <span>components/data-analysis/activity/agent-activity-bar.tsx</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">An analyse-mode run shows live stages and lands on a result the
+              user can read.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+  </section>
+
+  <div class="gate">
+    <span class="gate-label">Gate A · its own session</span>
+    <h3>Turn the engine on and verify it under real conditions</h3>
+    <div class="gate-flag">ExecutorCapabilities(native_execution_ready=True)  ·  workbook_patches_ready stays False</div>
+    <p>
+      Edit-mode plans continue to stop at <code>plan_ready</code>, because
+      <code>evaluate_admission</code> gates them separately — the staging works exactly
+      as designed. Spend the session on what only real runs reveal: SSE reconnect
+      mid-execution, pause and cancel during execution, cache-hit replay producing an
+      identical hash, and timings on your actual machine. 9.15.2 asks for the tested
+      hardware in the README; this is when you have the numbers.
+    </p>
+  </div>
+
+  <!-- ============ STAGE 2 ============ -->
+  <div class="band">
+    <span class="band-label">Stage Two</span>
+    <h2>Workbook editing</h2>
+    <p class="band-sub">
+      Nine sessions. The risk is concentrated in the first one, deliberately — if the
+      undo mechanism does not work the way you expect, everything downstream changes
+      shape, and you want to learn that on day one rather than in the middle of the
+      apply coordinator.
+    </p>
+  </div>
+
+  <section class="sessions">
+
+    <article class="session">
+      <span class="session-id">S6</span>
+      <div class="session-main">
+        <h3>The Univer undo spike</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span class="hot"><b>Risk</b> highest in the phase</span>
+          <span><b>Depends on</b> nothing</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Answer exactly one question: how does one AI patch become one
+              <kbd>⌘Z</kbd> in Univer 0.25.1? Try in the order 9.13.4 prescribes — a registered
+              DocMind patch command carrying combined undo and redo mutations; then the
+              deprecated batching call; then a documented, encapsulated fallback. Write down
+              which one you chose and why.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/univer-patch-adapter.ts (skeleton)</span>
+              <span>a throwaway spike route or scratch harness</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">A test applies three operations and proves a single undo reverses
+              all three — and the mechanism is behind one adapter, with no version-specific
+              call anywhere else.</dd>
+          </div>
+          <div>
+            <dt>Why alone</dt>
+            <dd>This is the one session whose outcome could invalidate the plan below it.
+              Give it nothing else to do.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S7</span>
+      <div class="session-main">
+        <h3>Logical revision coordinator</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> medium</span>
+          <span><b>Depends on</b> S6</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>An AI-patch transaction that suppresses intermediate revision bumps and
+              autosaves, commits one revision and one snapshot save, and rolls back with the
+              in-memory inverse on failure. Normal user edits outside the transaction keep
+              their current behaviour.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/revision-coordinator.ts (new)</span>
+              <span>components/data-analysis/workspace/spreadsheet/univer-host.tsx</span>
+              <span>lib/data-analysis/univer-bridge.ts</span>
+              <span>lib/data-analysis/workspace-state.ts</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">A scripted multi-operation mutation bumps the revision exactly
+              once and writes exactly one snapshot. Verifiable with a fake patch — no protocol
+              needed yet.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S8</span>
+      <div class="session-main">
+        <h3>Context capture and hash parity</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend + Python fixtures</span>
+          <span><b>Risk</b> medium</span>
+          <span><b>Depends on</b> S4</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Capture a real <code>WorkbookPatchContext</code>: per-sheet occupancy, the
+              source rectangle, and candidate rectangles derived from the
+              <code>patch_context_required</code> payload — which already carries
+              <code>source_range_a1</code>, <code>placement_policy</code>,
+              <code>minimum_column_gap</code>, <code>output_rows</code> and
+              <code>output_columns</code>. Then <code>computeContextHash</code>, proven against
+              golden fixtures generated from Python, exactly the way
+              <code>cell-hash.fixtures.ts</code> already works.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/context.ts (new)</span>
+              <span>lib/data-analysis/patches/context-hash.ts (new)</span>
+              <span>lib/data-analysis/patches/context-hash.fixtures.ts (new)</span>
+              <span>scripts/verify-context-hash.mjs (new)</span>
+              <span>runtime/placement/fixtures.py (new)</span>
+              <span>lib/data-analysis/workbook-snapshot.ts — hidden rows/columns</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Also fold in</dt>
+            <dd>The duplicated <code>canonicalNumber</code> and <code>stableStringify</code>
+              between <code>workbook-snapshot.ts</code> and <code>cell-hash.ts</code>. Two
+              copies of a canonicalization routine is how hashes drift.</dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit"><code>npm run verify:context-hash</code> is green and the server
+              accepts a context posted from a real workbook.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S9</span>
+      <div class="session-main">
+        <h3>Payload loader and preflight</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> medium</span>
+          <span><b>Depends on</b> S8</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Patch contracts, chunk download with per-chunk checksum verification, and the
+              preflight call that captures live guards and interprets the verdict. Nothing
+              mutates a cell in this session.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/contracts.ts (new)</span>
+              <span>lib/data-analysis/patches/payload-loader.ts (new)</span>
+              <span>lib/data-analysis/patches/preflight.ts (new)</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">For a real proposal the browser downloads and verifies every
+              chunk, and receives a <code>may_apply</code> verdict from the server.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S10</span>
+      <div class="session-main">
+        <h3>Patch review and approval UI</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> low</span>
+          <span><b>Depends on</b> S9</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>The preview card and diff table from 9.13.2 — plain-language summary, exact
+              sheet and range, row counts, formulas being added, the placement explanation,
+              bounded before/after samples. Approve and reject wired to the full binding:
+              patch ID, revision, patch hash, plan hash, base revision.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>components/data-analysis/analyst/patch-preview-card.tsx (new)</span>
+              <span>components/data-analysis/analyst/patch-diff-table.tsx (new)</span>
+              <span>components/data-analysis/analysis-run-provider.tsx</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">A user can see exactly what would change and approve or reject
+              it. Still nothing mutates — this is 9.11's demo, finally visible.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S11</span>
+      <div class="session-main">
+        <h3>Adapter operations</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> medium</span>
+          <span><b>Depends on</b> S6, S7</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>Implement the seven proposable operation types against the facade —
+              <code>write_range</code>, <code>set_formula</code>, <code>fill_formula</code>,
+              <code>set_number_format</code>, <code>clear_range</code>,
+              <code>create_sheet</code>, <code>rename_sheet</code> — plus
+              <code>delete_sheet</code> for the undo path only. Bulk calls throughout; never
+              one command per cell.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/univer-patch-adapter.ts</span>
+              <span>the adapter contract suite from S6</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">Every operation has a before/after hash check and the contract
+              suite passes against the pinned Univer version.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S12</span>
+      <div class="session-main">
+        <h3>Apply coordinator and receipt</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span class="hot"><b>Risk</b> high — the invariants live here</span>
+          <span><b>Depends on</b> S11</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>The seven-step protocol in 9.12.3, applied as one logical command through the
+              S6 mechanism. Then receipt assembly — per-operation results, touched ranges,
+              pre- and post-application hashes — and a local application marker keyed by patch
+              hash so a lost receipt is retried, never re-applied.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/apply-coordinator.ts (new)</span>
+              <span>lib/data-analysis/patches/receipt.ts (new)</span>
+              <span>components/data-analysis/analyst/application-status.tsx (new)</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">Approve, apply, receipt accepted, run completes. Then kill the
+              network before the receipt and reload: it recovers from the local marker without
+              applying twice.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S13</span>
+      <div class="session-main">
+        <h3>Conflict resolution and durable undo</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> medium</span>
+          <span><b>Depends on</b> S12</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>All six rows of the 9.12.5 matrix, including the rebase path — where the
+              server issues a new patch revision and the old approval is deliberately void, so
+              the user must approve again. Plus the durable undo proposal as a new, separately
+              approved, auditable patch.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/conflict-resolution.ts (new)</span>
+              <span>components/data-analysis/analyst/patch-conflict-card.tsx (new)</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">Each matrix row is demonstrable, and no conflict ever partially
+              applies the remaining operations.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+
+    <article class="session">
+      <span class="session-id">S14</span>
+      <div class="session-main">
+        <h3>Preview clone and large-range performance</h3>
+        <div class="session-meta">
+          <span><b>Surface</b> frontend</span>
+          <span><b>Risk</b> medium</span>
+          <span><b>Depends on</b> S12</span>
+        </div>
+        <dl>
+          <div>
+            <dt>Goal</dt>
+            <dd>A throwaway Univer unit with its own unit ID that never writes to
+              localStorage and is disposed after preview. Then 9.13.5: virtualized diffs,
+              chunked application that yields between chunks while staying inside one undo
+              transaction, and incremental hashing.</dd>
+          </div>
+          <div>
+            <dt>Touches</dt>
+            <dd class="files">
+              <span>lib/data-analysis/patches/preview-clone.ts (new)</span>
+              <span>components/data-analysis/analyst/patch-diff-table.tsx</span>
+              <span>lib/data-analysis/patches/apply-coordinator.ts</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Done when</dt>
+            <dd class="exit">A large patch previews and applies without freezing the browser,
+              and preview provably mutates nothing.</dd>
+          </div>
+        </dl>
+      </div>
+    </article>
+  </section>
+
+  <div class="gate">
+    <span class="gate-label">Gate B · its own session, or two</span>
+    <h3>Turn workbook patching on, then certify it</h3>
+    <div class="gate-flag">ExecutorCapabilities(workbook_patches_ready=True)</div>
+    <p>
+      This is 9.18's Slice E. Security and privacy tests, concurrency against Atlas — two
+      patches racing for overlapping rectangles, and two non-overlapping ones proceeding
+      together — the end-to-end portfolio scenarios, performance evidence with the tested
+      hardware named, and the README's boundary paragraph rewritten, since it currently
+      describes an intermediate state the default wiring does not produce.
+      <strong>Only after this should the capability profile advertise Phase 9 as complete.</strong>
+    </p>
+  </div>
+
+  <!-- ============ HOW TO RUN THEM ============ -->
+  <section>
+    <h2><span class="h2-num">Practice</span>How to get the most out of each session</h2>
+    <ul class="plain">
+      <li><strong>One session, one surface.</strong> Sessions are cut so that backend and
+        frontend rarely mix — S8 is the only deliberate crossing, and only because hash
+        parity needs both sides in one head. Crossing that boundary casually is what makes
+        a session run out of room.</li>
+      <li><strong>Open with the baseline, not the goal.</strong> Run the suite first
+        (<code>.venv/bin/python -m unittest discover -s tests -t . -q</code>, or
+        <code>npm run typecheck</code>) so a pre-existing failure is never mistaken for
+        something you caused.</li>
+      <li><strong>Hand over the card, not the plan.</strong> Paste the session's goal,
+        file list and done-when verbatim. The 1,655-line phase plan is reference material
+        for the specific subsection, not context to load wholesale.</li>
+      <li><strong>Name the files.</strong> Every card lists them because the fastest way to
+        lose a session is to spend it rediscovering where things live.</li>
+      <li><strong>End green, end committed.</strong> Each session should close with tests
+        passing and the repo shippable — the flags mean an unfinished frontend never breaks
+        the product.</li>
+      <li><strong>Do not flip both flags together.</strong> That is the one genuinely bad
+        move available: it parks every edit run at <code>WAITING/proposal</code> on a
+        handshake nothing answers, holding a live rectangle reservation.</li>
+    </ul>
+  </section>
+
+  <footer>
+    Derived from the repository at <code>abb3705</code> — 815 backend tests green, working
+    tree clean, cell-hash parity verified against all 12 golden fixtures. Section numbers
+    refer to <code>backend/phase9plan.md</code>; every state claim above was read from the
+    code rather than from that plan.
+  </footer>
+
+</div>
