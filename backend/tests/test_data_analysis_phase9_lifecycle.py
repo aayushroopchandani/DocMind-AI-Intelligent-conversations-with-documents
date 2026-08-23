@@ -258,6 +258,67 @@ class WorkerNativeExecutionTests(unittest.IsolatedAsyncioTestCase):
             ExecutionFailureCode.INPUT_UNAVAILABLE.value,
         )
 
+    async def test_a_published_execution_is_recorded_on_the_run(self) -> None:
+        """The read API resolves an execution from a run, so the run must
+        point at it. Only a published execution earns a pointer (9.14.1)."""
+
+        from scripts.data_analysis_agent.runtime.execution.publication import (
+            ResultPublisher,
+        )
+        from scripts.data_analysis_agent.runtime.repositories.executions import (
+            InMemoryExecutionRepository,
+        )
+        from tests.test_data_analysis_phase9_durability import (
+            RecordingBlobStore,
+        )
+
+        harness = WorkerAdmissionLifecycleTests()
+        repository = InMemoryExecutionRepository()
+        service = NativeExecutionService(
+            resolver=_ExecutionStubResolver(),
+            publisher=ResultPublisher(
+                repository=repository,
+                store=RecordingBlobStore(),
+            ),
+            capabilities=ExecutorCapabilities(native_execution_ready=True),
+        )
+
+        current, _events = await harness._run_worker(
+            ExecutionAdmission.QUEUE,
+            "worker-native-linkage",
+            execution_service=service,
+        )
+
+        self.assertEqual(current.status, AnalysisRunStatus.SUCCEEDED)
+        self.assertIsNotNone(current.current_execution_id)
+        self.assertIsNotNone(current.current_execution_key)
+        # The pointer resolves to a real record belonging to this run.
+        execution = await repository.get_by_id(
+            user_id=current.user_id,
+            execution_id=current.current_execution_id,
+        )
+        self.assertIsNotNone(execution)
+        self.assertEqual(execution.run_id, current.run_id)
+
+    async def test_an_unpublished_execution_leaves_no_pointer(self) -> None:
+        """Without blob storage nothing is published, so nothing is promised."""
+
+        harness = WorkerAdmissionLifecycleTests()
+        service = NativeExecutionService(
+            resolver=_ExecutionStubResolver(),
+            capabilities=ExecutorCapabilities(native_execution_ready=True),
+        )
+
+        current, _events = await harness._run_worker(
+            ExecutionAdmission.QUEUE,
+            "worker-native-no-linkage",
+            execution_service=service,
+        )
+
+        self.assertEqual(current.status, AnalysisRunStatus.SUCCEEDED)
+        self.assertIsNone(current.current_execution_id)
+        self.assertIsNone(current.current_execution_key)
+
     async def test_a_queued_run_without_an_engine_stays_queued(self) -> None:
         harness = WorkerAdmissionLifecycleTests()
 
