@@ -1329,8 +1329,12 @@ class DurableAnalysisWorker:
             outcome=AnalysisRunOutcome.COMPLETED,
             event_type=AnalysisEventType.RUN_COMPLETED,
             payload={
+                # No execution key: it is the idempotency/cache identity, and
+                # both `ExecutionView` and `AnalysisRunView` withhold it. An
+                # event stream that broadcast it would answer the same boundary
+                # question two different ways. `content_hash` already tells a
+                # client which result this run produced.
                 "plan_id": plan.plan_id,
-                "execution_key": outcome.execution_key,
                 "engine_version": outcome.engine_version,
                 "semantics_version": outcome.semantics_version,
                 "isolation": outcome.isolation,
