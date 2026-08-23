@@ -50,6 +50,12 @@ from .native.backend import (
 )
 from .native.engine import engine_version
 from .native.semantics import NATIVE_SEMANTICS_VERSION
+from .progress import (
+    ExecutionProgressReporter,
+    InputsResolved,
+    NullExecutionProgressReporter,
+    StepCompleted,
+)
 from .publication import ResultPublisher, cached_outcome
 
 
@@ -137,7 +143,9 @@ class NativeExecutionService:
         run: RunAdmissionState,
         cancelled: CancellationCheck | None = None,
         fencing_token: int = 1,
+        reporter: ExecutionProgressReporter | None = None,
     ) -> ExecutionOutcome:
+        progress = reporter or NullExecutionProgressReporter()
         decision = check_execution_preconditions(
             plan,
             run,
@@ -188,6 +196,13 @@ class NativeExecutionService:
         except InputResolutionError as error:
             return self._failure(plan, error.code, error.message, key=key)
 
+        await progress.emit(
+            InputsResolved(
+                dataset_count=len(resolved),
+                total_rows=sum(item.row_count for item in resolved),
+            )
+        )
+
         directory = Path(
             tempfile.mkdtemp(
                 prefix=f"native-{plan.run_id}-",
@@ -232,6 +247,7 @@ class NativeExecutionService:
                 cancelled=cancelled,
             )
             outcome = self._outcome(key, result)
+            await self._report_steps(progress, result)
 
             if execution is None or self._publisher is None:
                 await self._results.put(key, outcome)
@@ -245,6 +261,7 @@ class NativeExecutionService:
                 output_path=output_path,
                 limits=self._limits,
                 workbook_bound=_writes_workbook(plan),
+                reporter=progress,
             )
             if not publication.succeeded:
                 return replace(
@@ -264,6 +281,31 @@ class NativeExecutionService:
             )
         finally:
             shutil.rmtree(directory, ignore_errors=True)
+
+    @staticmethod
+    async def _report_steps(
+        progress: ExecutionProgressReporter,
+        result: NativeExecutionResult,
+    ) -> None:
+        """Replay the child's per-step counters, in execution order."""
+
+        if not result.succeeded:
+            # A failed execution reports the failure, not a partial narrative
+            # whose last step is the one that broke.
+            return
+        total = len(result.step_metrics)
+        for index, metrics in enumerate(result.step_metrics, start=1):
+            await progress.emit(
+                StepCompleted(
+                    step_id=metrics.step_id,
+                    kind=metrics.kind,
+                    index=index,
+                    total=total,
+                    input_rows=metrics.input_rows,
+                    output_rows=metrics.output_rows,
+                    output_columns=metrics.output_columns,
+                )
+            )
 
     def _from_record(
         self,

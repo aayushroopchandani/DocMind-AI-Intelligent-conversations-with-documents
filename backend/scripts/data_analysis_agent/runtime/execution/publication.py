@@ -39,6 +39,13 @@ from .contracts import (
     NativeRecipe,
 )
 from .dag import CompiledRecipe
+from .progress import (
+    ExecutionProgressReporter,
+    NullExecutionProgressReporter,
+    ResultMaterialized,
+    ResultValidated,
+    ResultValidationStarted,
+)
 from .idempotency import dataset_content_signature, native_recipe_hash
 from .native.engine import result_content_hash as recompute_content_hash
 from .results import (
@@ -137,9 +144,16 @@ class ResultPublisher:
         output_path: Path,
         limits: ExecutionLimits,
         workbook_bound: bool = False,
+        reporter: ExecutionProgressReporter | None = None,
     ) -> PublicationOutcome:
-        """Validate, store and commit a finished execution."""
+        """Validate, store and commit a finished execution.
 
+        The milestones are emitted at the three boundaries this method actually
+        has, so each one means what it says: validation began, validation
+        passed, the bundle became durable.
+        """
+
+        progress = reporter or NullExecutionProgressReporter()
         if not result.succeeded:
             return await self._fail(
                 execution,
@@ -153,6 +167,12 @@ class ResultPublisher:
         # the worker's manifest.
         content_hash = recompute_content_hash(frame, columns)
 
+        await progress.emit(
+            ResultValidationStarted(
+                row_count=frame.height,
+                column_count=frame.width,
+            )
+        )
         issues = validate_result(
             result=result,
             frame=frame,
@@ -165,6 +185,10 @@ class ResultPublisher:
         if issues:
             first = issues[0]
             return await self._fail(execution, first.code, first.message)
+
+        await progress.emit(
+            ResultValidated(row_count=frame.height, column_count=frame.width)
+        )
 
         try:
             bundle = await publish_result(
@@ -191,6 +215,15 @@ class ResultPublisher:
             )
         except ResultPublicationError as error:
             return await self._fail(execution, error.code, error.message)
+
+        await progress.emit(
+            ResultMaterialized(
+                row_count=frame.height,
+                column_count=frame.width,
+                byte_count=bundle.total_bytes,
+                content_hash=content_hash,
+            )
+        )
 
         return await self._commit(
             execution=execution,

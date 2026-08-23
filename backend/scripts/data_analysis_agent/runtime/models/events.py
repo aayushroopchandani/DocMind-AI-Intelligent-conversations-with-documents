@@ -72,6 +72,13 @@ class AnalysisEventType(str, Enum):
     PLAN_REJECTED = "plan_rejected"
     EXECUTION_QUEUED = "execution_queued"
     EXECUTION_STARTED = "execution_started"
+    # Progress inside one execution (9.14.2). Each carries identifiers, counts
+    # and durations only — never a row, a value or a formula.
+    EXECUTION_INPUTS_RESOLVED = "execution_inputs_resolved"
+    EXECUTION_STEP_COMPLETED = "execution_step_completed"
+    RESULT_VALIDATION_STARTED = "result_validation_started"
+    RESULT_VALIDATION_COMPLETED = "result_validation_completed"
+    RESULT_MATERIALIZED = "result_materialized"
     EXECUTION_COMPLETED = "execution_completed"
     PATCH_CONTEXT_REQUIRED = "patch_context_required"
     PATCH_CONTEXT_RECEIVED = "patch_context_received"
