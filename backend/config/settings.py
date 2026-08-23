@@ -15,6 +15,25 @@ except ImportError:  # pragma: no cover
     pass
 
 
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Read a boolean deployment switch.
+
+    Anything unrecognised falls back to the default rather than being treated
+    as false: a typo in an operator's environment must not silently disable a
+    capability the deployment believes it has.
+    """
+
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     # MongoDB
@@ -174,6 +193,25 @@ class Settings:
     )
     analysis_worker_renew_seconds: int = int(
         os.getenv("ANALYSIS_WORKER_RENEW_SECONDS", "20")
+    )
+
+    # Phase 9 staging gates. Planning always produces v2 recipes; these say
+    # whether this deployment has the machinery to *run* one and to *apply* the
+    # result to a workbook. Admission reads both, so a capability that is not
+    # installed stops a plan at plan_ready instead of parking a run on a queue
+    # or a handshake nothing will drain.
+    #
+    # Native execution is installed (Gate A). Workbook patching stays off until
+    # the browser-side Univer adapter of 9.13 exists to answer the patch-context
+    # handshake — turning it on before then would park every edit run in
+    # WAITING/proposal forever, holding its rectangle reservation.
+    analysis_native_execution_ready: bool = _env_flag(
+        "ANALYSIS_NATIVE_EXECUTION_READY",
+        default=True,
+    )
+    analysis_workbook_patches_ready: bool = _env_flag(
+        "ANALYSIS_WORKBOOK_PATCHES_READY",
+        default=False,
     )
 
     # Typed planning and deterministic validation limits. Plans contain only
