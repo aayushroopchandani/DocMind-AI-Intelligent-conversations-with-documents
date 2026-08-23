@@ -19,6 +19,7 @@ from datetime import date, datetime
 from typing import Any
 
 import polars as pl
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from ....runtime.models.plans import PlanColumn
 from ....runtime.models.privacy import AnalysisPrivacyMode
@@ -29,6 +30,44 @@ from ...formulas.safety import neutralize_text
 MAX_PREVIEW_ROWS = 20
 MAX_PREVIEW_CELLS = 400
 MAX_PREVIEW_TEXT = 120
+
+MAX_PREVIEW_BYTES = 1024 * 1024
+"""Download cap for a stored preview member.
+
+The caps above bound a preview to roughly 400 short cells, so a megabyte is
+generous by an order of magnitude. It exists so a read path can never be talked
+into pulling an unbounded object by a reference that claims to be a preview.
+"""
+
+
+class ResultPreview(BaseModel):
+    """The shape of a stored `result.preview.json`, for readers.
+
+    It lives beside :func:`build_preview` so the writer and the reader cannot
+    drift apart unnoticed; a test asserts one parses the other.
+
+    The caps are re-applied on read. They were already enforced when the
+    document was written, but a read path that trusts stored bytes to still be
+    bounded is a read path that can be handed an unbounded one.
+
+    `extra="ignore"` rather than the codebase's usual `forbid`: a preview
+    published by a newer format version should degrade to the fields this
+    reader understands, not fail the whole request for a result that is
+    otherwise perfectly readable.
+    """
+
+    row_count: int = Field(ge=0)
+    preview_row_count: int = Field(ge=0, le=MAX_PREVIEW_ROWS)
+    truncated: bool = False
+    privacy_mode: str = Field(max_length=40)
+    redacted_column_keys: tuple[str, ...] = Field(default=(), max_length=500)
+    columns: tuple[str, ...] = Field(default=(), max_length=500)
+    rows: tuple[dict[str, JsonValue], ...] = Field(
+        default=(),
+        max_length=MAX_PREVIEW_ROWS,
+    )
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
 
 def build_preview(
@@ -94,6 +133,8 @@ def _present(value: Any) -> Any:
 
 
 __all__ = [
+    "ResultPreview",
+    "MAX_PREVIEW_BYTES",
     "MAX_PREVIEW_CELLS",
     "MAX_PREVIEW_ROWS",
     "MAX_PREVIEW_TEXT",

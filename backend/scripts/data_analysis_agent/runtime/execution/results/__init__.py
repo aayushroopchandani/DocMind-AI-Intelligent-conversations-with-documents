@@ -7,9 +7,15 @@ types, and a result nobody can read back is not durable.
 """
 
 from .lineage import LINEAGE_FORMAT_VERSION, build_lineage
-from .previews import MAX_PREVIEW_ROWS, build_preview
+from .previews import (
+    MAX_PREVIEW_BYTES,
+    MAX_PREVIEW_ROWS,
+    ResultPreview,
+    build_preview,
+)
 from .reader import (
     BlobExecutionResultReader,
+    ExecutionPreviewReader,
     ExecutionResultReader,
     ResultRows,
     ResultUnavailableError,
@@ -35,13 +41,16 @@ from .validation import ResultIssue, validate_result
 
 __all__ = [
     "LINEAGE_FORMAT_VERSION",
+    "MAX_PREVIEW_BYTES",
     "MAX_PREVIEW_ROWS",
     "NULL_SENTINEL",
     "RESULT_FORMAT_VERSION",
     "BlobExecutionResultReader",
+    "ExecutionPreviewReader",
     "ExecutionResultReader",
     "PublishedBundle",
     "ResultIssue",
+    "ResultPreview",
     "ResultRows",
     "ResultUnavailableError",
     "ResultPublicationError",
