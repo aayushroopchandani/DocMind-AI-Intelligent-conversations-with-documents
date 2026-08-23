@@ -10,7 +10,9 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "verify:cell-hash": "node scripts/verify-cell-hash.mjs"
+    "verify:cell-hash": "node scripts/verify-cell-hash.mjs",
+    "verify:analysis-routes": "node scripts/verify-analysis-routes.mjs",
+    "verify:execution-events": "node scripts/verify-execution-events.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
