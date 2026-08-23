@@ -50,6 +50,7 @@ from ..repositories.runs import (
     AnalysisRunStoreError,
 )
 from .patch_service import PatchService, workbook_write_intent
+from .execution_progress import DurableExecutionProgressReporter
 from .state_machine import (
     AnalysisRunStateMachine,
     InvalidAnalysisRunTransition,
@@ -1256,6 +1257,15 @@ class DurableAnalysisWorker:
 
         outcome = await self._execution_service.execute(
             plan=plan,
+            # Stage progress goes onto the same durable stream as every other
+            # milestone, so an SSE reconnect replays the execution narrative
+            # exactly like the planning one (9.8, "extended, not rebuilt").
+            reporter=DurableExecutionProgressReporter(
+                state_machine=self._state_machine,
+                run=current,
+                worker_id=self._worker_id,
+                lease_attempt=lease_attempt,
+            ),
             run=RunAdmissionState(
                 user_id=current.user_id,
                 workspace_id=current.workspace_id,
@@ -1331,7 +1341,10 @@ class DurableAnalysisWorker:
             deduplication_key=f"attempt-{lease_attempt}:execution-completed",
             worker_id=self._worker_id,
             lease_attempt=lease_attempt,
-            summary_updates=summary,
+            summary_updates={
+                **summary,
+                **_execution_linkage(outcome),
+            },
         )
         analysis_metrics.record_run_outcome(AnalysisRunOutcome.COMPLETED.value)
         log_analysis_event(
@@ -1544,6 +1557,26 @@ __all__ = [
     "AnalysisWorkerConfig",
     "DurableAnalysisWorker",
 ]
+
+
+def _execution_linkage(outcome: ExecutionOutcome) -> dict[str, object]:
+    """Point the run at the execution it published, if it published one.
+
+    A workbook-writing run gets this from the patch handshake, which needs it to
+    find the result minutes later. A read-only run had nowhere to record it, so
+    its result was durable but unreachable: the API resolves an execution from a
+    run, and nothing connected the two. This closes that gap for both paths.
+
+    An execution that never published — no blob storage configured, or a cache
+    entry held only in process — records nothing rather than a dangling pointer.
+    """
+
+    if outcome.execution_id is None or not outcome.published:
+        return {}
+    return {
+        "current_execution_id": outcome.execution_id,
+        "current_execution_key": outcome.execution_key,
+    }
 
 
 def _merge_usage(left: TokenUsage, right: TokenUsage) -> TokenUsage:

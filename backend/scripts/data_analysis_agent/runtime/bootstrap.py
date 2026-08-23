@@ -38,6 +38,7 @@ from .services.worker import (
     DurableAnalysisWorker,
 )
 from .services.diagnostics import AnalysisDiagnosticsService
+from .services.execution_reader import ExecutionReadService
 from .services.patch_service import PatchService, PatchServiceConfig
 from .services.workbook_context import (
     WorkbookContextLimits,
@@ -61,6 +62,7 @@ class AnalysisRuntime:
     diagnostics_service: AnalysisDiagnosticsService | None = None
     patch_service: PatchService | None = None
     patch_repository: MongoPatchProposalRepository | None = None
+    execution_reader: ExecutionReadService | None = None
 
     async def start(self) -> None:
         if self.artifact_reconciler is not None:
@@ -98,9 +100,20 @@ def build_analysis_runtime(
     # One profile for the whole process. Planning decides whether a plan may be
     # queued and the repository decides the same for an approval, so they must
     # read the identical capability document or the two paths would disagree.
-    # `native_execution_ready` stays false until the Phase 9.4 engine exists;
-    # flipping it there switches both paths from plan_ready to the queue.
-    capabilities = ExecutorCapabilities()
+    #
+    # The two readiness flags are deployment settings, not constants: they say
+    # what this process actually has installed. Admission reads them, so a
+    # deployment without the engine still completes at plan_ready, and one
+    # without the browser-side patch adapter never parks a run on a handshake
+    # nothing will answer.
+    capabilities = ExecutorCapabilities(
+        native_execution_ready=(
+            active_settings.analysis_native_execution_ready
+        ),
+        workbook_patches_ready=(
+            active_settings.analysis_workbook_patches_ready
+        ),
+    )
     plan_repository = MongoAnalysisPlanRepository(
         database,
         capabilities=capabilities,
@@ -234,15 +247,26 @@ def build_analysis_runtime(
             active_settings.analysis_input_initialization_timeout_seconds
         ),
     )
-    # Only built when the deployment declares a native engine. Admission
-    # returns PLAN_ONLY otherwise, so a run can never reach an absent executor.
-    #
-    # The publisher needs blob storage. Without it the engine still runs, but a
-    # result cannot be made durable, so executions stay process-local rather
-    # than pretending to be published.
+    # One repository and one result reader for the whole process. The publisher
+    # writes through them, the patch compiler streams rows from them, and the
+    # read API serves previews from them — three callers, one configured client.
+    execution_repository = MongoExecutionRepository(database)
+    result_reader = (
+        BlobExecutionResultReader(
+            blob_store,
+            max_bytes=active_settings.analysis_max_artifact_bytes,
+        )
+        if blob_store is not None
+        else None
+    )
+    # The publisher is only built when the deployment declares a native engine.
+    # Admission returns PLAN_ONLY otherwise, so a run can never reach an absent
+    # executor. It also needs blob storage: without it the engine still runs,
+    # but a result cannot be made durable, so executions stay process-local
+    # rather than pretending to be published.
     result_publisher = (
         ResultPublisher(
-            repository=MongoExecutionRepository(database),
+            repository=execution_repository,
             store=blob_store,
         )
         if capabilities.native_execution_ready and blob_store is not None
@@ -271,15 +295,12 @@ def build_analysis_runtime(
         PatchService(
             state_machine=state_machine,
             plans=plan_repository,
-            executions=MongoExecutionRepository(database),
+            executions=execution_repository,
             proposals=patch_repository,
             reservations=WriteReservationService(
                 MongoSpatialReservationRepository(database),
             ),
-            result_reader=BlobExecutionResultReader(
-                blob_store,
-                max_bytes=active_settings.analysis_max_artifact_bytes,
-            ),
+            result_reader=result_reader,
             payload_writers=lambda *, workspace_id, patch_id, patch_revision: (
                 BlobPayloadWriter(
                     blob_store,
@@ -297,6 +318,13 @@ def build_analysis_runtime(
         )
         if capabilities.workbook_patches_ready and blob_store is not None
         else None
+    )
+    # Always built: reading what a run executed does not depend on this
+    # deployment being able to execute anything. A run recorded by an earlier,
+    # engine-enabled process stays readable by one without the engine.
+    execution_reader = ExecutionReadService(
+        repository=execution_repository,
+        preview_reader=result_reader,
     )
     worker = DurableAnalysisWorker(
         state_machine=state_machine,
@@ -323,6 +351,7 @@ def build_analysis_runtime(
         ),
         patch_service=patch_service,
         patch_repository=patch_repository,
+        execution_reader=execution_reader,
     )
 
 
