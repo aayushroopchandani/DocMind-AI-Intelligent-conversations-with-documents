@@ -439,6 +439,42 @@ ANALYSIS_INDEX_DEFINITIONS = (
         ),
     ),
     CollectionIndexDefinitions(
+        collection_name="analysis_executions",
+        indexes=(
+            # `reserve` is a conditional insert that relies on a duplicate-key
+            # error to resolve a race between two workers claiming the same
+            # deterministic execution key (9.3.3). Without this index that
+            # insert always succeeds and the "exactly one execution per key"
+            # guarantee is only as good as the read that preceded it.
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("execution_key", ASCENDING),
+                ),
+                name="uq_analysis_executions_key",
+                unique=True,
+            ),
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("execution_id", ASCENDING),
+                ),
+                name="uq_analysis_executions_identity",
+                unique=True,
+            ),
+            # Readers arrive holding a run, not a key. Newest-first so the
+            # lookup is a single indexed document rather than a sort.
+            MongoIndexDefinition(
+                keys=(
+                    ("user_id", ASCENDING),
+                    ("run_id", ASCENDING),
+                    ("created_at", DESCENDING),
+                ),
+                name="ix_analysis_executions_run",
+            ),
+        ),
+    ),
+    CollectionIndexDefinitions(
         collection_name="analysis_patch_proposals",
         indexes=(
             # A rebase or relocation issues a new revision of the same patch,

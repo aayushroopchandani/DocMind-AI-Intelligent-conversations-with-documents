@@ -11,6 +11,11 @@ record is returned as a cache hit rather than recomputed.
 `(execution_id, version, fencing_token)`. A recovered worker that lost its lease
 can still finish computing — nothing can stop a process mid-flight — but its
 publication fails, so a stale attempt can never overwrite a newer one.
+
+*A run can be asked what it executed.* Writers address an execution by its key,
+because that is what makes execution idempotent. Readers only know a run, so
+`get_for_run` resolves the newest attempt for one. Both lookups are single-
+document and index-backed; neither scans.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from pymongo import ReturnDocument
+from pymongo import DESCENDING, ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
 from db.mongodb import get_db
@@ -67,6 +72,20 @@ class ExecutionRepository(Protocol):
         *,
         user_id: str,
         execution_key: str,
+    ) -> AnalysisExecution | None: ...
+
+    async def get_by_id(
+        self,
+        *,
+        user_id: str,
+        execution_id: str,
+    ) -> AnalysisExecution | None: ...
+
+    async def get_for_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
     ) -> AnalysisExecution | None: ...
 
     async def start(
@@ -158,6 +177,46 @@ class MongoExecutionRepository:
         try:
             document = await self._db()[self.collection_name].find_one(
                 {"user_id": user_id, "execution_key": execution_key}
+            )
+        except PyMongoError as error:
+            raise ExecutionRepositoryError(
+                "execution record could not be read"
+            ) from error
+        return AnalysisExecution.model_validate(document) if document else None
+
+    async def get_by_id(
+        self,
+        *,
+        user_id: str,
+        execution_id: str,
+    ) -> AnalysisExecution | None:
+        try:
+            document = await self._db()[self.collection_name].find_one(
+                {"user_id": user_id, "execution_id": execution_id}
+            )
+        except PyMongoError as error:
+            raise ExecutionRepositoryError(
+                "execution record could not be read"
+            ) from error
+        return AnalysisExecution.model_validate(document) if document else None
+
+    async def get_for_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+    ) -> AnalysisExecution | None:
+        """Return the newest execution attempt for one tenant-scoped run.
+
+        A run can execute more than once — a linked retry re-plans, and a
+        re-planned recipe has a different execution key. The newest record is
+        the one describing what the run currently holds.
+        """
+
+        try:
+            document = await self._db()[self.collection_name].find_one(
+                {"user_id": user_id, "run_id": run_id},
+                sort=[("created_at", DESCENDING)],
             )
         except PyMongoError as error:
             raise ExecutionRepositoryError(
@@ -308,6 +367,11 @@ class InMemoryExecutionRepository:
     def __init__(self) -> None:
         self._by_id: dict[str, AnalysisExecution] = {}
         self._by_key: dict[tuple[str, str], str] = {}
+        # Secondary index, maintained on reserve so `get_for_run` is a lookup
+        # rather than a scan — the same shape the Mongo index gives the real
+        # store. Reservation order is creation order, so the last entry is the
+        # newest attempt.
+        self._by_run: dict[tuple[str, str], list[str]] = {}
 
     async def reserve(self, execution: AnalysisExecution) -> AnalysisExecution:
         key = (execution.user_id, execution.execution_key)
@@ -316,6 +380,9 @@ class InMemoryExecutionRepository:
             return self._by_id[existing_id]
         self._by_key[key] = execution.execution_id
         self._by_id[execution.execution_id] = execution
+        self._by_run.setdefault(
+            (execution.user_id, execution.run_id), []
+        ).append(execution.execution_id)
         return execution
 
     async def get_by_key(
@@ -326,6 +393,36 @@ class InMemoryExecutionRepository:
     ) -> AnalysisExecution | None:
         execution_id = self._by_key.get((user_id, execution_key))
         return self._by_id.get(execution_id) if execution_id else None
+
+    async def get_by_id(
+        self,
+        *,
+        user_id: str,
+        execution_id: str,
+    ) -> AnalysisExecution | None:
+        execution = self._by_id.get(execution_id)
+        return execution if execution and execution.user_id == user_id else None
+
+    async def get_for_run(
+        self,
+        *,
+        user_id: str,
+        run_id: str,
+    ) -> AnalysisExecution | None:
+        identifiers = self._by_run.get((user_id, run_id))
+        if not identifiers:
+            return None
+        # Newest by `created_at`, not by reservation order. The two normally
+        # agree, but the Mongo store sorts on the field and this one claims the
+        # same semantics — so it sorts on the field too.
+        candidates = [
+            execution
+            for execution in (self._by_id.get(item) for item in identifiers)
+            if execution is not None
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda execution: execution.created_at)
 
     async def start(
         self,

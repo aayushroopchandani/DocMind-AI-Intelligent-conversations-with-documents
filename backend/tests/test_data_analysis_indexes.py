@@ -81,6 +81,7 @@ class AnalysisIndexDefinitionTests(unittest.IsolatedAsyncioTestCase):
                 "artifact_versions",
                 "dataset_catalog",
                 "analysis_plans",
+                "analysis_executions",
                 "analysis_patch_proposals",
                 "analysis_write_reservations",
             },
