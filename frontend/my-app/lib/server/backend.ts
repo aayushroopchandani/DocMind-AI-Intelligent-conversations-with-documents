@@ -83,6 +83,39 @@ export async function passthrough(res: Response): Promise<Response> {
   });
 }
 
+/**
+ * Response headers worth preserving on a streamed body.
+ *
+ * Deliberately excludes `content-length`. `fetch` transparently decompresses a
+ * `content-encoding` response, so the length the backend declared can describe
+ * fewer bytes than the stream actually yields — and a wrong content-length
+ * truncates the body rather than failing loudly. Letting the platform frame the
+ * response costs nothing here; the browser reads a chunk to completion and
+ * checks it against a checksum either way.
+ */
+const STREAMED_HEADERS = ["content-type", "cache-control"] as const;
+
+/**
+ * Forward a backend response without decoding its body.
+ *
+ * `passthrough` reads the body as text, which decodes UTF-8 and re-encodes it.
+ * For JSON control-plane replies that is harmless, but a patch payload chunk is
+ * checksummed byte for byte in the browser (9.12.3), so any decode round trip
+ * risks changing what the checksum is computed over — and buffering it as a JS
+ * string costs roughly twice the bytes. This streams the body straight through
+ * instead, so the proxy never holds the whole chunk at all.
+ */
+export function streamThrough(res: Response): Response {
+  const headers = new Headers();
+  for (const name of STREAMED_HEADERS) {
+    const value = res.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  if (!headers.has("cache-control")) headers.set("cache-control", "no-store");
+  return new Response(res.body, { status: res.status, headers });
+}
+
 function sanitizeDocument(document: unknown): unknown {
   if (!document || typeof document !== "object") return document;
 
