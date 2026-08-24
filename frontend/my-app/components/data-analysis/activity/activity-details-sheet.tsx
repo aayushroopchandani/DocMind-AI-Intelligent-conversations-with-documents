@@ -10,6 +10,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { describeExecutionEvent } from "@/lib/data-analysis/execution/execution-events";
 import { useAnalysisRuns } from "@/components/data-analysis/analysis-run-provider";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 
@@ -74,8 +75,13 @@ export function ActivityDetailsSheet() {
               {runs.events.length ? runs.events.map((event) => (
                 <li key={event.event_id} className="flex gap-2 text-xs">
                   <span className="w-6 shrink-0 text-right font-mono text-[10px] text-muted-foreground">{event.sequence}</span>
-                  <div>
-                    <p className="capitalize text-foreground">{event.event_type.replaceAll("_", " ")}</p>
+                  <div className="min-w-0">
+                    {/* Execution events know how to describe themselves in
+                        plain language; everything else falls back to its
+                        event name. */}
+                    <p className="text-foreground first-letter:uppercase">
+                      {describeExecutionEvent(event) ?? event.event_type.replaceAll("_", " ")}
+                    </p>
                     <p className="text-[10px] text-muted-foreground">{new Date(event.occurred_at).toLocaleTimeString()}</p>
                   </div>
                 </li>

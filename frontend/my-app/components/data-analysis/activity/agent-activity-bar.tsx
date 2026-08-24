@@ -5,22 +5,24 @@ import { activeArtifact } from "@/lib/data-analysis/workspace-state";
 import type { SaveStatus } from "@/lib/data-analysis/types";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 import { cn } from "@/lib/utils";
+import type { ExecutionStage } from "@/lib/data-analysis/execution/execution-events";
 import { useAnalysisRuns } from "@/components/data-analysis/analysis-run-provider";
 
 /**
- * Bottom status bar. Today it only ever reports "Ready" — real run phases
- * (reading, cleaning, calculating, waiting for approval, …) arrive with the
- * agent backend and will reuse this same status-dot + label slot.
+ * Bottom status bar.
+ *
+ * The label prefers the execution's own stage when one is running, because
+ * "Running step 2 of 3" tells a user more than the coarse run phase does. It
+ * falls back to the phase for every part of a run that is not execution.
  */
-export type AgentRunPhase =
-  | "ready"
-  | "reading"
-  | "cleaning"
-  | "calculating"
-  | "generating-chart"
-  | "waiting-approval"
-  | "completed"
-  | "failed";
+const EXECUTION_LABEL: Record<ExecutionStage, string> = {
+  queued: "Queued",
+  running: "Running",
+  validating: "Validating",
+  publishing: "Saving result",
+  completed: "Completed",
+  failed: "Failed",
+};
 
 const SAVE_LABEL: Record<SaveStatus, string> = {
   draft: "Local draft",
@@ -30,14 +32,21 @@ const SAVE_LABEL: Record<SaveStatus, string> = {
 
 export function AgentActivityBar() {
   const { state, ui } = useWorkspace();
-  const { activeRun } = useAnalysisRuns();
+  const { activeRun, executionProgress } = useAnalysisRuns();
   const artifact = activeArtifact(state);
+  const executionStage = executionProgress.stage;
+  const runningLabel =
+    executionStage === "running" && executionProgress.stepCount
+      ? `Running step ${Math.min(executionProgress.stepsCompleted + 1, executionProgress.stepCount)} of ${executionProgress.stepCount}`
+      : executionStage
+        ? EXECUTION_LABEL[executionStage]
+        : null;
   const statusLabel = activeRun
-    ? activeRun.status === "waiting"
-      ? "Waiting for approval"
-      : activeRun.status === "paused"
-        ? "Paused"
-        : activeRun.phase.replaceAll("_", " ")
+    ? activeRun.status === "paused"
+      ? "Paused"
+      : activeRun.status === "waiting"
+        ? "Waiting for approval"
+        : (runningLabel ?? activeRun.phase.replaceAll("_", " "))
     : "Ready";
   const terminal = activeRun && ["succeeded", "failed", "cancelled", "expired"].includes(activeRun.status);
 

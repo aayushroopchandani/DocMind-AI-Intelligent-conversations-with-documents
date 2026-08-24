@@ -8,7 +8,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import type { AnalysisPrivacyMode, AnalystMode } from "@/lib/data-analysis/types";
 import { activeArtifact } from "@/lib/data-analysis/workspace-state";
 import { AnalystComposer } from "@/components/data-analysis/analyst/analyst-composer";
+import { ExecutionProgressCard } from "@/components/data-analysis/analyst/execution-progress-card";
 import { ProposedActionCard } from "@/components/data-analysis/analyst/proposed-action-card";
+import { ResultPreviewTable } from "@/components/data-analysis/analyst/result-preview-table";
 import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 import { cn } from "@/lib/utils";
 import { useAnalysisRuns } from "@/components/data-analysis/analysis-run-provider";
@@ -209,6 +211,16 @@ export function AiAnalystPanel({ onCollapse }: AiAnalystPanelProps) {
             onApprove={runs.approvePlan}
             onReject={() => runs.rejectPlan("other")}
           />
+          <ExecutionProgressCard
+            progress={runs.executionProgress}
+            execution={runs.execution}
+          />
+          {runs.executionPreview ? (
+            <ResultPreviewTable
+              preview={runs.executionPreview}
+              schema={runs.execution?.result_columns}
+            />
+          ) : null}
         </div>
       </ScrollArea>
 

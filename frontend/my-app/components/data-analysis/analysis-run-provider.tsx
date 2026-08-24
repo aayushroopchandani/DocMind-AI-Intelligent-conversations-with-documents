@@ -30,6 +30,19 @@ import type {
   WorkbookVersionGuard,
 } from "@/lib/data-analysis/analysis-types";
 import { TERMINAL_RUN_STATUSES } from "@/lib/data-analysis/analysis-types";
+import {
+  getRunExecution,
+  getRunExecutionPreview,
+} from "@/lib/data-analysis/execution/execution-api";
+import {
+  IDLE_EXECUTION_PROGRESS,
+  foldExecutionEvent,
+  type ExecutionProgress,
+} from "@/lib/data-analysis/execution/execution-events";
+import type {
+  ExecutionPreviewResponse,
+  ExecutionView,
+} from "@/lib/data-analysis/execution/execution-types";
 import { loadPdfBuffer } from "@/lib/data-analysis/pdf/pdf-storage";
 import type { AnalystRequestContext } from "@/lib/data-analysis/types";
 import { isPdfArtifact } from "@/lib/data-analysis/types";
@@ -40,6 +53,12 @@ import { useWorkspace } from "@/components/data-analysis/workspace-provider";
 interface AnalysisRunsValue {
   activeRun: AnalysisRun | null;
   activePlan: AnalysisPlan | null;
+  /** Folded from the event stream; the live view while a run is executing. */
+  executionProgress: ExecutionProgress;
+  /** The durable record, fetched once the run has one. */
+  execution: ExecutionView | null;
+  /** The bounded, redacted sample, fetched once a result is published. */
+  executionPreview: ExecutionPreviewResponse | null;
   events: AnalysisRunEvent[];
   history: AnalysisRun[];
   submitting: boolean;
@@ -65,6 +84,15 @@ const PLAN_REFRESH_EVENTS = new Set([
   "plan_approved",
   "plan_rejected",
 ]);
+
+// The execution record only exists once something has published it, and the
+// preview only once the bundle is durable. Fetching on these two events rather
+// than on every event keeps a long execution to one round trip instead of one
+// per step.
+const EXECUTION_REFRESH_EVENTS = new Set([
+  "result_materialized",
+  "run_completed",
+]);
 const RECONNECT_MIN_MS = 900;
 const RECONNECT_MAX_MS = 15_000;
 
@@ -86,10 +114,17 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
   const [activeRun, setActiveRun] = useState<AnalysisRun | null>(null);
   const [activePlan, setActivePlan] = useState<AnalysisPlan | null>(null);
   const [events, setEvents] = useState<AnalysisRunEvent[]>([]);
+  const [executionProgress, setExecutionProgress] = useState<ExecutionProgress>(
+    IDLE_EXECUTION_PROGRESS,
+  );
+  const [execution, setExecution] = useState<ExecutionView | null>(null);
+  const [executionPreview, setExecutionPreview] =
+    useState<ExecutionPreviewResponse | null>(null);
   const [history, setHistory] = useState<AnalysisRun[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const executionAbortRef = useRef<AbortController | null>(null);
   const streamGenerationRef = useRef(0);
   const activeRunRef = useRef<AnalysisRun | null>(null);
 
@@ -117,6 +152,52 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  /**
+   * Read the durable execution, and its sample when one has been published.
+   *
+   * Two calls rather than one: the record answers from MongoDB, the sample
+   * costs a blob download, so the second is made only when the first says
+   * there is something to read.
+   */
+  const loadExecution = useCallback(async (runId: string) => {
+    executionAbortRef.current?.abort();
+    const controller = new AbortController();
+    executionAbortRef.current = controller;
+    try {
+      const response = await getRunExecution(runId, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setExecution(response?.execution ?? null);
+      if (response?.run) {
+        // This read was started by an event, and a later event may already have
+        // landed while it was in flight. `last_event_sequence` is monotonic per
+        // run, so it decides which of the two views is actually newer — without
+        // it, a slow response could put a completed run back into "running".
+        const fetched = response.run;
+        setActiveRun((current) =>
+          current !== null &&
+          current.run_id === fetched.run_id &&
+          current.last_event_sequence > fetched.last_event_sequence
+            ? current
+            : fetched,
+        );
+      }
+      if (!response || !response.execution.has_result) {
+        setExecutionPreview(null);
+        return;
+      }
+      const preview = await getRunExecutionPreview(runId, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setExecutionPreview(preview);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      // A result the browser cannot read is worth saying once, but it must not
+      // disturb a run that otherwise succeeded.
+      console.warn("Analysis execution could not be read", error);
+    }
+  }, []);
+
   const beginStream = useCallback((run: AnalysisRun, replayFrom = 0) => {
     streamAbortRef.current?.abort();
     if (run.status === "paused" || TERMINAL_RUN_STATUSES.has(run.status)) return;
@@ -140,9 +221,24 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
               if (event.sequence <= cursor) return;
               cursor = event.sequence;
               reconnectDelay = RECONNECT_MIN_MS;
-              setEvents((current) => current.some((item) => item.sequence === event.sequence)
-                ? current
-                : [...current, event].sort((a, b) => a.sequence - b.sequence));
+              setEvents((current) => {
+                // The cursor above already drops anything at or behind it, so
+                // arrivals are ordered and this is a plain append. Sorting on
+                // every event made a long run quadratic for no benefit. The
+                // fallback covers the one case the cursor cannot: a superseded
+                // stream delivering late, after a newer one has moved ahead.
+                const last = current[current.length - 1];
+                if (last === undefined || event.sequence > last.sequence) {
+                  return [...current, event];
+                }
+                if (current.some((item) => item.sequence === event.sequence)) {
+                  return current;
+                }
+                return [...current, event].sort((a, b) => a.sequence - b.sequence);
+              });
+              setExecutionProgress((current) =>
+                foldExecutionEvent(current, event),
+              );
               setActiveRun((current) => current?.run_id === event.run_id
                 ? {
                     ...current,
@@ -156,6 +252,9 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
                 : current);
               if (PLAN_REFRESH_EVENTS.has(event.event_type)) {
                 void loadPlan(event.run_id);
+              }
+              if (EXECUTION_REFRESH_EVENTS.has(event.event_type)) {
+                void loadExecution(event.run_id);
               }
               if (event.event_type === "run_paused" || event.status && TERMINAL_RUN_STATUSES.has(event.status)) {
                 controller.abort();
@@ -175,24 +274,37 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
       }
     };
     void consume();
-  }, [loadPlan, refreshHistory]);
+  }, [loadExecution, loadPlan, refreshHistory]);
 
   const openRun = useCallback(async (run: AnalysisRun) => {
     streamAbortRef.current?.abort();
+    executionAbortRef.current?.abort();
     activeRunRef.current = run;
     setActiveRun(run);
     setActivePlan(null);
     setEvents([]);
+    // Every derived view belongs to the run that produced it. Replaying from
+    // sequence 0 rebuilds the progress fold, so it starts from idle.
+    setExecutionProgress(IDLE_EXECUTION_PROGRESS);
+    setExecution(null);
+    setExecutionPreview(null);
     if (run.current_plan_id) void loadPlan(run.run_id);
+    // A finished run has its execution on disk rather than on the stream, so
+    // opening one from history reads it directly instead of waiting for events
+    // that already happened.
+    if (TERMINAL_RUN_STATUSES.has(run.status)) void loadExecution(run.run_id);
     beginStream(run, 0);
-  }, [beginStream, loadPlan]);
+  }, [beginStream, loadExecution, loadPlan]);
 
   useEffect(() => {
     if (!state.hydrated) return;
     void (async () => {
       await refreshHistory();
     })();
-    return () => streamAbortRef.current?.abort();
+    return () => {
+      streamAbortRef.current?.abort();
+      executionAbortRef.current?.abort();
+    };
   }, [refreshHistory, state.hydrated]);
 
   useEffect(() => {
@@ -390,6 +502,9 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AnalysisRunsValue>(() => ({
     activeRun,
     activePlan,
+    executionProgress,
+    execution,
+    executionPreview,
     events,
     history,
     submitting,
@@ -404,7 +519,8 @@ export function AnalysisRunProvider({ children }: { children: ReactNode }) {
     openRun,
     refreshHistory,
   }), [
-    activePlan, activeRun, applyControl, decide, events, history, historyLoading,
+    activePlan, activeRun, applyControl, decide, events, execution,
+    executionPreview, executionProgress, history, historyLoading,
     openRun, refreshHistory, resumeAsNew, submit, submitting,
   ]);
 
