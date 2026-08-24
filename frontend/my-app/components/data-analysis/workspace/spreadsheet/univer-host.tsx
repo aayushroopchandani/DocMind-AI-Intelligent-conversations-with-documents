@@ -19,6 +19,10 @@ import {
   loadWorkbookSnapshot,
   saveWorkbookSnapshot,
 } from "@/lib/data-analysis/local-storage";
+import {
+  getRevisionCoordinator,
+  setRevisionCommitHandler,
+} from "@/lib/data-analysis/patches/revision-coordinator";
 import { formatRangeA1 } from "@/lib/data-analysis/range-label";
 import { addWorksheet } from "@/lib/data-analysis/sheet/structure-commands";
 import { getUniverBridge } from "@/lib/data-analysis/univer-bridge";
@@ -54,7 +58,7 @@ export default function UniverHost() {
     if (!container) return;
 
     const bridge = getUniverBridge();
-    const { univerAPI } = createUniver({
+    const { univer, univerAPI } = createUniver({
       darkMode: true,
       theme: docmindUniverTheme,
       locale: LocaleType.EN_US,
@@ -69,6 +73,9 @@ export default function UniverHost() {
     });
 
     bridge.api = univerAPI;
+    // The patch adapter reaches Univer's undo service through the injector,
+    // which the facade does not expose.
+    bridge.univer = univer;
     bridge.containerEl = container;
 
     const flushSnapshot = (unitId: string) => {
@@ -106,6 +113,18 @@ export default function UniverHost() {
       }
     };
 
+    // An AI patch is many mutations but one logical edit. The coordinator
+    // pauses the per-mutation accounting below and calls back here once, so a
+    // patch advances the revision once and writes one snapshot (9.13.3).
+    const coordinator = getRevisionCoordinator();
+    setRevisionCommitHandler({
+      settle: flushSnapshot,
+      commit: (unitId) => {
+        dispatch({ type: "BUMP_WORKBOOK_REVISION", id: unitId });
+        flushSnapshot(unitId);
+      },
+    });
+
     const disposables: Array<IDisposable | undefined> = [
       // Dirty tracking: only MUTATIONs change the workbook model (selection
       // moves and UI changes are OPERATIONs and are ignored).
@@ -118,6 +137,10 @@ export default function UniverHost() {
         const unitId =
           params?.unitId ?? univerAPI.getActiveWorkbook()?.getId() ?? null;
         if (!unitId || !bridge.loadedUnitIds.has(unitId)) return;
+        // Inside an AI patch transaction the coordinator counts this and
+        // commits once at the end. Every other edit — including edits to a
+        // different workbook while a patch runs — takes the path below.
+        if (coordinator.absorbMutation(unitId)) return;
         dispatch({ type: "BUMP_WORKBOOK_REVISION", id: unitId });
         scheduleSnapshot(unitId);
       }),
@@ -158,6 +181,7 @@ export default function UniverHost() {
 
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
+      setRevisionCommitHandler(null);
       flushAllPending();
       disposables.forEach((disposable) => disposable?.dispose());
       dispatch({ type: "SET_UNIVER_READY", ready: false });
@@ -166,6 +190,7 @@ export default function UniverHost() {
         context: { worksheetName: null, selectedRange: null },
       });
       bridge.api = null;
+      bridge.univer = null;
       bridge.containerEl = null;
       bridge.loadedUnitIds.clear();
       bridge.pendingDeleteIds.clear();
