@@ -1,3 +1,4 @@
+import type { Univer } from "@univerjs/core";
 import type { FUniver } from "@univerjs/core/facade";
 
 /**
@@ -14,6 +15,14 @@ import type { FUniver } from "@univerjs/core/facade";
 export interface UniverBridge {
   /** Facade API — set by the Univer host once the instance boots. */
   api: FUniver | null;
+  /**
+   * The instance behind the facade.
+   *
+   * The patch adapter needs the dependency injector to reach Univer's undo
+   * service, and the facade does not expose it. Only
+   * `lib/data-analysis/patches/univer-patch-adapter.ts` should read this.
+   */
+  univer: Univer | null;
   /** Root element hosting Univer, used to scope keyboard shortcuts. */
   containerEl: HTMLElement | null;
   /** Workbook unit ids currently loaded into the instance. */
@@ -35,6 +44,7 @@ export interface UniverBridge {
 
 const bridge: UniverBridge = {
   api: null,
+  univer: null,
   containerEl: null,
   loadedUnitIds: new Set(),
   pendingDeleteIds: new Set(),
