@@ -12,7 +12,11 @@
     "typecheck": "tsc --noEmit",
     "verify:cell-hash": "node scripts/verify-cell-hash.mjs",
     "verify:analysis-routes": "node scripts/verify-analysis-routes.mjs",
-    "verify:execution-events": "node scripts/verify-execution-events.mjs"
+    "verify:execution-events": "node scripts/verify-execution-events.mjs",
+    "verify:result-preview": "node scripts/verify-result-preview.mjs",
+    "verify:univer-version": "node scripts/verify-univer-version.mjs",
+    "verify:revision-coordinator": "node scripts/verify-revision-coordinator.mjs",
+    "verify": "npm run verify:cell-hash && npm run verify:analysis-routes && npm run verify:execution-events && npm run verify:result-preview && npm run verify:revision-coordinator && npm run verify:univer-version"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
