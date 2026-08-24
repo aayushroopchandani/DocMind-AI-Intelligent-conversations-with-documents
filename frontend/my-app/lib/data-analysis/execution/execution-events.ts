@@ -18,6 +18,7 @@
  */
 
 import type { AnalysisRunEvent } from "@/lib/data-analysis/analysis-types";
+import { formatCount } from "@/lib/data-analysis/format";
 
 /* ------------------------------------------------------------------ */
 /* Payload readers                                                      */
@@ -314,7 +315,7 @@ const STEP_VERBS: Record<string, string> = {
 };
 
 function rows(count: number): string {
-  return `${count.toLocaleString()} ${count === 1 ? "row" : "rows"}`;
+  return `${formatCount(count)} ${count === 1 ? "row" : "rows"}`;
 }
 
 /**

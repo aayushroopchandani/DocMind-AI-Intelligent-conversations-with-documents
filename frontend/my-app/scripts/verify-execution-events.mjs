@@ -11,7 +11,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, cpSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, cpSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -95,6 +95,8 @@ const EXPECTED_LINES = [
 
 const workspace = mkdtempSync(join(tmpdir(), "execution-events-"));
 cpSync("lib/data-analysis/execution/execution-events.ts", join(workspace, "execution-events.ts"));
+// The module formats counts through the shared, locale-pinned helpers.
+cpSync("lib/data-analysis/format.ts", join(workspace, "format.ts"));
 // The module imports run types only as types, so a stub satisfies the compile
 // without dragging the whole app in.
 writeFileSync(
@@ -110,10 +112,9 @@ writeFileSync(
 const source = join(workspace, "execution-events.ts");
 writeFileSync(
   source,
-  readFileSync(source, "utf8").replace(
-    "@/lib/data-analysis/analysis-types",
-    "./analysis-types",
-  ),
+  readFileSync(source, "utf8")
+    .replace("@/lib/data-analysis/analysis-types", "./analysis-types")
+    .replace("@/lib/data-analysis/format", "./format"),
   "utf8",
 );
 
@@ -128,9 +129,22 @@ execFileSync(
     "--outDir", join(workspace, "out"),
     source,
     join(workspace, "analysis-types.ts"),
+    join(workspace, "format.ts"),
   ],
   { stdio: "inherit" },
 );
+
+// tsc emits extensionless relative imports; Node's ESM loader requires them.
+for (const name of readdirSync(join(workspace, "out")).filter((f) => f.endsWith(".js"))) {
+  const file = join(workspace, "out", name);
+  writeFileSync(
+    file,
+    readFileSync(file, "utf8").replace(/from "(\.\/[\w.-]+)"/g, (whole, path) =>
+      path.endsWith(".js") ? whole : `from "${path}.js"`,
+    ),
+    "utf8",
+  );
+}
 
 const {
   IDLE_EXECUTION_PROGRESS,
